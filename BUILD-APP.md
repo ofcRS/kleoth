@@ -38,8 +38,11 @@ Create `KleothApp.app/Contents/{MacOS,Resources}/`, copy the built binary into `
 | `CFBundleExecutable` | `KleothApp` | the binary name |
 | `LSUIElement` | `true` | menu-bar-only, no Dock icon |
 | `NSMicrophoneUsageDescription` | "Kleoth records your microphone for meeting transcription." | required for the mic TCC prompt |
+| `NSAudioCaptureUsageDescription` | "Kleoth records system audio to transcribe meetings." | **REQUIRED for system-audio capture** — see below |
 
-There is **no** Info.plist key for Screen Recording — it is a system-managed TCC prompt triggered on first ScreenCaptureKit use. (System-audio capture via the Core Audio process-tap does **not** require Screen Recording at all.)
+**System-audio capture is permission-gated (this was a real bug).** Reading a Core Audio process tap requires TCC audio-capture consent, and **without the `NSAudioCaptureUsageDescription` key the tap silently returns zeros** — there is no API to detect the missing authorization. The key makes macOS show the consent prompt on first capture; the grant appears under **System Settings → Privacy & Security → Screen & System Audio Recording** (system-audio capture shares the screen-recording TCC family). Screen Recording itself has no Info.plist key and is only needed for the ScreenCaptureKit screenshot feature — not for the audio tap.
+
+> **TCC + signing:** TCC ties grants to the app's code signature. Under **ad-hoc** signing the identity changes every rebuild, so a grant may not persist and you can be re-prompted (clear with `tccutil reset All dev.kleoth.app`, then re-grant). A stable Developer ID (or self-signed) signature makes grants stick.
 
 ## 4. Codesign (hardened runtime)
 

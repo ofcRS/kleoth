@@ -55,7 +55,14 @@ public final class SystemAudioTap {
     /// Diagnostics: logs Core Audio setup + IO-thread activity to the unified
     /// log (subsystem `dev.kleoth`) so an empty capture can be pinpointed.
     private let log = Logger(subsystem: "dev.kleoth", category: "SystemAudioTap")
-    private let ioStats = OSAllocatedUnfairLock<(cycles: Int, nilBuffers: Int, frames: Int64)>(initialState: (0, 0, 0))
+    private let ioStats = OSAllocatedUnfairLock<(cycles: Int, nilBuffers: Int, frames: Int64, maxSample: Float)>(initialState: (0, 0, 0, 0))
+
+    /// Diagnostics from the last/current capture: IO cycles, nil buffers, total
+    /// frames seen, and the peak absolute sample the IO callback actually
+    /// received. A peak ~0 means the tap delivered silence at the source.
+    public var lastStats: (cycles: Int, nilBuffers: Int, frames: Int64, maxSample: Float) {
+        ioStats.withLock { $0 }
+    }
 
     public init() {}
 
@@ -124,6 +131,7 @@ public final class SystemAudioTap {
         //    fails we fall back to a global stereo mixdown (which would include
         //    our own output) rather than failing the whole capture.
         let excluded = Self.audioProcessObjects(forPID: ProcessInfo.processInfo.processIdentifier)
+        log.info("tap exclude-self objects: \(excluded.count, privacy: .public)")
         let description = CATapDescription(
             stereoGlobalTapButExcludeProcesses: excluded
         )
@@ -151,7 +159,7 @@ public final class SystemAudioTap {
                 throw SystemAudioTapError.invalidTapFormat
             }
             streamFormat = format
-            ioStats.withLock { $0 = (0, 0, 0) }
+            ioStats.withLock { $0 = (0, 0, 0, 0) }
             log.info("tap format sr=\(asbd.mSampleRate, privacy: .public) ch=\(asbd.mChannelsPerFrame, privacy: .public) flags=\(asbd.mFormatFlags, privacy: .public) bytesPerFrame=\(asbd.mBytesPerFrame, privacy: .public) framesPerPacket=\(asbd.mFramesPerPacket, privacy: .public) interleaved=\(format.isInterleaved, privacy: .public)")
 
             // 5. Create a private aggregate device that contains only the tap.
@@ -194,13 +202,30 @@ public final class SystemAudioTap {
                 ioQueue
             ) { @Sendable _, inInputData, _, _, _ in
                 // inInputData points at the live buffer list for this cycle.
+                // Diagnostic: measure the peak sample actually delivered to the
+                // callback, so we can tell tap-silence-at-source from a write loss.
+                var localMax: Float = 0
+                let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+                for buf in abl {
+                    guard let bytes = buf.mData else { continue }
+                    let count = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+                    let floats = bytes.assumingMemoryBound(to: Float.self)
+                    var i = 0
+                    while i < count {
+                        let a = abs(floats[i])
+                        if a > localMax { localMax = a }
+                        i += 1
+                    }
+                }
                 let pcm = AVAudioPCMBuffer(
                     pcmFormat: capturedFormat,
                     bufferListNoCopy: inInputData
                 )
+                let peak = localMax
                 stats.withLock { s in
                     s.cycles += 1
                     if let pcm { s.frames += Int64(pcm.frameLength) } else { s.nilBuffers += 1 }
+                    if peak > s.maxSample { s.maxSample = peak }
                 }
                 guard let pcm else { return }
                 handler(pcm)
@@ -234,7 +259,7 @@ public final class SystemAudioTap {
     private func teardown() {
         if isRunning {
             let s = ioStats.withLock { $0 }
-            log.info("tap teardown ioCycles=\(s.cycles, privacy: .public) nilBuffers=\(s.nilBuffers, privacy: .public) framesSeen=\(s.frames, privacy: .public) writeFailed=\(self.writeFailed.isRaised, privacy: .public)")
+            log.info("tap teardown ioCycles=\(s.cycles, privacy: .public) nilBuffers=\(s.nilBuffers, privacy: .public) framesSeen=\(s.frames, privacy: .public) peakSample=\(s.maxSample, privacy: .public) writeFailed=\(self.writeFailed.isRaised, privacy: .public)")
         }
         if let procID = ioProcID, aggregateID != kAudioObjectUnknown {
             AudioDeviceStop(aggregateID, procID)

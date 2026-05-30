@@ -28,5 +28,10 @@
          via the Core Audio process-tap does not require it.) -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Kleoth records your microphone to transcribe meetings locally.</string>
+    <!-- Required to read a Core Audio process tap (system audio). Without this
+         key the tap silently returns zeros and there is NO API to query the
+         authorization status. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Kleoth records system audio (the other participants) to transcribe your meetings locally.</string>
 </dict>
 </plist>
