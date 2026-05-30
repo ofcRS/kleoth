@@ -1,0 +1,18 @@
+# Secrets / config
+.env
+.env.*
+config.json
+
+# Build artifacts
+.build/
+/out/
+/samples/
+/meetings/
+
+# Xcode / SwiftPM
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+
+# macOS
+.DS_Store

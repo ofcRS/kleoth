@@ -1,0 +1,30 @@
+{
+  "language_code": "en",
+  "audio_duration_secs": 2.75,
+  "transcription_id": "txn_fixture_multichannel_0001",
+  "transcripts": [
+    {
+      "channel_index": 0,
+      "text": "Hi everyone.",
+      "words": [
+        { "text": "Hi", "start": 0.0, "end": 0.3, "type": "word", "speaker_id": "speaker_0", "logprob": -0.12 },
+        { "text": " ", "start": 0.3, "end": 0.35, "type": "spacing", "speaker_id": "speaker_0" },
+        { "text": "everyone", "start": 0.35, "end": 0.9, "type": "word", "speaker_id": "speaker_0", "logprob": -0.21 },
+        { "text": ".", "start": 0.9, "end": 0.95, "type": "spacing", "speaker_id": "speaker_0" }
+      ]
+    },
+    {
+      "channel_index": 1,
+      "text": "Hello, glad to be here.",
+      "words": [
+        { "text": "Hello", "start": 1.2, "end": 1.6, "type": "word", "speaker_id": "speaker_1", "logprob": -0.08 },
+        { "text": ",", "start": 1.6, "end": 1.65, "type": "spacing", "speaker_id": "speaker_1" },
+        { "text": "glad", "start": 1.7, "end": 2.0, "type": "word", "speaker_id": "speaker_1", "logprob": -0.15 },
+        { "text": "to", "start": 2.0, "end": 2.15, "type": "word", "speaker_id": "speaker_1", "logprob": -0.05 },
+        { "text": "be", "start": 2.15, "end": 2.3, "type": "word", "speaker_id": "speaker_1", "logprob": -0.04 },
+        { "text": "here", "start": 2.3, "end": 2.7, "type": "word", "speaker_id": "speaker_1", "logprob": -0.11 },
+        { "text": ".", "start": 2.7, "end": 2.75, "type": "spacing", "speaker_id": "speaker_1" }
+      ]
+    }
+  ]
+}
