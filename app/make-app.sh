@@ -24,8 +24,24 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$DIR/bundle/Info.plist" "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/Kleoth"
 
-echo "==> codesigning (ad-hoc)"
-codesign --force --sign - --entitlements "$DIR/bundle/Kleoth.entitlements" "$APP"
+echo "==> codesigning"
+KC="$HOME/Library/Keychains/kleoth-codesign.keychain-db"
+IDENTITY="Kleoth Self-Signed"
+if security find-identity "$KC" 2>/dev/null | grep -q "$IDENTITY"; then
+    security unlock-keychain -p kleoth-codesign "$KC" 2>/dev/null || true
+    codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements "$DIR/bundle/Kleoth.entitlements" "$APP"
+    echo "    signed with stable identity '$IDENTITY' (TCC grants persist across rebuilds)"
+else
+    codesign --force --sign - --entitlements "$DIR/bundle/Kleoth.entitlements" "$APP"
+    echo "    signed ad-hoc — run 'bash $DIR/setup-signing.sh' for a stable identity"
+fi
 codesign -dv "$APP" 2>&1 | sed -n '1,2p' || true
 
-echo "==> done. Launch with:  open \"$APP\""
+# Install to /Applications so it behaves like a normal, double-clickable app.
+INSTALLED="/Applications/Kleoth.app"
+echo "==> installing to $INSTALLED"
+rm -rf "$INSTALLED"
+cp -R "$APP" "$INSTALLED"
+
+echo "==> done. Installed at $INSTALLED"
+echo "    launch with:  open \"$INSTALLED\""
