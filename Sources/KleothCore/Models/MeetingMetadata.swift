@@ -39,6 +39,20 @@ public struct CostBreakdown: Codable, Sendable {
         transcriptionUSD + summaryUSD
     }
 
+    // Explicit, acronym-free coding keys. Under MeetingStore's snake_case key
+    // strategies an all-caps suffix does NOT round-trip: `transcriptionUSD`
+    // encodes (convertToSnakeCase) to `transcription_usd` but decodes
+    // (convertFromSnakeCase) back to `transcriptionUsd`, which no longer matches
+    // — so a saved `cost` could not be re-read. Mapping to acronym-free names
+    // keeps encode/decode symmetric; on disk the keys are `transcription_cost` /
+    // `summary_cost` / `audio_duration_secs`.
+    // NOTE: any new stored property must be added to this enum too.
+    enum CodingKeys: String, CodingKey {
+        case transcriptionUSD = "transcriptionCost"
+        case summaryUSD = "summaryCost"
+        case audioDurationSecs
+    }
+
     public init(
         transcriptionUSD: Double = 0,
         summaryUSD: Double = 0,

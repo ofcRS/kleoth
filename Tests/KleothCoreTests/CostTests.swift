@@ -88,4 +88,34 @@ import FoundationNetworking
         #expect(abs(result.cost.summaryUSD) < 1e-12)
         #expect(abs(result.cost.totalUSD - 0.22) < 1e-9)
     }
+
+    // MARK: - Serialization round-trip (regression: acronym keys broke snake_case)
+
+    @Test func costBreakdownRoundTripsThroughStoreCodec() throws {
+        let original = CostBreakdown(transcriptionUSD: 0.22, summaryUSD: 0.0123, audioDurationSecs: 92.0)
+        let data = try MeetingStore.makeEncoder().encode(original)
+        let decoded = try MeetingStore.makeDecoder().decode(CostBreakdown.self, from: data)
+        #expect(abs(decoded.transcriptionUSD - 0.22) < 1e-9)
+        #expect(abs(decoded.summaryUSD - 0.0123) < 1e-9)
+        #expect(decoded.audioDurationSecs == 92.0)
+    }
+
+    @Test func meetingMetadataWithCostRoundTripsThroughStoreCodec() throws {
+        let meta = MeetingMetadata(
+            title: "Sync",
+            date: "2026-05-31",
+            participants: ["Alex", "Sam"],
+            consentAcknowledged: true,
+            model: "openai/gpt-4.1-mini",
+            languageCode: "en",
+            cost: CostBreakdown(transcriptionUSD: 0.10, summaryUSD: 0.20, audioDurationSecs: 60)
+        )
+        let data = try MeetingStore.makeEncoder().encode(meta)
+        let decoded = try MeetingStore.makeDecoder().decode(MeetingMetadata.self, from: data)
+        #expect(decoded.cost != nil)
+        #expect(abs((decoded.cost?.transcriptionUSD ?? 0) - 0.10) < 1e-9)
+        #expect(abs((decoded.cost?.summaryUSD ?? 0) - 0.20) < 1e-9)
+        #expect(abs((decoded.cost?.totalUSD ?? 0) - 0.30) < 1e-9)
+        #expect(decoded.consentAcknowledged == true)
+    }
 }
