@@ -17,6 +17,7 @@ struct Kleoth: AsyncParsableCommand {
             Transcribe.self,
             Summarize.self,
             Rename.self,
+            Render.self,
             Slack.self,
         ]
     )
@@ -419,6 +420,59 @@ struct Rename: AsyncParsableCommand {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try? decoder.decode(ScribeResponse.self, from: data)
+    }
+}
+
+// MARK: - render
+
+struct Render: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Re-render summary.md from a meeting's summary.json + transcript (no API calls)."
+    )
+
+    @Argument(help: "Path to an existing meeting directory.")
+    var meetingDir: String
+
+    @Flag(name: .long, help: "Exclude the full transcript from summary.md.")
+    var noTranscript: Bool = false
+
+    func run() async throws {
+        let dir = URL(fileURLWithPath: meetingDir)
+        guard isDirectory(dir) else {
+            throw fail("Meeting directory not found: \(meetingDir)")
+        }
+
+        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+        guard let summary = try store.loadSummary(in: dir) else {
+            throw fail("No summary.json found in \(meetingDir). Create one with `kleoth summarize` or the summarize-meeting Claude Code skill first.")
+        }
+        let transcript = try store.loadTranscript(in: dir)
+        let metadata = loadMetadata(in: dir, fallbackTitle: dir.lastPathComponent)
+
+        let markdown = MarkdownRenderer.render(
+            summary: summary,
+            transcript: transcript,
+            metadata: metadata,
+            includeTranscript: !noTranscript
+        )
+
+        let summaryURL = dir.appendingPathComponent("summary.md")
+        try Data(markdown.utf8).write(to: summaryURL, options: .atomic)
+        print("Rendered summary written to: \(summaryURL.path)")
+    }
+
+    private func loadMetadata(in dir: URL, fallbackTitle: String) -> MeetingMetadata {
+        let url = dir.appendingPathComponent("meta.json")
+        if let data = try? Data(contentsOf: url) {
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            if let metadata = try? decoder.decode(MeetingMetadata.self, from: data) {
+                return metadata
+            }
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        return MeetingMetadata(title: fallbackTitle, date: formatter.string(from: Date()))
     }
 }
 

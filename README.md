@@ -4,7 +4,7 @@
 
 > *kleos* (Greek κλέος) — "that which is heard." From the Proto-Indo-European root \*ḱlew‑, "to hear."
 
-Marginal cost is roughly **$0.24 per 1-hour meeting** (Scribe ≈ $0.22/hr + a Claude Haiku summary ≈ $0.02) — versus $10–40/user/month for hosted SaaS.
+Marginal cost is roughly **$0.23 per 1-hour meeting** (Scribe ≈ $0.22/hr + a GPT‑4.1 mini summary ≈ $0.008) — or just **$0.22** if you [summarize for free with Claude Code](#free-summaries-via-claude-code). Versus $10–40/user/month for hosted SaaS.
 
 ## Status
 
@@ -18,7 +18,7 @@ Everything compiles under the Xcode **Command Line Tools** alone. Full Xcode is 
 ## Pipeline
 
 ```
-audio file ─▶ ElevenLabs Scribe ─▶ normalize ─▶ Claude (OpenRouter) ─▶ render ─▶ local files
+audio file ─▶ ElevenLabs Scribe ─▶ normalize ─▶ summarize (LLM) ─▶ render ─▶ local files
               (diarized words)      (speaker        (JSON summary)      (Markdown /
                                      turns)                              Slack / checklist)
 ```
@@ -38,7 +38,7 @@ The only third-party dependency is `swift-argument-parser`. Everything else is F
 - macOS 13+ (the menu-bar app needs macOS 14.4+ for the system-audio process-tap).
 - A Swift 6 toolchain (developed against Swift 6.3.2). The CLI/library build with Command Line Tools; the app bundle needs full Xcode.
 - An **ElevenLabs API key with the `speech_to_text` permission enabled** (see Configuration).
-- An **OpenRouter API key** (only needed for summaries).
+- An **OpenRouter API key** — only for the paid summary path (or summarize for free with Claude Code; see below).
 
 ## Build & run
 
@@ -80,8 +80,11 @@ swift run kleoth transcribe meeting.m4a --num-speakers 2
 # Transcribe (if needed) and summarize. Needs an OpenRouter key.
 swift run kleoth summarize meeting.m4a
 swift run kleoth summarize ~/Kleoth/meeting          # summarize an already-transcribed meeting in place
-#   --model anthropic/claude-sonnet-4.6   override the model (default: Haiku 4.5)
+#   --model anthropic/claude-sonnet-4.6   override the model (default: openai/gpt-4.1-mini)
 #   --no-transcript                       omit the full transcript from summary.md
+
+# Re-render summary.md from an existing summary.json + transcript (no API calls).
+swift run kleoth render ~/Kleoth/meeting
 
 # Assign real names to "speaker_0", "speaker_1", … (interactive; shows sample turns).
 swift run kleoth rename ~/Kleoth/meeting
@@ -89,6 +92,16 @@ swift run kleoth rename ~/Kleoth/meeting
 # Render the summary for Slack; posts to a webhook, or prints if none is set.
 swift run kleoth slack ~/Kleoth/meeting --webhook https://hooks.slack.com/services/...
 ```
+
+## Free summaries via Claude Code
+
+Running Claude Code? You can summarize with **no OpenRouter key and zero API cost**. A project skill at `.claude/skills/summarize-meeting/` reads a meeting's transcript and writes the same `summary.json` + `summary.md` as the paid path — using your Claude Code session instead of a paid model. Just ask:
+
+```text
+summarize the Kleoth meeting at ~/Kleoth/meeting
+```
+
+The skill produces the structured summary, then runs `kleoth render` so `summary.md` is formatted identically to the OpenRouter path. The two paths are interchangeable: use `kleoth summarize` (GPT‑4.1 mini) when you want it automated/scriptable, or the skill when you want it free.
 
 ## Tests
 
