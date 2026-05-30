@@ -5,6 +5,7 @@ import KleothCore
 /// and a list of recent meetings.
 struct MenuView: View {
     @EnvironmentObject private var controller: RecordingController
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         NavigationStack {
@@ -146,7 +147,13 @@ struct MenuView: View {
 
     private var footer: some View {
         HStack {
-            SettingsLink {
+            Button {
+                // An LSUIElement agent must activate itself, or the Settings
+                // window opens unfocused behind everything (looks like nothing
+                // happened). Activate, then open.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openSettings()
+            } label: {
                 Label("Settings…", systemImage: "gearshape")
             }
 

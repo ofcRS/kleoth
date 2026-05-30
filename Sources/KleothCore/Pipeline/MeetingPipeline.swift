@@ -30,7 +30,7 @@ public struct MeetingPipeline {
         metadata: MeetingMetadata,
         options: ScribeOptions,
         summarize: Bool
-    ) async throws -> (transcript: Transcript, summary: MeetingSummary?, meetingDir: URL, cost: CostBreakdown) {
+    ) async throws -> (transcript: Transcript, summary: MeetingSummary?, meetingDir: URL, cost: CostBreakdown, summaryError: String?) {
         // 1. Transcribe.
         let raw = try await scribe.transcribe(fileURL: audioFile, options: options)
 
@@ -46,10 +46,18 @@ public struct MeetingPipeline {
         // 4. Summarize (optional).
         var summary: MeetingSummary?
         var summaryUSD = 0.0
+        var summaryError: String?
         if summarize, let summarizer {
-            let result = try await summarizer.summarize(transcript: transcript, metadata: metadata)
-            summary = result.summary
-            summaryUSD = result.costUSD
+            do {
+                let result = try await summarizer.summarize(transcript: transcript, metadata: metadata)
+                summary = result.summary
+                summaryUSD = result.costUSD
+            } catch {
+                // Best-effort: a summary failure (e.g. a provider/data-policy
+                // error) must never discard a good transcript. Record the reason
+                // and persist the transcript anyway.
+                summaryError = "\(error)"
+            }
         }
 
         // 5. Compute cost and stamp it onto the metadata before persisting.
@@ -82,7 +90,7 @@ public struct MeetingPipeline {
             metadata: finalMetadata
         )
 
-        return (transcript, summary, meetingDir, cost)
+        return (transcript, summary, meetingDir, cost, summaryError)
     }
 
     // MARK: - Helpers

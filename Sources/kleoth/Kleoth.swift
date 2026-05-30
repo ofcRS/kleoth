@@ -227,6 +227,9 @@ struct Summarize: AsyncParsableCommand {
         let summaryPath = result.meetingDir.appendingPathComponent("summary.md").path
         if result.summary != nil {
             print("Summary written to: \(summaryPath)")
+        } else if let summaryError = result.summaryError {
+            printError("Summary step failed (transcript was saved): \(summaryError)")
+            print("Meeting saved to: \(result.meetingDir.path)")
         } else {
             print("Meeting saved to: \(result.meetingDir.path) (no summary produced)")
         }

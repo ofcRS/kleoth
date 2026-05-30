@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreAudio
+import os
 
 /// Errors thrown by ``SystemAudioTap`` when the Core Audio process-tap flow
 /// fails. Each case carries the originating `OSStatus` where applicable.
@@ -51,6 +52,11 @@ public final class SystemAudioTap {
     /// here). Created once; never mutated.
     private let ioQueue = DispatchQueue(label: "com.kleoth.systemaudiotap.io", qos: .userInteractive)
 
+    /// Diagnostics: logs Core Audio setup + IO-thread activity to the unified
+    /// log (subsystem `dev.kleoth`) so an empty capture can be pinpointed.
+    private let log = Logger(subsystem: "dev.kleoth", category: "SystemAudioTap")
+    private let ioStats = OSAllocatedUnfairLock<(cycles: Int, nilBuffers: Int, frames: Int64)>(initialState: (0, 0, 0))
+
     public init() {}
 
     /// Starts the process tap and writes captured system audio to a freshly
@@ -65,7 +71,17 @@ public final class SystemAudioTap {
                 sampleRate: format.sampleRate,
                 channels: Int(format.channelCount)
             )
-            let file = try AVAudioFile(forWriting: outputURL, settings: settings)
+            // Match the file's processing format to the tap's buffers
+            // (interleaved float32). The default AVAudioFile(forWriting:settings:)
+            // uses a DEINTERLEAVED processing format, so writing the tap's
+            // interleaved buffers throws on every cycle — which is exactly why
+            // system.m4a came out empty (writeFailed=true in the diagnostics).
+            let file = try AVAudioFile(
+                forWriting: outputURL,
+                settings: settings,
+                commonFormat: format.commonFormat,
+                interleaved: format.isInterleaved
+            )
             // Write-only @Sendable handler; AVAudioFile.write is the only work.
             let fileBox = SendableAudioFileBox(file)
             let failed = self.writeFailed
@@ -135,6 +151,8 @@ public final class SystemAudioTap {
                 throw SystemAudioTapError.invalidTapFormat
             }
             streamFormat = format
+            ioStats.withLock { $0 = (0, 0, 0) }
+            log.info("tap format sr=\(asbd.mSampleRate, privacy: .public) ch=\(asbd.mChannelsPerFrame, privacy: .public) flags=\(asbd.mFormatFlags, privacy: .public) bytesPerFrame=\(asbd.mBytesPerFrame, privacy: .public) framesPerPacket=\(asbd.mFramesPerPacket, privacy: .public) interleaved=\(format.isInterleaved, privacy: .public)")
 
             // 5. Create a private aggregate device that contains only the tap.
             let aggregateUID = "com.kleoth.systemaudiotap.\(UUID().uuidString)"
@@ -168,6 +186,7 @@ public final class SystemAudioTap {
             //    and forwards it. No allocation of the audio data, no locks,
             //    no await.
             let capturedFormat = format
+            let stats = ioStats
             var newProcID: AudioDeviceIOProcID?
             let procStatus = AudioDeviceCreateIOProcIDWithBlock(
                 &newProcID,
@@ -175,10 +194,15 @@ public final class SystemAudioTap {
                 ioQueue
             ) { @Sendable _, inInputData, _, _, _ in
                 // inInputData points at the live buffer list for this cycle.
-                guard let pcm = AVAudioPCMBuffer(
+                let pcm = AVAudioPCMBuffer(
                     pcmFormat: capturedFormat,
                     bufferListNoCopy: inInputData
-                ) else { return }
+                )
+                stats.withLock { s in
+                    s.cycles += 1
+                    if let pcm { s.frames += Int64(pcm.frameLength) } else { s.nilBuffers += 1 }
+                }
+                guard let pcm else { return }
                 handler(pcm)
             }
             guard procStatus == noErr, let procID = newProcID else {
@@ -192,6 +216,7 @@ public final class SystemAudioTap {
                 throw SystemAudioTapError.startFailed(startStatus)
             }
             isRunning = true
+            log.info("tap started tapID=\(self.tapID, privacy: .public) aggregateID=\(self.aggregateID, privacy: .public) procStatus=\(procStatus, privacy: .public)")
         } catch {
             // Unwind whatever was created, in the documented order.
             teardown()
@@ -207,6 +232,10 @@ public final class SystemAudioTap {
     /// Ordered teardown: stop IO → destroy IOProc → destroy aggregate → destroy
     /// tap. Safe to call repeatedly; each step is guarded.
     private func teardown() {
+        if isRunning {
+            let s = ioStats.withLock { $0 }
+            log.info("tap teardown ioCycles=\(s.cycles, privacy: .public) nilBuffers=\(s.nilBuffers, privacy: .public) framesSeen=\(s.frames, privacy: .public) writeFailed=\(self.writeFailed.isRaised, privacy: .public)")
+        }
         if let procID = ioProcID, aggregateID != kAudioObjectUnknown {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)

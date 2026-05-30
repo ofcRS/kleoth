@@ -304,7 +304,11 @@ public final class RecordingController: ObservableObject {
             recentMeetings.insert(meeting, at: 0)
             currentCostUSD += result.cost.totalUSD
             isProcessing = false
-            statusMessage = "Saved \"\(title)\" — $\(Self.formatUSD(result.cost.totalUSD))"
+            if let summaryError = result.summaryError {
+                statusMessage = "Transcribed \"\(title)\" — summary skipped (\(summaryError))"
+            } else {
+                statusMessage = "Saved \"\(title)\" — $\(Self.formatUSD(result.cost.totalUSD))"
+            }
         } catch {
             isProcessing = false
             statusMessage = "Processing failed: \(error.localizedDescription)"

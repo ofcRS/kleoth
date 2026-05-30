@@ -67,17 +67,21 @@ public struct ScribeClient {
         // Assemble the multipart text fields.
         var fields: [String: String] = [
             "model_id": options.modelId,
-            "diarize": options.diarize ? "true" : "false",
             "tag_audio_events": options.tagAudioEvents ? "true" : "false",
         ]
-        if let numSpeakers = options.numSpeakers {
-            fields["num_speakers"] = String(numSpeakers)
+        if options.useMultiChannel {
+            // Multichannel mode assigns one speaker per channel and is mutually
+            // exclusive with diarization / num_speakers — sending both makes
+            // Scribe reject the request with HTTP 400.
+            fields["use_multi_channel"] = "true"
+        } else {
+            fields["diarize"] = options.diarize ? "true" : "false"
+            if let numSpeakers = options.numSpeakers {
+                fields["num_speakers"] = String(numSpeakers)
+            }
         }
         if let languageCode = options.languageCode {
             fields["language_code"] = languageCode
-        }
-        if options.useMultiChannel {
-            fields["use_multi_channel"] = "true"
         }
 
         // Stream the body to a temporary file; clean it up no matter what.
