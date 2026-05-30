@@ -8,6 +8,7 @@ config.json
 /out/
 /samples/
 /meetings/
+app/dist/
 
 # Xcode / SwiftPM
 *.xcuserstate

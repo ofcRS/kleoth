@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Kleoth</string>
+    <key>CFBundleDisplayName</key>
+    <string>Kleoth</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.kleoth.app</string>
+    <key>CFBundleExecutable</key>
+    <string>Kleoth</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.4</string>
+    <!-- Menu-bar agent: no Dock icon, no main window. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- Required for the microphone TCC prompt. (Screen Recording has no
+         Info.plist key — it is a system-managed prompt; system-audio capture
+         via the Core Audio process-tap does not require it.) -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Kleoth records your microphone to transcribe meetings locally.</string>
+</dict>
+</plist>
