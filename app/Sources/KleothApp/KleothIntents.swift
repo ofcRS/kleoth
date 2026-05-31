@@ -7,6 +7,15 @@ import Foundation
 // shared RecordingController, so it has the app's Keychain credentials and the
 // live capture session (no CLI credential split). `openAppWhenRun` launches the
 // menu-bar agent first if it isn't already running.
+//
+// DISCOVERY CAVEAT: for these to AUTO-SURFACE in Shortcuts/Spotlight/Siri, the
+// app needs an App Intents *metadata* bundle (`Metadata.appintents`) produced by
+// `appintentsmetadataprocessor` from Swift const-value extraction. Xcode runs
+// that as a build phase; the SwiftPM `make-app.sh` bundling path does NOT, so
+// from that build the intents are present but not yet discoverable. The
+// kleoth:// URL scheme, the global hotkey, and the Raycast scripts need no
+// metadata and work today. To enable Shortcuts discovery, build the app target
+// through an Xcode project (or add a metadata-extraction step to make-app.sh).
 
 struct StartRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Kleoth Recording"
