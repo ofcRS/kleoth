@@ -13,6 +13,7 @@ import SwiftUI
 @main
 struct KleothApp: App {
     @StateObject private var controller = RecordingController()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         MenuBarExtra(

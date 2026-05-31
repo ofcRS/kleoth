@@ -1,5 +1,6 @@
 import SwiftUI
 import KleothCore
+import KeyboardShortcuts
 
 /// Settings screen: API keys (persisted to the Keychain), output directory,
 /// default summarization model, and Slack webhook.
@@ -63,6 +64,27 @@ struct SettingsView: View {
             Section("Slack") {
                 TextField("Incoming webhook URL", text: $slackWebhook)
                     .onSubmit { controller.updateSlackWebhook(slackWebhook) }
+            }
+
+            Section("Shortcuts") {
+                KeyboardShortcuts.Recorder("Start / stop recording:", name: .toggleRecording)
+                Text("Also available as Shortcuts/Spotlight actions and via kleoth:// URLs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Calendar") {
+                if controller.calendarAuthorized {
+                    Label("Meetings are named from your calendar event.", systemImage: "checkmark.circle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Text("Name meetings from your calendar")
+                        Spacer()
+                        Button("Enable") { Task { await controller.requestCalendarAccess() } }
+                    }
+                }
             }
         }
         .formStyle(.grouped)

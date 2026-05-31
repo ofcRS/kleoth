@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import AppKit
+import EventKit
 import SwiftUI
 import os
 import KleothCore
@@ -49,6 +51,11 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
 /// results.
 @MainActor
 public final class RecordingController: ObservableObject {
+    /// The single app-lifetime controller, so out-of-view entry points
+    /// (App Intents, the `kleoth://` URL scheme, the global hotkey) can drive
+    /// recording without a view. Set in `init`.
+    public static var shared: RecordingController?
+
     // MARK: - Published state
 
     @Published public var isRecording: Bool = false
@@ -62,6 +69,10 @@ public final class RecordingController: ObservableObject {
 
     /// True only while a transcription/summarization pipeline run is in flight.
     @Published public var isProcessing: Bool = false
+
+    /// Whether Kleoth has full calendar access, enabling meetings to be named
+    /// from the overlapping calendar event. Opt-in (see `requestCalendarAccess`).
+    @Published public var calendarAuthorized: Bool = false
 
     // MARK: - Owned collaborators
 
@@ -99,6 +110,168 @@ public final class RecordingController: ObservableObject {
         self.consentAcknowledged = (Keychain.get(Keychain.Account.consentAcknowledged) == "true")
         loadRecentMeetings()
         startWatchingOutputDir()
+        self.calendarAuthorized = (EKEventStore.authorizationStatus(for: .event) == .fullAccess)
+        Self.shared = self
+    }
+
+    // MARK: - Calendar auto-naming (opt-in)
+
+    /// Requests full calendar access so meetings can be named from the calendar
+    /// event you're in. Triggered explicitly from Settings — never automatically.
+    public func requestCalendarAccess() async {
+        let granted = (try? await EKEventStore().requestFullAccessToEvents()) ?? false
+        calendarAuthorized = granted
+        statusMessage = granted
+            ? "Calendar access granted — meetings will be named from your events."
+            : "Calendar access was not granted."
+    }
+
+    /// The title + attendees of the calendar event overlapping `date`, when
+    /// calendar access is granted and a matching event exists.
+    private func calendarMeetingInfo(at date: Date) -> (title: String, participants: [String])? {
+        guard calendarAuthorized else { return nil }
+        let store = EKEventStore()
+        let predicate = store.predicateForEvents(
+            withStart: date.addingTimeInterval(-300),
+            end: date.addingTimeInterval(300),
+            calendars: nil
+        )
+        let events = store.events(matching: predicate)
+        let spanning = events.first { $0.startDate <= date && $0.endDate >= date }
+        let chosen = spanning ?? events.min {
+            abs($0.startDate.timeIntervalSince(date)) < abs($1.startDate.timeIntervalSince(date))
+        }
+        guard let event = chosen, let title = event.title, !title.isEmpty else { return nil }
+        let participants = (event.attendees ?? []).compactMap { $0.name }
+        return (title, participants)
+    }
+
+    // MARK: - External commands (App Intents / URL scheme / global hotkey)
+
+    /// Verbs that external entry points can dispatch. Raw values double as the
+    /// `kleoth://<verb>` URL hosts.
+    public enum Command: String, Sendable {
+        case record
+        case stop
+        case toggle
+        case summarizeLatest = "summarize-latest"
+        case slackLatest = "slack-latest"
+    }
+
+    /// Single dispatch point shared by every external surface, so they all run
+    /// the exact same code path.
+    public func handle(_ command: Command) {
+        switch command {
+        case .record:
+            Task { await start() }
+        case .stop:
+            Task { await stop() }
+        case .toggle:
+            Task { if isRecording { await stop() } else { await start() } }
+        case .summarizeLatest:
+            Task { await summarizeLatestMeeting() }
+        case .slackLatest:
+            Task { await postLatestToSlack() }
+        }
+    }
+
+    /// Summarizes the most recent meeting in place using the configured
+    /// OpenRouter model. (For the free path, use the `summarize-meeting` skill.)
+    public func summarizeLatestMeeting() async {
+        guard let latest = recentMeetings.first else {
+            statusMessage = "No meeting to summarize yet."
+            return
+        }
+        guard let key = credentials.openRouterKey, !key.isEmpty else {
+            statusMessage = "Add an OpenRouter key in Settings to summarize."
+            return
+        }
+
+        isProcessing = true
+        statusMessage = "Summarizing latest meeting…"
+        let dir = latest.directory
+        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+        do {
+            let transcript = try store.loadTranscript(in: dir)
+            var meta = loadMetadata(in: dir)
+            meta.model = settings.defaultModel
+
+            let summarizer = Summarizer(
+                client: OpenRouterClient(apiKey: key, transport: URLSessionTransport()),
+                model: settings.defaultModel
+            )
+            let (summary, summaryUSD) = try await summarizer.summarize(transcript: transcript, metadata: meta)
+
+            let previous = meta.cost ?? CostBreakdown()
+            meta.cost = CostBreakdown(
+                transcriptionUSD: previous.transcriptionUSD,
+                summaryUSD: summaryUSD,
+                audioDurationSecs: previous.audioDurationSecs
+            )
+            let markdown = MarkdownRenderer.render(
+                summary: summary,
+                transcript: transcript,
+                metadata: meta,
+                includeTranscript: true
+            )
+            try store.save(
+                in: dir,
+                raw: nil,
+                transcript: transcript,
+                summary: summary,
+                summaryMarkdown: markdown,
+                speakerMap: nil,
+                metadata: meta
+            )
+            loadRecentMeetings()
+            statusMessage = "Summarized \"\(meta.title)\"."
+        } catch {
+            statusMessage = "Summarize failed: \(error.localizedDescription)"
+        }
+        isProcessing = false
+    }
+
+    /// Posts the most recent meeting's summary to the configured Slack webhook,
+    /// or copies it to the clipboard if no webhook is set.
+    public func postLatestToSlack() async {
+        guard let latest = recentMeetings.first else {
+            statusMessage = "No meeting to post yet."
+            return
+        }
+        let dir = latest.directory
+        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+        guard let summary = (try? store.loadSummary(in: dir)).flatMap({ $0 }) else {
+            statusMessage = "Latest meeting has no summary to post."
+            return
+        }
+        let message = SlackRenderer.render(summary: summary, metadata: loadMetadata(in: dir))
+
+        guard let webhook = settings.slackWebhook, let url = URL(string: webhook), !webhook.isEmpty else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(message, forType: .string)
+            statusMessage = "No Slack webhook set — copied the summary to the clipboard."
+            return
+        }
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["text": message])
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            statusMessage = (200..<300).contains(status)
+                ? "Posted the latest meeting to Slack."
+                : "Slack returned HTTP \(status)."
+        } catch {
+            statusMessage = "Slack post failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// The most recent meeting's rendered transcript text, for `GetLatestTranscript`.
+    public func latestTranscriptText() -> String? {
+        guard let latest = recentMeetings.first else { return nil }
+        let url = latest.directory.appendingPathComponent("transcript.md")
+        return try? String(contentsOf: url, encoding: .utf8)
     }
 
     // MARK: - Consent
@@ -231,14 +404,18 @@ public final class RecordingController: ObservableObject {
         activeRecordingDir = nil
         activeRecordingStartedAt = nil
 
+        // Name the meeting from the overlapping calendar event when available.
+        let calendar = calendarMeetingInfo(at: startedAt)
+
         // Save the transcript into the SAME folder the audio was captured into,
         // so one meeting is one self-contained folder.
         await process(
             audioFile: audioFileURL,
-            title: defaultMeetingTitle(),
+            title: calendar?.title ?? defaultMeetingTitle(),
             useMultiChannel: true,
             meetingDir: dir,
-            startedAt: startedAt
+            startedAt: startedAt,
+            participants: calendar?.participants ?? []
         )
     }
 
@@ -315,7 +492,8 @@ public final class RecordingController: ObservableObject {
         title: String,
         useMultiChannel: Bool,
         meetingDir: URL?,
-        startedAt: Date
+        startedAt: Date,
+        participants: [String] = []
     ) async {
         guard let elevenKey = credentials.elevenLabsKey, !elevenKey.isEmpty else {
             statusMessage = "Add your ElevenLabs API key in Settings to transcribe."
@@ -348,7 +526,7 @@ public final class RecordingController: ObservableObject {
             title: title,
             date: Self.isoDate(),
             startedAt: Self.isoDateTime(startedAt),
-            participants: [],
+            participants: participants,
             consentAcknowledged: consentAcknowledged,
             model: canSummarize ? settings.defaultModel : nil
         )

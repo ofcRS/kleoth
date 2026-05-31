@@ -12,6 +12,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: ".."),
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0"),
     ],
     targets: [
         .target(
@@ -28,6 +29,7 @@ let package = Package(
             dependencies: [
                 "KleothCapture",
                 .product(name: "KleothCore", package: "kleoth-app"),
+                .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)

@@ -33,5 +33,25 @@
          authorization status. -->
     <key>NSAudioCaptureUsageDescription</key>
     <string>Kleoth records system audio (the other participants) to transcribe your meetings locally.</string>
+    <!-- Optional: name meetings from the overlapping calendar event. macOS 14+
+         requires the full-access key for requestFullAccessToEvents(); the legacy
+         key is kept for older systems. -->
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Kleoth reads your calendar to name meetings from the event you're in. This is optional.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Kleoth reads your calendar to name meetings from the event you're in. This is optional.</string>
+    <!-- kleoth:// URL scheme: record / stop / toggle / summarize-latest /
+         slack-latest — callable by Raycast, Shortcuts, `open`, scripts, etc. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.kleoth.app</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>kleoth</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
