@@ -2,9 +2,9 @@ import SwiftUI
 import AppKit
 import KleothCore
 
-/// Detail screen for a single processed meeting: shows the rendered summary +
-/// transcript markdown, offers a Copy-for-Slack action, and lets the user
-/// rename diarized speakers.
+/// Detail pane for a single meeting: a metadata + cost header card, the rendered
+/// summary + transcript, and toolbar actions (play audio, reveal in Finder, copy
+/// for Slack, rename speakers, delete).
 struct MeetingDetailView: View {
     @EnvironmentObject private var controller: RecordingController
 
@@ -16,31 +16,34 @@ struct MeetingDetailView: View {
     @State private var markdown: String = ""
     @State private var loadError: String?
     @State private var showRename = false
+    @State private var confirmDelete = false
     @State private var copied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            toolbar
+        VStack(alignment: .leading, spacing: 12) {
+            headerCard
 
             if let loadError {
-                ContentUnavailableViewCompat(
+                ContentUnavailableCompat(
                     title: "Could not load meeting",
                     systemImage: "exclamationmark.triangle",
-                    description: loadError
+                    message: loadError
                 )
             } else {
                 ScrollView {
                     Text(markdown.isEmpty ? "_No content_" : markdown)
-                        .font(.system(.body, design: .default))
+                        .font(.system(.body))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
                 }
+                .kleothSoftScrollEdge()
             }
         }
         .padding()
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: 440, minHeight: 380)
         .navigationTitle(meeting.title)
+        .toolbar { toolbarContent }
         .onAppear(perform: reload)
         .sheet(isPresented: $showRename) {
             if let transcript {
@@ -52,32 +55,111 @@ struct MeetingDetailView: View {
                 .environmentObject(controller)
             }
         }
+        .confirmationDialog(
+            "Move “\(meeting.title)” to the Trash?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) { controller.deleteMeeting(meeting) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The whole meeting folder — audio, transcript, and summary — goes to the Trash.")
+        }
+    }
+
+    // MARK: - Header
+
+    private var headerCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach(metaChips, id: \.self) { chip in
+                    Text(chip)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            if let cost = metadata?.cost {
+                HStack(spacing: 16) {
+                    costItem("Total", cost.totalUSD)
+                    costItem("Transcription", cost.transcriptionUSD)
+                    if cost.summaryUSD > 0 { costItem("Summary", cost.summaryUSD) }
+                    Spacer()
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var metaChips: [String] {
+        var chips: [String] = []
+        let dateStr = metadata?.date ?? meeting.date
+        if let time = MeetingFormat.time(meeting) {
+            chips.append("\(dateStr) · \(time)")
+        } else {
+            chips.append(dateStr)
+        }
+        if let duration = MeetingFormat.duration(meeting.durationSecs ?? metadata?.cost?.audioDurationSecs) {
+            chips.append(duration)
+        }
+        if let model = metadata?.model, !model.isEmpty {
+            chips.append(model)
+        }
+        if summary == nil {
+            chips.append("no summary yet")
+        }
+        return chips
+    }
+
+    private func costItem(_ label: String, _ value: Double) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(MeetingFormat.usd(value)).font(.caption.monospacedDigit())
+        }
     }
 
     // MARK: - Toolbar
 
-    private var toolbar: some View {
-        HStack {
-            VStack(alignment: .leading) {
-                Text(meeting.title).font(.headline)
-                Text(meeting.date).font(.caption).foregroundStyle(.secondary)
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup {
+            if let audio = audioURL {
+                Button { NSWorkspace.shared.open(audio) } label: {
+                    Label("Play audio", systemImage: "play.circle")
+                }
             }
-            Spacer()
-
-            Button {
-                copyForSlack()
-            } label: {
+            Button { revealInFinder() } label: {
+                Label("Reveal in Finder", systemImage: "folder")
+            }
+            Button { copyForSlack() } label: {
                 Label(copied ? "Copied!" : "Copy for Slack", systemImage: copied ? "checkmark" : "doc.on.clipboard")
             }
             .disabled(summary == nil)
-
-            Button {
-                showRename = true
-            } label: {
+            Button { showRename = true } label: {
                 Label("Rename speakers", systemImage: "person.2")
             }
             .disabled(transcript == nil || (transcript?.utterances.isEmpty ?? true))
+            Button(role: .destructive) { confirmDelete = true } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
+    }
+
+    /// The best available audio file co-located with the meeting, if any.
+    private var audioURL: URL? {
+        let fm = FileManager.default
+        for name in ["meeting.m4a", "combined.m4a", "mic.m4a", "system.m4a"] {
+            let url = meeting.directory.appendingPathComponent(name)
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    private func revealInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([meeting.directory])
     }
 
     // MARK: - Loading
@@ -102,6 +184,7 @@ struct MeetingDetailView: View {
             loadError = nil
         } catch {
             // Fall back to any pre-rendered summary.md on disk.
+            metadata = loadMetadata()
             if let onDisk = try? String(
                 contentsOf: meeting.directory.appendingPathComponent("summary.md"),
                 encoding: .utf8
@@ -134,29 +217,5 @@ struct MeetingDetailView: View {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         copied = true
-    }
-}
-
-/// Minimal stand-in for `ContentUnavailableView` so the view compiles on
-/// toolchains where that symbol may be unavailable; renders a centered glyph,
-/// title, and description.
-private struct ContentUnavailableViewCompat: View {
-    let title: String
-    let systemImage: String
-    let description: String
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            Text(description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 }

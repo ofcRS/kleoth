@@ -24,6 +24,13 @@ struct KleothApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        // Resizable window for browsing all meetings (opened from the popover).
+        Window("Meeting History", id: "kleoth-history") {
+            HistoryView()
+                .environmentObject(controller)
+        }
+        .defaultSize(width: 960, height: 640)
+
         Settings {
             SettingsView()
                 .environmentObject(controller)

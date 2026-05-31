@@ -1,40 +1,37 @@
 import SwiftUI
+import AppKit
 import KleothCore
 
-/// The root menu-bar popover content: recording control, live status, cost,
-/// and a list of recent meetings.
+/// The menu-bar popover: a lean control surface — record, live status, session
+/// cost, and the few most recent meetings. Full browsing lives in the History
+/// window (opened from here), not in this cramped popover.
 struct MenuView: View {
     @EnvironmentObject private var controller: RecordingController
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                header
+        VStack(alignment: .leading, spacing: 12) {
+            header
 
-                if !controller.consentAcknowledged {
-                    ConsentView()
-                        .environmentObject(controller)
-                    Divider()
-                }
-
-                recordControl
-
-                statusLine
-
+            if !controller.consentAcknowledged {
+                ConsentView()
+                    .environmentObject(controller)
                 Divider()
-
-                recentMeetingsSection
-
-                Divider()
-
-                footer
             }
-            .padding()
-            .frame(width: 340)
-            .navigationTitle("Kleoth")
-            .onAppear { controller.loadRecentMeetings() }
+
+            recordControl
+            statusLine
+
+            Divider()
+            recentSection
+
+            Divider()
+            footer
         }
+        .padding()
+        .frame(width: 340)
+        .onAppear { controller.loadRecentMeetings() }
     }
 
     // MARK: - Header
@@ -71,7 +68,7 @@ struct MenuView: View {
             )
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.borderedProminent)
+        .kleothProminentButton()
         .tint(controller.isRecording ? .red : .accentColor)
         .controlSize(.large)
         .disabled(!controller.consentAcknowledged || controller.isProcessing)
@@ -81,7 +78,7 @@ struct MenuView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Text(String(format: "$%.4f", controller.currentCostUSD))
+            Text(MeetingFormat.usd(controller.currentCostUSD))
                 .font(.caption.monospacedDigit())
         }
     }
@@ -91,8 +88,7 @@ struct MenuView: View {
     private var statusLine: some View {
         HStack(spacing: 6) {
             if controller.isProcessing {
-                ProgressView()
-                    .controlSize(.small)
+                ProgressView().controlSize(.small)
             }
             Text(controller.statusMessage)
                 .font(.caption)
@@ -102,46 +98,61 @@ struct MenuView: View {
         }
     }
 
-    // MARK: - Recent meetings
+    // MARK: - Recent meetings (quick links into the History window)
 
     @ViewBuilder
-    private var recentMeetingsSection: some View {
+    private var recentSection: some View {
         Text("Recent meetings")
             .font(.subheadline.bold())
 
         if controller.recentMeetings.isEmpty {
-            Text("No meetings yet.")
+            Text("No meetings yet. Record a call, or run `kleoth transcribe` — they show up here automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(controller.recentMeetings) { meeting in
-                        NavigationLink {
-                            MeetingDetailView(meeting: meeting)
-                                .environmentObject(controller)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(meeting.title)
-                                    .font(.body)
-                                HStack {
-                                    Text(meeting.date)
-                                    Spacer()
-                                    Text(String(format: "$%.4f", meeting.costUSD))
-                                }
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(controller.recentMeetings.prefix(5))) { meeting in
+                    Button { openHistory(select: meeting.id) } label: {
+                        recentRow(meeting)
                     }
+                    .buttonStyle(.plain)
+                }
+                if controller.recentMeetings.count > 5 {
+                    Button("Show all \(controller.recentMeetings.count) meetings…") {
+                        openHistory(select: nil)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                    .padding(.top, 2)
                 }
             }
-            .frame(maxHeight: 200)
         }
+    }
+
+    private func recentRow(_ meeting: RecentMeeting) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(meeting.title)
+                .font(.body)
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(rowSubtitle(meeting))
+                Spacer()
+                Text(MeetingFormat.usd(meeting.costUSD))
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .padding(.vertical, 3)
+    }
+
+    private func rowSubtitle(_ meeting: RecentMeeting) -> String {
+        var head = meeting.date
+        if let time = MeetingFormat.time(meeting) { head += " · \(time)" }
+        if let duration = MeetingFormat.duration(meeting.durationSecs) { head += " · \(duration)" }
+        return head
     }
 
     // MARK: - Footer
@@ -149,16 +160,20 @@ struct MenuView: View {
     private var footer: some View {
         HStack {
             Button {
-                // An LSUIElement agent must activate itself, or the Settings
-                // window opens unfocused behind everything (looks like nothing
-                // happened). Activate, then open.
+                openHistory(select: nil)
+            } label: {
+                Label("History", systemImage: "clock.arrow.circlepath")
+            }
+
+            Spacer()
+
+            Button {
+                // LSUIElement agents must activate before opening a window/panel.
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openSettings()
             } label: {
                 Label("Settings…", systemImage: "gearshape")
             }
-
-            Spacer()
 
             Button {
                 NSApplication.shared.terminate(nil)
@@ -167,6 +182,12 @@ struct MenuView: View {
             }
         }
         .font(.callout)
+    }
+
+    private func openHistory(select id: RecentMeeting.ID?) {
+        controller.selectedMeetingID = id
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        openWindow(id: "kleoth-history")
     }
 }
 

@@ -7,8 +7,10 @@ import KleothCapture
 
 /// A lightweight view-model describing a recently processed meeting,
 /// surfaced in the menu bar UI.
-public struct RecentMeeting: Identifiable, Sendable {
-    public let id: UUID
+public struct RecentMeeting: Identifiable, Sendable, Hashable {
+    /// Stable identity = the meeting folder path, so selection survives the
+    /// list being re-scanned (the directory watcher reloads on every change).
+    public var id: String { directory.path }
     public var title: String
     public var date: String
     /// When the meeting started (parsed from `meta.json`), used for sort order
@@ -20,7 +22,6 @@ public struct RecentMeeting: Identifiable, Sendable {
     public var durationSecs: Double?
 
     public init(
-        id: UUID = UUID(),
         title: String,
         date: String,
         startedAt: Date? = nil,
@@ -28,7 +29,6 @@ public struct RecentMeeting: Identifiable, Sendable {
         costUSD: Double = 0,
         durationSecs: Double? = nil
     ) {
-        self.id = id
         self.title = title
         self.date = date
         self.startedAt = startedAt
@@ -54,6 +54,9 @@ public final class RecordingController: ObservableObject {
     @Published public var isRecording: Bool = false
     @Published public var statusMessage: String = "Idle"
     @Published public var recentMeetings: [RecentMeeting] = []
+
+    /// Set by the popover to deep-link the History window to a specific meeting.
+    @Published public var selectedMeetingID: RecentMeeting.ID?
     @Published public var currentCostUSD: Double = 0
     @Published public var consentAcknowledged: Bool = false
 
@@ -287,6 +290,21 @@ public final class RecordingController: ObservableObject {
             statusMessage = "Updated speaker names."
         } catch {
             statusMessage = "Could not rename speakers: \(error.localizedDescription)"
+        }
+    }
+
+    /// Moves a meeting folder to the Trash and refreshes the list.
+    @discardableResult
+    public func deleteMeeting(_ meeting: RecentMeeting) -> Bool {
+        do {
+            try FileManager.default.trashItem(at: meeting.directory, resultingItemURL: nil)
+            if selectedMeetingID == meeting.id { selectedMeetingID = nil }
+            loadRecentMeetings()
+            statusMessage = "Moved \"\(meeting.title)\" to Trash."
+            return true
+        } catch {
+            statusMessage = "Could not delete: \(error.localizedDescription)"
+            return false
         }
     }
 
