@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import os
 import KleothCore
 import KleothCapture
 
@@ -58,6 +59,8 @@ public final class RecordingController: ObservableObject {
 
     /// Directory of the in-progress recording (created on `start`).
     private var activeRecordingDir: URL?
+
+    private let log = Logger(subsystem: "dev.kleoth", category: "RecordingController")
 
     /// Credentials and settings are resolved lazily and refreshed from the
     /// Keychain so the user can edit them at runtime via `SettingsView`.
@@ -326,6 +329,7 @@ public final class RecordingController: ObservableObject {
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else {
+            log.notice("loadRecentMeetings: cannot read outputDir \(self.settings.outputDir.path, privacy: .public)")
             recentMeetings = []
             return
         }
@@ -351,6 +355,7 @@ public final class RecordingController: ObservableObject {
         recentMeetings = meetings
             .sorted { $0.1 > $1.1 }
             .map(\.0)
+        log.notice("loadRecentMeetings: outputDir=\(self.settings.outputDir.path, privacy: .public) entries=\(entries.count, privacy: .public) meetings=\(self.recentMeetings.count, privacy: .public)")
     }
 
     // MARK: - Helpers

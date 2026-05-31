@@ -33,6 +33,7 @@ struct MenuView: View {
             .padding()
             .frame(width: 340)
             .navigationTitle("Kleoth")
+            .onAppear { controller.loadRecentMeetings() }
         }
     }
 
