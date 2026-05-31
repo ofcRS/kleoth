@@ -29,8 +29,14 @@ public struct MeetingPipeline {
         audioFile: URL,
         metadata: MeetingMetadata,
         options: ScribeOptions,
-        summarize: Bool
+        summarize: Bool,
+        meetingDir: URL? = nil
     ) async throws -> (transcript: Transcript, summary: MeetingSummary?, meetingDir: URL, cost: CostBreakdown, summaryError: String?) {
+        // Resolve the destination folder up front. For a live recording the
+        // caller passes the folder the audio was captured into, so transcript and
+        // audio stay together; otherwise derive a fresh, collision-free folder.
+        let dir = meetingDir ?? MeetingStore.uniqueMeetingDirectory(in: store.baseDir)
+
         // 1. Transcribe.
         let raw = try await scribe.transcribe(fileURL: audioFile, options: options)
 
@@ -38,7 +44,7 @@ public struct MeetingPipeline {
         var transcript = TranscriptNormalizer.normalize(raw)
 
         // 3. Apply an existing speaker map, if one was saved for this meeting.
-        let speakerMap = loadExistingSpeakerMap(for: metadata.title)
+        let speakerMap = loadExistingSpeakerMap(in: dir)
         if let speakerMap {
             transcript = SpeakerMapper.apply(speakerMap, to: transcript)
         }
@@ -80,8 +86,8 @@ public struct MeetingPipeline {
             includeTranscript: true
         )
 
-        let meetingDir = try store.save(
-            meetingName: finalMetadata.title,
+        let savedDir = try store.save(
+            in: dir,
             raw: raw,
             transcript: transcript,
             summary: summary,
@@ -90,18 +96,15 @@ public struct MeetingPipeline {
             metadata: finalMetadata
         )
 
-        return (transcript, summary, meetingDir, cost, summaryError)
+        return (transcript, summary, savedDir, cost, summaryError)
     }
 
     // MARK: - Helpers
 
-    /// Loads a previously-saved `SpeakerMap` for this meeting, if one exists.
-    ///
-    /// The meeting directory is derived from `store.baseDir` plus the same slug
-    /// the store uses, so this finds a `speakers.json` written by a prior
-    /// `rename` step even though the directory is not created until `save`.
-    private func loadExistingSpeakerMap(for title: String) -> SpeakerMap? {
-        let dir = store.baseDir.appendingPathComponent(MeetingStore.slug(title), isDirectory: true)
+    /// Loads a `SpeakerMap` previously saved into this meeting's folder, if any,
+    /// so a `rename` done before (re-)processing carries real names through
+    /// summarization and rendering.
+    private func loadExistingSpeakerMap(in dir: URL) -> SpeakerMap? {
         let url = dir.appendingPathComponent("speakers.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()

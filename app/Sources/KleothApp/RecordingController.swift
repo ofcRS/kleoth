@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SwiftUI
 import os
 import KleothCore
@@ -10,21 +11,30 @@ public struct RecentMeeting: Identifiable, Sendable {
     public let id: UUID
     public var title: String
     public var date: String
+    /// When the meeting started (parsed from `meta.json`), used for sort order
+    /// and for showing a time, not just a day. `nil` for legacy meetings.
+    public var startedAt: Date?
     public var directory: URL
     public var costUSD: Double
+    /// Audio length in seconds, when known (from the cost breakdown).
+    public var durationSecs: Double?
 
     public init(
         id: UUID = UUID(),
         title: String,
         date: String,
+        startedAt: Date? = nil,
         directory: URL,
-        costUSD: Double = 0
+        costUSD: Double = 0,
+        durationSecs: Double? = nil
     ) {
         self.id = id
         self.title = title
         self.date = date
+        self.startedAt = startedAt
         self.directory = directory
         self.costUSD = costUSD
+        self.durationSecs = durationSecs
     }
 }
 
@@ -60,6 +70,14 @@ public final class RecordingController: ObservableObject {
     /// Directory of the in-progress recording (created on `start`).
     private var activeRecordingDir: URL?
 
+    /// Wall-clock time the in-progress recording began (for `startedAt`).
+    private var activeRecordingStartedAt: Date?
+
+    /// Watches the output directory so externally-created meetings (the CLI, a
+    /// second instance) and our own saves keep `recentMeetings` current without
+    /// relying on view lifecycle. See `startWatchingOutputDir()`.
+    private var outputDirWatcher: DispatchSourceFileSystemObject?
+
     private let log = Logger(subsystem: "dev.kleoth", category: "RecordingController")
 
     /// Credentials and settings are resolved lazily and refreshed from the
@@ -77,6 +95,7 @@ public final class RecordingController: ObservableObject {
         self.settings = Self.mergeSettingsFromKeychain(settings)
         self.consentAcknowledged = (Keychain.get(Keychain.Account.consentAcknowledged) == "true")
         loadRecentMeetings()
+        startWatchingOutputDir()
     }
 
     // MARK: - Consent
@@ -128,6 +147,8 @@ public final class RecordingController: ObservableObject {
         let url = URL(fileURLWithPath: expanded, isDirectory: true)
         Keychain.set(url.path, Keychain.Account.outputDir)
         settings.outputDir = url
+        loadRecentMeetings()
+        startWatchingOutputDir()
     }
 
     // MARK: - Recording lifecycle
@@ -157,11 +178,13 @@ public final class RecordingController: ObservableObject {
             try recorder.start(outputDir: dir)
             recorderBox = recorder
             activeRecordingDir = dir
+            activeRecordingStartedAt = Date()
             isRecording = true
             statusMessage = "Recording…"
         } catch {
             recorderBox = nil
             activeRecordingDir = nil
+            activeRecordingStartedAt = nil
             isRecording = false
             statusMessage = "Could not start recording: \(error.localizedDescription)"
         }
@@ -200,17 +223,35 @@ public final class RecordingController: ObservableObject {
             return
         }
 
+        let startedAt = activeRecordingStartedAt ?? Date()
         recorderBox = nil
         activeRecordingDir = nil
+        activeRecordingStartedAt = nil
 
-        await process(audioFile: audioFileURL, title: defaultMeetingTitle(), useMultiChannel: true)
+        // Save the transcript into the SAME folder the audio was captured into,
+        // so one meeting is one self-contained folder.
+        await process(
+            audioFile: audioFileURL,
+            title: defaultMeetingTitle(),
+            useMultiChannel: true,
+            meetingDir: dir,
+            startedAt: startedAt
+        )
     }
 
     /// Transcribes (and optionally summarizes) an existing audio file the user
     /// selected, reusing the same pipeline as live recordings.
     public func transcribeExistingFile(_ url: URL) async {
         let title = url.deletingPathExtension().lastPathComponent
-        await process(audioFile: url, title: title.isEmpty ? defaultMeetingTitle() : title, useMultiChannel: false)
+        // An imported file has no capture folder; let the pipeline create a fresh
+        // unique meeting folder for it.
+        await process(
+            audioFile: url,
+            title: title.isEmpty ? defaultMeetingTitle() : title,
+            useMultiChannel: false,
+            meetingDir: nil,
+            startedAt: Date()
+        )
     }
 
     // MARK: - Speaker renaming
@@ -232,9 +273,9 @@ public final class RecordingController: ObservableObject {
                 includeTranscript: true
             )
 
-            // Reuse the meeting's existing directory by saving under its name.
+            // Reuse the meeting's existing directory, saving in place.
             try store.save(
-                meetingName: meetingDir.lastPathComponent,
+                in: meetingDir,
                 raw: nil,
                 transcript: renamed,
                 summary: summary,
@@ -242,6 +283,7 @@ public final class RecordingController: ObservableObject {
                 speakerMap: map,
                 metadata: metadata
             )
+            loadRecentMeetings()
             statusMessage = "Updated speaker names."
         } catch {
             statusMessage = "Could not rename speakers: \(error.localizedDescription)"
@@ -250,7 +292,13 @@ public final class RecordingController: ObservableObject {
 
     // MARK: - Pipeline
 
-    private func process(audioFile: URL, title: String, useMultiChannel: Bool) async {
+    private func process(
+        audioFile: URL,
+        title: String,
+        useMultiChannel: Bool,
+        meetingDir: URL?,
+        startedAt: Date
+    ) async {
         guard let elevenKey = credentials.elevenLabsKey, !elevenKey.isEmpty else {
             statusMessage = "Add your ElevenLabs API key in Settings to transcribe."
             return
@@ -281,6 +329,7 @@ public final class RecordingController: ObservableObject {
         let metadata = MeetingMetadata(
             title: title,
             date: Self.isoDate(),
+            startedAt: Self.isoDateTime(startedAt),
             participants: [],
             consentAcknowledged: consentAcknowledged,
             model: canSummarize ? settings.defaultModel : nil
@@ -295,16 +344,14 @@ public final class RecordingController: ObservableObject {
                 audioFile: audioFile,
                 metadata: metadata,
                 options: options,
-                summarize: canSummarize
+                summarize: canSummarize,
+                meetingDir: meetingDir
             )
 
-            let meeting = RecentMeeting(
-                title: title,
-                date: metadata.date,
-                directory: result.meetingDir,
-                costUSD: result.cost.totalUSD
-            )
-            recentMeetings.insert(meeting, at: 0)
+            // Re-scan from disk so the saved meeting (with its real startedAt)
+            // lands in the list in the right position — the disk is the source
+            // of truth now that one meeting is one folder.
+            loadRecentMeetings()
             currentCostUSD += result.cost.totalUSD
             isProcessing = false
             if let summaryError = result.summaryError {
@@ -334,6 +381,9 @@ public final class RecordingController: ObservableObject {
             return
         }
 
+        let isoParser = ISO8601DateFormatter()
+        isoParser.formatOptions = [.withInternetDateTime]
+
         let meetings: [(RecentMeeting, Date)] = entries.compactMap { dir in
             let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             guard isDir else { return nil }
@@ -343,13 +393,18 @@ public final class RecordingController: ObservableObject {
             let metadata = loadMetadata(in: dir)
             let modified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
+            // Prefer the logical start time; fall back to file mtime so legacy
+            // meetings (no startedAt) still sort sensibly and never blank the list.
+            let started = metadata.startedAt.flatMap { isoParser.date(from: $0) }
             let meeting = RecentMeeting(
                 title: metadata.title,
                 date: metadata.date,
+                startedAt: started,
                 directory: dir,
-                costUSD: metadata.cost?.totalUSD ?? 0
+                costUSD: metadata.cost?.totalUSD ?? 0,
+                durationSecs: metadata.cost?.audioDurationSecs
             )
-            return (meeting, modified)
+            return (meeting, started ?? modified)
         }
 
         recentMeetings = meetings
@@ -372,12 +427,11 @@ public final class RecordingController: ObservableObject {
         return MeetingMetadata(title: dir.lastPathComponent, date: Self.isoDate())
     }
 
+    /// Creates the per-meeting folder that audio is captured into and that the
+    /// transcript is later saved into — one self-contained `meeting-…` folder.
     private func makeSessionDirectory() throws -> URL {
-        let fm = FileManager.default
-        let stamp = Self.timestampSlug()
-        let dir = settings.outputDir
-            .appendingPathComponent("recording-\(stamp)", isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = MeetingStore.uniqueMeetingDirectory(in: settings.outputDir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
@@ -417,11 +471,42 @@ public final class RecordingController: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    private static func timestampSlug() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: Date())
+    private static func isoDateTime(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    // MARK: - Output directory watch
+
+    /// Starts (or restarts) a lightweight watch on the output directory so the
+    /// meeting list stays current when meetings appear from the CLI or another
+    /// instance — fixing the "stale, launch-time snapshot" that left the list
+    /// empty even though valid meetings existed on disk.
+    private func startWatchingOutputDir() {
+        outputDirWatcher?.cancel()
+        outputDirWatcher = nil
+
+        let dir = settings.outputDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let fd = open(dir.path, O_EVTONLY)
+        guard fd >= 0 else {
+            log.notice("startWatchingOutputDir: cannot open \(dir.path, privacy: .public)")
+            return
+        }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            Task { @MainActor in self?.loadRecentMeetings() }
+        }
+        source.setCancelHandler { close(fd) }
+        outputDirWatcher = source
+        source.resume()
     }
 
     private static func formatUSD(_ value: Double) -> String {

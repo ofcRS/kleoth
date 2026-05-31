@@ -61,12 +61,15 @@ private func resolveOutputDir(_ out: String?) -> URL {
 /// Builds a `MeetingMetadata` for a fresh recording from an audio file.
 private func metadataForAudio(_ fileURL: URL, model: String?, languageCode: String?) -> MeetingMetadata {
     let title = fileURL.deletingPathExtension().lastPathComponent
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withFullDate]
-    let date = formatter.string(from: Date())
+    let now = Date()
+    let dayFormatter = ISO8601DateFormatter()
+    dayFormatter.formatOptions = [.withFullDate]
+    let dateTimeFormatter = ISO8601DateFormatter()
+    dateTimeFormatter.formatOptions = [.withInternetDateTime]
     return MeetingMetadata(
         title: title,
-        date: date,
+        date: dayFormatter.string(from: now),
+        startedAt: dateTimeFormatter.string(from: now),
         participants: [],
         consentAcknowledged: false,
         model: model,
@@ -274,8 +277,9 @@ struct Summarize: AsyncParsableCommand {
         let raw = loadRawResponse(in: dir)
         let speakerMap = loadSpeakerMap(in: dir)
 
+        // Re-save in place: the meeting already lives in `dir`.
         let savedDir = try MeetingStore(baseDir: dir.deletingLastPathComponent()).save(
-            meetingName: metadata.title,
+            in: dir,
             raw: raw,
             transcript: transcript,
             summary: summary,
@@ -380,8 +384,9 @@ struct Rename: AsyncParsableCommand {
             includeTranscript: true
         )
 
+        // Re-save in place: reuse the meeting's existing directory.
         let savedDir = try store.save(
-            meetingName: metadata.title,
+            in: dir,
             raw: raw,
             transcript: named,
             summary: summary,

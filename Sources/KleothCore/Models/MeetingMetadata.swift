@@ -4,6 +4,10 @@ import Foundation
 public struct MeetingMetadata: Codable, Sendable {
     public var title: String
     public var date: String
+    /// ISO-8601 datetime (with time) the recording/processing started. `nil` for
+    /// legacy meetings saved before this field existed. Used to sort history and
+    /// disambiguate multiple meetings recorded on the same calendar day.
+    public var startedAt: String?
     public var participants: [String]
     public var consentAcknowledged: Bool
     public var model: String?
@@ -13,6 +17,7 @@ public struct MeetingMetadata: Codable, Sendable {
     public init(
         title: String,
         date: String,
+        startedAt: String? = nil,
         participants: [String] = [],
         consentAcknowledged: Bool = false,
         model: String? = nil,
@@ -21,6 +26,7 @@ public struct MeetingMetadata: Codable, Sendable {
     ) {
         self.title = title
         self.date = date
+        self.startedAt = startedAt
         self.participants = participants
         self.consentAcknowledged = consentAcknowledged
         self.model = model

@@ -9,9 +9,12 @@ public struct MeetingStore {
         self.baseDir = baseDir
     }
 
-    /// Saves all artifacts for a meeting and returns the meeting directory.
+    /// Saves all artifacts for a meeting into an explicit directory and returns
+    /// it. The directory is created if needed; existing artifacts in it are
+    /// overwritten (used both for fresh saves and for in-place re-saves such as
+    /// speaker renaming).
     ///
-    /// Layout (under `baseDir/<slug>`):
+    /// Layout (inside `dir`):
     /// - `transcript.json` — raw `ScribeResponse` (only when non-nil)
     /// - `summary.json`    — `MeetingSummary` (only when non-nil)
     /// - `speakers.json`   — `SpeakerMap` (only when non-nil)
@@ -19,11 +22,16 @@ public struct MeetingStore {
     /// - `transcript.md`   — the normalized transcript as "Name: text" lines
     /// - `summary.md`      — `summaryMarkdown` (only when non-nil)
     ///
+    /// For live recordings `dir` is the same folder the audio (`mic.m4a` /
+    /// `system.m4a` / `meeting.m4a`) was captured into, so one meeting is one
+    /// self-contained folder. Use ``uniqueMeetingDirectory(in:date:)`` to derive
+    /// a fresh, collision-free `dir` when there is no pre-existing folder.
+    ///
     /// JSON is encoded pretty-printed, with sorted keys and snake_case keys so
     /// it round-trips with the read side and the rest of the toolchain.
     @discardableResult
     public func save(
-        meetingName: String,
+        in dir: URL,
         raw: ScribeResponse?,
         transcript: Transcript,
         summary: MeetingSummary?,
@@ -32,7 +40,6 @@ public struct MeetingStore {
         metadata: MeetingMetadata
     ) throws -> URL {
         let fm = FileManager.default
-        let dir = baseDir.appendingPathComponent(Self.slug(meetingName), isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let encoder = Self.makeEncoder()
@@ -95,6 +102,30 @@ public struct MeetingStore {
     }
 
     // MARK: - Helpers
+
+    /// A unique, sortable meeting directory under `baseDir`, named
+    /// `meeting-yyyy-MM-dd-HHmmss`. If that already exists (e.g. two recordings
+    /// started within the same second), `-2`, `-3`, … is appended. The directory
+    /// is NOT created here — `save(in:)` creates it on write.
+    ///
+    /// This replaces the old "slug of the meeting title" naming, which was
+    /// date-only for live recordings and therefore overwrote any earlier meeting
+    /// from the same day. The human title still lives in `meta.json`.
+    public static func uniqueMeetingDirectory(in baseDir: URL, date: Date = Date()) -> URL {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        let base = "meeting-\(formatter.string(from: date))"
+
+        let fm = FileManager.default
+        var candidate = baseDir.appendingPathComponent(base, isDirectory: true)
+        var suffix = 2
+        while fm.fileExists(atPath: candidate.path) {
+            candidate = baseDir.appendingPathComponent("\(base)-\(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        return candidate
+    }
 
     /// Converts a meeting name into a filesystem-friendly slug: lowercased,
     /// every run of non-alphanumeric characters collapsed to a single "-",
