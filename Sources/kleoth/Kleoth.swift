@@ -74,7 +74,10 @@ private func metadataForAudio(_ fileURL: URL, model: String?, languageCode: Stri
         consentAcknowledged: false,
         model: model,
         languageCode: languageCode,
-        cost: nil
+        cost: nil,
+        // The CLI transcribes via ElevenLabs Scribe (the on-device engine lives
+        // in the app target); mark these meetings as the SOTA tier.
+        transcriptTier: TranscriptTier.sotaScribe
     )
 }
 
@@ -136,7 +139,7 @@ struct Transcribe: AsyncParsableCommand {
 
         let scribe = ScribeClient(apiKey: elevenLabsKey, transport: URLSessionTransport())
         let store = MeetingStore(baseDir: resolveOutputDir(out))
-        let pipeline = MeetingPipeline(scribe: scribe, summarizer: nil, store: store)
+        let pipeline = MeetingPipeline(transcriber: scribe, summarizer: nil, store: store)
 
         let metadata = metadataForAudio(fileURL, model: nil, languageCode: language)
         let options = ScribeOptions(
@@ -215,7 +218,7 @@ struct Summarize: AsyncParsableCommand {
         }
 
         let scribe = ScribeClient(apiKey: elevenLabsKey, transport: URLSessionTransport())
-        let pipeline = MeetingPipeline(scribe: scribe, summarizer: summarizer, store: store)
+        let pipeline = MeetingPipeline(transcriber: scribe, summarizer: summarizer, store: store)
 
         let metadata = metadataForAudio(inputURL, model: resolvedModel, languageCode: nil)
         let options = ScribeOptions()
@@ -256,8 +259,22 @@ struct Summarize: AsyncParsableCommand {
             metadata: metadata
         )
 
-        let durationSecs = transcript.durationSecs
-        let transcriptionUSD = 0.22 * (durationSecs ?? 0) / 3600
+        // A model-generated title only upgrades a placeholder name (calendar /
+        // user titles are kept), so the re-rendered summary.md H1 + meta.json
+        // gain a meaningful title for previously auto-named meetings.
+        if let generated = summary.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !generated.isEmpty,
+           MeetingMetadata.isPlaceholderTitle(metadata.title) {
+            metadata.title = generated
+        }
+
+        // Per-engine cost: free local meetings cost $0; only SOTA (Scribe) is
+        // billed. Duration comes from the actual audio file when present
+        // (Scribe's multichannel response over-reports it), falling back to the
+        // transcript's reported duration.
+        let usdPerHour = TranscriptTier.isSOTA(metadata.transcriptTier) ? 0.22 : 0.0
+        let durationSecs = audioDurationSeconds(in: dir) ?? transcript.durationSecs
+        let transcriptionUSD = usdPerHour * (durationSecs ?? 0) / 3600
         let cost = CostBreakdown(
             transcriptionUSD: transcriptionUSD,
             summaryUSD: summaryUSD,
@@ -324,6 +341,21 @@ struct Summarize: AsyncParsableCommand {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try? decoder.decode(SpeakerMap.self, from: data)
+    }
+
+    /// Wall-clock duration probed from the meeting's audio file (the robust
+    /// source — Scribe's multichannel duration is summed across channels), or
+    /// `nil` if no readable audio is present. Prefers the combined 2-channel
+    /// file, then any single-source recording.
+    private func audioDurationSeconds(in dir: URL) -> Double? {
+        for name in ["meeting.m4a", "combined.m4a", "mic.m4a"] {
+            let url = dir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path),
+               let secs = AudioProbe.durationSeconds(of: url) {
+                return secs
+            }
+        }
+        return nil
     }
 }
 

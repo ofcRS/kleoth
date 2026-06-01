@@ -14,14 +14,14 @@ public struct Settings: Sendable {
 
     /// Loads settings, applying defaults:
     /// - `outputDir`: `~/Kleoth` (callers create it lazily).
-    /// - `defaultModel`: `openai/gpt-4.1-mini`.
+    /// - `defaultModel`: `google/gemini-3-flash-preview`.
     /// - `slackWebhook`: `~/.config/kleoth/config.json` (`slack_webhook`), or
     ///   the `SLACK_WEBHOOK` environment variable, if present.
     public static func load() -> Settings {
         let outputDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Kleoth", isDirectory: true)
 
-        let defaultModel = "openai/gpt-4.1-mini"
+        let defaultModel = "google/gemini-3-flash-preview"
 
         var slackWebhook: String?
         let config = loadConfigJSON()

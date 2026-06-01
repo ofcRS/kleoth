@@ -148,6 +148,12 @@ public struct ScribeClient {
     }
 }
 
+extension ScribeClient: Transcriber {
+    /// ElevenLabs Scribe batch pricing: USD 0.22 per hour of audio.
+    public var usdPerHour: Double { 0.22 }
+    // `transcribe(fileURL:options:)` already satisfies the protocol requirement.
+}
+
 /// Errors surfaced by ``ScribeClient``.
 public enum ScribeError: Error, CustomStringConvertible, Sendable {
     /// The transport returned a non-HTTP response.

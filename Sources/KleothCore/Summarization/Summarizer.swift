@@ -32,6 +32,7 @@ public struct Summarizer {
     private static let systemPrompt = """
     You are a meeting summarizer. You receive a diarized transcript with real speaker names and timestamps. Be precise and factual. Do not invent information. If something is ambiguous, say so. Output ONLY valid JSON matching this schema:
     {
+      "title": "string",
       "tldr": "string",
       "decisions": ["string"],
       "action_items": [{ "owner": "string", "task": "string", "due": "string or null" }],
@@ -40,7 +41,54 @@ public struct Summarizer {
       "open_questions": ["string"],
       "suggested_tags": ["string"]
     }
+    Also produce "title": a concise, specific 4-8 word meeting title.
     Use the exact participant names provided. Only include an action item if a concrete task was stated or clearly implied; if the owner is unstated use "unassigned", and if the due date is unstated use null.
+    """
+
+    /// Strict JSON schema for ``MeetingSummary`` (snake_case keys), sent as the
+    /// `json_schema` response format. All fields are required (the model emits
+    /// every key; `title` is still decoded as optional for older summaries and
+    /// the `json_object` fallback). `additionalProperties` is disabled so the
+    /// provider can enforce the shape exactly.
+    static let schemaJSON = """
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "tldr", "decisions", "action_items", "key_points", "per_speaker_highlights", "open_questions", "suggested_tags"],
+      "properties": {
+        "title": { "type": "string" },
+        "tldr": { "type": "string" },
+        "decisions": { "type": "array", "items": { "type": "string" } },
+        "action_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["owner", "task", "due"],
+            "properties": {
+              "owner": { "type": "string" },
+              "task": { "type": "string" },
+              "due": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "key_points": { "type": "array", "items": { "type": "string" } },
+        "per_speaker_highlights": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["speaker", "highlights"],
+            "properties": {
+              "speaker": { "type": "string" },
+              "highlights": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "open_questions": { "type": "array", "items": { "type": "string" } },
+        "suggested_tags": { "type": "array", "items": { "type": "string" } }
+      }
+    }
     """
 
     /// Summarizes the transcript and returns the summary plus the USD cost
@@ -62,11 +110,19 @@ public struct Summarizer {
             ChatMessage(role: "user", content: userContent),
         ]
 
+        // Request a strict JSON schema for robust, well-shaped output; the
+        // client transparently falls back to a plain JSON object for providers
+        // that can't honor the schema.
+        let responseFormat: OpenRouterResponseFormat = .jsonSchema(
+            name: "meeting_summary",
+            schemaJSON: Self.schemaJSON
+        )
+
         // First attempt.
         let first = try await client.complete(
             messages: baseMessages,
             model: model,
-            jsonObject: true,
+            responseFormat: responseFormat,
             maxTokens: Self.maxOutputTokens
         )
 
@@ -86,7 +142,7 @@ public struct Summarizer {
         let retry = try await client.complete(
             messages: repairMessages,
             model: model,
-            jsonObject: true,
+            responseFormat: responseFormat,
             maxTokens: Self.maxOutputTokens
         )
 

@@ -3,18 +3,15 @@ import Foundation
 /// End-to-end pipeline: transcribe an audio file, optionally summarize it,
 /// and persist the results.
 public struct MeetingPipeline {
-    public let scribe: ScribeClient
+    public let transcriber: any Transcriber
     public let summarizer: Summarizer?
     public let store: MeetingStore
 
-    public init(scribe: ScribeClient, summarizer: Summarizer?, store: MeetingStore) {
-        self.scribe = scribe
+    public init(transcriber: any Transcriber, summarizer: Summarizer?, store: MeetingStore) {
+        self.transcriber = transcriber
         self.summarizer = summarizer
         self.store = store
     }
-
-    /// ElevenLabs Scribe pricing: USD per hour of audio.
-    private static let transcriptionUSDPerHour = 0.22
 
     /// Runs the full pipeline for one meeting.
     ///
@@ -37,8 +34,8 @@ public struct MeetingPipeline {
         // audio stay together; otherwise derive a fresh, collision-free folder.
         let dir = meetingDir ?? MeetingStore.uniqueMeetingDirectory(in: store.baseDir)
 
-        // 1. Transcribe.
-        let raw = try await scribe.transcribe(fileURL: audioFile, options: options)
+        // 1. Transcribe with the configured engine (Scribe, or on-device local).
+        let raw = try await transcriber.transcribe(fileURL: audioFile, options: options)
 
         // 2. Normalize.
         var transcript = TranscriptNormalizer.normalize(raw)
@@ -67,8 +64,12 @@ public struct MeetingPipeline {
         }
 
         // 5. Compute cost and stamp it onto the metadata before persisting.
-        let durationSecs = transcript.durationSecs
-        let transcriptionUSD = Self.transcriptionUSDPerHour * (durationSecs ?? 0) / 3600
+        // Prefer the audio file's wall-clock duration: Scribe's multichannel
+        // response reports `audio_duration_secs` summed across channels (≈2×),
+        // so the file is the reliable source. Fall back to the response when the
+        // file can't be probed (e.g. imported/synthesized transcripts).
+        let durationSecs = AudioProbe.durationSeconds(of: audioFile) ?? transcript.durationSecs
+        let transcriptionUSD = transcriber.usdPerHour * (durationSecs ?? 0) / 3600
         let cost = CostBreakdown(
             transcriptionUSD: transcriptionUSD,
             summaryUSD: summaryUSD,
@@ -77,6 +78,15 @@ public struct MeetingPipeline {
 
         var finalMetadata = metadata
         finalMetadata.cost = cost
+
+        // Adopt the model's title only when the current one is an auto-generated
+        // placeholder — a calendar- or user-supplied title is always kept. Done
+        // before rendering, since the renderer uses `finalMetadata.title`.
+        if let title = summary?.title,
+           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           MeetingMetadata.isPlaceholderTitle(finalMetadata.title) {
+            finalMetadata.title = title
+        }
 
         // 6. Render Markdown and persist.
         let markdown = MarkdownRenderer.render(

@@ -22,6 +22,11 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
     public var costUSD: Double
     /// Audio length in seconds, when known (from the cost breakdown).
     public var durationSecs: Double?
+    /// Transcription quality tier (see `TranscriptTier`); `nil` for legacy meetings.
+    public var transcriptTier: String?
+    /// False for folders that hold only raw audio (no `meta.json`/transcript yet)
+    /// — e.g. a recording whose processing failed. These can be transcribed in place.
+    public var isProcessed: Bool
 
     public init(
         title: String,
@@ -29,7 +34,9 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         startedAt: Date? = nil,
         directory: URL,
         costUSD: Double = 0,
-        durationSecs: Double? = nil
+        durationSecs: Double? = nil,
+        transcriptTier: String? = nil,
+        isProcessed: Bool = true
     ) {
         self.title = title
         self.date = date
@@ -37,6 +44,8 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         self.directory = directory
         self.costUSD = costUSD
         self.durationSecs = durationSecs
+        self.transcriptTier = transcriptTier
+        self.isProcessed = isProcessed
     }
 }
 
@@ -73,6 +82,10 @@ public final class RecordingController: ObservableObject {
     /// Whether Kleoth has full calendar access, enabling meetings to be named
     /// from the overlapping calendar event. Opt-in (see `requestCalendarAccess`).
     @Published public var calendarAuthorized: Bool = false
+
+    /// Fractional progress (0…1) while the on-device transcription model is
+    /// downloading at launch; `nil` when idle or already available.
+    @Published public var modelDownloadProgress: Double?
 
     // MARK: - Owned collaborators
 
@@ -112,6 +125,9 @@ public final class RecordingController: ObservableObject {
         startWatchingOutputDir()
         self.calendarAuthorized = (EKEventStore.authorizationStatus(for: .event) == .fullAccess)
         Self.shared = self
+        // Fetch the on-device transcription model in the background so a meeting
+        // never waits on (or times out during) a ~600 MB first-run download.
+        Task { await prewarmTranscriptionModel() }
     }
 
     // MARK: - Calendar auto-naming (opt-in)
@@ -202,6 +218,13 @@ public final class RecordingController: ObservableObject {
             )
             let (summary, summaryUSD) = try await summarizer.summarize(transcript: transcript, metadata: meta)
 
+            // Adopt the model-generated title for auto-named meetings only (keep
+            // calendar/user titles), mirroring MeetingPipeline.run and the CLI.
+            if let generated = summary.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !generated.isEmpty, MeetingMetadata.isPlaceholderTitle(meta.title) {
+                meta.title = generated
+            }
+
             let previous = meta.cost ?? CostBreakdown()
             meta.cost = CostBreakdown(
                 transcriptionUSD: previous.transcriptionUSD,
@@ -288,6 +311,11 @@ public final class RecordingController: ObservableObject {
     public func refreshConfiguration() {
         credentials = Self.mergeCredentialsFromKeychain(Credentials.resolve())
         settings = Self.mergeSettingsFromKeychain(KleothCore.Settings.load())
+    }
+
+    /// Whether an ElevenLabs key is configured — gates the SOTA "Fully transcribe".
+    public var hasElevenLabsKey: Bool {
+        !(credentials.elevenLabsKey ?? "").isEmpty
     }
 
     /// Persists the ElevenLabs API key and updates the in-memory credentials.
@@ -495,16 +523,29 @@ public final class RecordingController: ObservableObject {
         startedAt: Date,
         participants: [String] = []
     ) async {
-        guard let elevenKey = credentials.elevenLabsKey, !elevenKey.isEmpty else {
-            statusMessage = "Add your ElevenLabs API key in Settings to transcribe."
-            return
-        }
-
         isProcessing = true
         statusMessage = "Transcribing…"
 
         let transport = URLSessionTransport()
-        let scribe = ScribeClient(apiKey: elevenKey, transport: transport)
+
+        // Default engine: free, on-device, private (WhisperKit / Whisper on Apple
+        // Silicon). Works for every language — including Russian — with automatic
+        // language detection, no API key, and no network after the one-time model
+        // download. The paid SOTA path is the explicit "Fully transcribe" action.
+        var channelFiles: [URL] = []
+        if let meetingDir {
+            // `Recorder` writes these per-channel files; transcribing them
+            // separately gives free "You" vs "Them" attribution.
+            let mic = meetingDir.appendingPathComponent("mic.m4a")
+            let system = meetingDir.appendingPathComponent("system.m4a")
+            channelFiles = [mic, system].filter { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        let transcriber: any Transcriber = LocalTranscriber(channelFiles: channelFiles)
+        let tier = TranscriptTier.local
+        let options = ScribeOptions()
+        if channelFiles.count == 2, let meetingDir {
+            writeDefaultSpeakerMapIfNeeded(["speaker_0": "You", "speaker_1": "Them"], in: meetingDir)
+        }
 
         // Summarize only when an OpenRouter key is configured.
         var summarizer: Summarizer?
@@ -517,18 +558,16 @@ public final class RecordingController: ObservableObject {
         let canSummarize = (summarizer != nil)
 
         let store = MeetingStore(baseDir: settings.outputDir)
-        let pipeline = MeetingPipeline(scribe: scribe, summarizer: summarizer, store: store)
-
-        var options = ScribeOptions()
-        options.useMultiChannel = useMultiChannel
+        let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
 
         let metadata = MeetingMetadata(
             title: title,
-            date: Self.isoDate(),
+            date: Self.dayString(startedAt),
             startedAt: Self.isoDateTime(startedAt),
             participants: participants,
             consentAcknowledged: consentAcknowledged,
-            model: canSummarize ? settings.defaultModel : nil
+            model: canSummarize ? settings.defaultModel : nil,
+            transcriptTier: tier
         )
 
         if canSummarize {
@@ -557,8 +596,133 @@ public final class RecordingController: ObservableObject {
             }
         } catch {
             isProcessing = false
-            statusMessage = "Processing failed: \(error.localizedDescription)"
+            // The audio is safe on disk — only processing failed. Re-scan so the
+            // recording reappears as an "Untranscribed" item that can be
+            // re-transcribed in place. Without this it silently drops off the
+            // list (the last refresh ran while it was still the active recording)
+            // and looks as though the whole meeting was lost.
+            loadRecentMeetings()
+            statusMessage = "Processing failed: \(error.localizedDescription) — audio saved; re-transcribe it from the list."
         }
+    }
+
+    /// Re-transcribes an existing meeting with ElevenLabs Scribe (SOTA, diarized)
+    /// in place — the opt-in paid upgrade from the free local transcript. Reuses
+    /// the meeting's folder, audio, and original metadata, keeps any speaker map,
+    /// and re-summarizes when an OpenRouter key is configured.
+    public func fullyTranscribe(_ meeting: RecentMeeting) async {
+        guard let elevenKey = credentials.elevenLabsKey, !elevenKey.isEmpty else {
+            statusMessage = "Add an ElevenLabs API key in Settings to fully transcribe."
+            return
+        }
+        let dir = meeting.directory
+        guard let audio = Self.meetingAudioURL(in: dir) else {
+            statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
+            return
+        }
+
+        isProcessing = true
+        statusMessage = "Fully transcribing \"\(meeting.title)\" with ElevenLabs Scribe…"
+
+        let transport = URLSessionTransport()
+
+        // Validated mono-Scribe path: when both per-channel files exist, mix
+        // mic+system to mono (1× cost, correct duration) and attribute each word
+        // to You/Them by channel energy. Otherwise fall back to a single-channel
+        // Scribe request with its default diarization.
+        let mic = dir.appendingPathComponent("mic.m4a")
+        let system = dir.appendingPathComponent("system.m4a")
+        let fm = FileManager.default
+        let transcriber: any Transcriber
+        if fm.fileExists(atPath: mic.path), fm.fileExists(atPath: system.path) {
+            transcriber = ChannelAttributedScribeTranscriber(
+                scribe: ScribeClient(apiKey: elevenKey, transport: transport),
+                micURL: mic,
+                systemURL: system
+            )
+        } else {
+            transcriber = ScribeClient(apiKey: elevenKey, transport: transport)
+        }
+
+        var summarizer: Summarizer?
+        if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
+            summarizer = Summarizer(
+                client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
+                model: settings.defaultModel
+            )
+        }
+        let canSummarize = (summarizer != nil)
+
+        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+        let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
+
+        // Preserve the meeting's original metadata; only the tier, model, and
+        // cost change. The pipeline re-applies any existing speakers.json.
+        var metadata = loadMetadata(in: dir)
+        metadata.transcriptTier = TranscriptTier.sotaScribe
+        if canSummarize { metadata.model = settings.defaultModel }
+
+        // The attributed transcriber handles channels internally and the plain
+        // fallback uses single-channel diarization, so multi-channel is never set.
+        var options = ScribeOptions()
+        options.useMultiChannel = false
+
+        do {
+            let result = try await pipeline.run(
+                audioFile: audio,
+                metadata: metadata,
+                options: options,
+                summarize: canSummarize,
+                meetingDir: dir
+            )
+            loadRecentMeetings()
+            currentCostUSD += result.cost.totalUSD
+            isProcessing = false
+            if let summaryError = result.summaryError {
+                statusMessage = "Fully transcribed \"\(metadata.title)\" — summary skipped (\(summaryError))"
+            } else {
+                statusMessage = "Fully transcribed \"\(metadata.title)\" — $\(Self.formatUSD(result.cost.totalUSD))"
+            }
+        } catch {
+            isProcessing = false
+            statusMessage = "Full transcription failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Transcribes a previously-recorded but unprocessed meeting (audio only, no
+    /// transcript — e.g. a recording whose processing failed) in place, using the
+    /// free on-device engine.
+    public func transcribeSaved(_ meeting: RecentMeeting) async {
+        let dir = meeting.directory
+        guard let audio = Self.meetingAudioURL(in: dir) else {
+            statusMessage = "No audio found for \"\(meeting.title)\"."
+            return
+        }
+        let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
+        await process(
+            audioFile: audio,
+            title: meeting.title,
+            useMultiChannel: Self.isTwoChannelCapture(in: dir),
+            meetingDir: dir,
+            startedAt: started
+        )
+    }
+
+    /// Downloads the on-device transcription model in the background at launch,
+    /// resilient to the URLSession request timeout, so a recording never waits on
+    /// a ~600 MB download mid-processing. Best-effort: failures are logged and
+    /// swallowed (the transcribe path retries, also via a background session).
+    public func prewarmTranscriptionModel() async {
+        guard modelDownloadProgress == nil else { return }
+        modelDownloadProgress = 0
+        do {
+            try await LocalTranscriber.downloadModel { [weak self] frac in
+                Task { @MainActor in self?.modelDownloadProgress = (frac < 1.0) ? frac : nil }
+            }
+        } catch {
+            log.notice("prewarmTranscriptionModel failed: \(String(describing: error), privacy: .public)")
+        }
+        modelDownloadProgress = nil
     }
 
     // MARK: - Recent meetings discovery
@@ -583,22 +747,49 @@ public final class RecordingController: ObservableObject {
         let meetings: [(RecentMeeting, Date)] = entries.compactMap { dir in
             let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             guard isDir else { return nil }
-            let metaURL = dir.appendingPathComponent("meta.json")
-            guard fm.fileExists(atPath: metaURL.path) else { return nil }
-
-            let metadata = loadMetadata(in: dir)
             let modified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
-            // Prefer the logical start time; fall back to file mtime so legacy
-            // meetings (no startedAt) still sort sensibly and never blank the list.
-            let started = metadata.startedAt.flatMap { isoParser.date(from: $0) }
+            let metaURL = dir.appendingPathComponent("meta.json")
+
+            if fm.fileExists(atPath: metaURL.path) {
+                let metadata = loadMetadata(in: dir)
+                // Prefer the logical start time; fall back to file mtime so legacy
+                // meetings (no startedAt) still sort sensibly and never blank the list.
+                let started = metadata.startedAt.flatMap { isoParser.date(from: $0) }
+                // Prefer the real wall-clock duration from the audio file: Scribe's
+                // multichannel response reports a summed (≈2×) duration, so the
+                // stored cost value can overstate length. Falls back to the stored
+                // value when the audio can't be probed.
+                let realDur = Self.meetingAudioURL(in: dir).flatMap { AudioProbe.durationSeconds(of: $0) }
+                let meeting = RecentMeeting(
+                    title: metadata.title,
+                    date: metadata.date,
+                    startedAt: started,
+                    directory: dir,
+                    costUSD: metadata.cost?.totalUSD ?? 0,
+                    durationSecs: realDur ?? metadata.cost?.audioDurationSecs,
+                    transcriptTier: metadata.transcriptTier,
+                    isProcessed: true
+                )
+                return (meeting, started ?? modified)
+            }
+
+            // No meta.json but audio present: a recording whose processing didn't
+            // finish. Surface it (so the audio isn't invisible) as transcribable —
+            // but never the in-progress recording itself.
+            if let active = activeRecordingDir,
+               dir.standardizedFileURL == active.standardizedFileURL { return nil }
+            guard Self.meetingAudioURL(in: dir) != nil else { return nil }
+            let started = Self.folderDate(dir)
             let meeting = RecentMeeting(
-                title: metadata.title,
-                date: metadata.date,
+                title: Self.recoveredTitle(for: dir, started: started),
+                date: Self.dayString(started ?? modified),
                 startedAt: started,
                 directory: dir,
-                costUSD: metadata.cost?.totalUSD ?? 0,
-                durationSecs: metadata.cost?.audioDurationSecs
+                costUSD: 0,
+                durationSecs: nil,
+                transcriptTier: nil,
+                isProcessed: false
             )
             return (meeting, started ?? modified)
         }
@@ -633,6 +824,40 @@ public final class RecordingController: ObservableObject {
 
     private func defaultMeetingTitle() -> String {
         "Meeting \(Self.isoDate())"
+    }
+
+    /// Writes a default speaker map (e.g. mic → "You", system → "Them") into a
+    /// meeting folder when none exists yet, so a fresh local two-channel
+    /// transcript is labeled by source. A later rename — or a SOTA pass — reuses
+    /// or overwrites it.
+    private func writeDefaultSpeakerMapIfNeeded(_ names: [String: String], in dir: URL) {
+        let url = dir.appendingPathComponent("speakers.json")
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        guard let data = try? encoder.encode(SpeakerMap(names: names)) else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// The best available audio file co-located with a meeting (prefers the
+    /// combined 2-channel capture for multi-channel STT), if any.
+    static func meetingAudioURL(in dir: URL) -> URL? {
+        let fm = FileManager.default
+        for name in ["meeting.m4a", "combined.m4a", "mic.m4a", "system.m4a"] {
+            let url = dir.appendingPathComponent(name)
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    /// Whether a meeting folder holds a combined 2-channel capture (so Scribe can
+    /// diarize by channel for free).
+    static func isTwoChannelCapture(in dir: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: dir.appendingPathComponent("meeting.m4a").path)
+            || fm.fileExists(atPath: dir.appendingPathComponent("combined.m4a").path)
     }
 
     private static func mergeCredentialsFromKeychain(_ base: Credentials) -> Credentials {
@@ -671,6 +896,34 @@ public final class RecordingController: ObservableObject {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
+    }
+
+    /// "yyyy-MM-dd" for a date (the meeting's calendar day).
+    static func dayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    /// Parses the start time encoded in a `meeting-yyyy-MM-dd-HHmmss[-n]` folder name.
+    static func folderDate(_ dir: URL) -> Date? {
+        let name = dir.lastPathComponent
+        guard name.hasPrefix("meeting-") else { return nil }
+        let stamp = String(name.dropFirst("meeting-".count).prefix(17)) // yyyy-MM-dd-HHmmss
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        return formatter.date(from: stamp)
+    }
+
+    /// A display title for a recovered (audio-only) recording.
+    static func recoveredTitle(for dir: URL, started: Date?) -> String {
+        guard let started else { return "Recording · \(dir.lastPathComponent)" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d, HH:mm"
+        return "Recording · \(formatter.string(from: started))"
     }
 
     // MARK: - Output directory watch

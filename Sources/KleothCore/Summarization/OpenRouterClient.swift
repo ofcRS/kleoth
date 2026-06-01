@@ -39,6 +39,25 @@ public enum OpenRouterError: Error, Sendable {
     case noContent
 }
 
+/// How OpenRouter should constrain the response shape.
+public enum OpenRouterResponseFormat: Sendable {
+    /// No `response_format` constraint.
+    case none
+    /// `response_format: {type: "json_object"}` — valid JSON, free shape.
+    case jsonObject
+    /// `response_format: {type: "json_schema", …}` with a strict schema.
+    /// `schemaJSON` is a raw JSON-schema document (parsed via
+    /// `JSONSerialization` so it embeds cleanly into the request body).
+    case jsonSchema(name: String, schemaJSON: String)
+
+    /// Whether this is the strict `.jsonSchema` case (used to gate the
+    /// fallback retry).
+    var isJSONSchema: Bool {
+        if case .jsonSchema = self { return true }
+        return false
+    }
+}
+
 /// Client for the OpenRouter chat completions endpoint.
 ///
 /// POST `https://openrouter.ai/api/v1/chat/completions`, authenticated with
@@ -53,24 +72,6 @@ public struct OpenRouterClient {
     }
 
     private static let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-
-    // MARK: - Request body
-
-    private struct ResponseFormat: Encodable {
-        let type: String
-    }
-
-    private struct ProviderPreferences: Encodable {
-        let requireParameters: Bool
-    }
-
-    private struct RequestBody: Encodable {
-        let model: String
-        let messages: [ChatMessage]
-        let maxTokens: Int
-        let responseFormat: ResponseFormat?
-        let provider: ProviderPreferences
-    }
 
     // MARK: - Response body
 
@@ -89,12 +90,45 @@ public struct OpenRouterClient {
     /// Requests a chat completion and returns the message content plus
     /// optional usage metadata.
     ///
-    /// - Parameter jsonObject: when `true`, requests
-    ///   `response_format: {type: "json_object"}`.
+    /// - Parameter responseFormat: how the response shape is constrained
+    ///   (none / `json_object` / strict `json_schema`).
+    ///
+    /// When `responseFormat` is `.jsonSchema` and the request fails with HTTP
+    /// 400 or 404 — the symptoms of a provider that doesn't support strict JSON
+    /// schemas, including this account's no-train providers under
+    /// `require_parameters: true` — it transparently retries once with
+    /// `.jsonObject` so summarization still succeeds.
     public func complete(
         messages: [ChatMessage],
         model: String,
-        jsonObject: Bool,
+        responseFormat: OpenRouterResponseFormat,
+        maxTokens: Int
+    ) async throws -> (content: String, usage: OpenRouterUsage?) {
+        do {
+            return try await send(
+                messages: messages,
+                model: model,
+                responseFormat: responseFormat,
+                maxTokens: maxTokens
+            )
+        } catch let OpenRouterError.httpError(status, _)
+            where (status == 400 || status == 404) && responseFormat.isJSONSchema {
+            // Provider can't honor the strict schema; fall back to a plain JSON
+            // object so no-train-provider compatibility is preserved.
+            return try await send(
+                messages: messages,
+                model: model,
+                responseFormat: .jsonObject,
+                maxTokens: maxTokens
+            )
+        }
+    }
+
+    /// Performs a single chat-completions request with the given response format.
+    private func send(
+        messages: [ChatMessage],
+        model: String,
+        responseFormat: OpenRouterResponseFormat,
         maxTokens: Int
     ) async throws -> (content: String, usage: OpenRouterUsage?) {
         var request = URLRequest(url: Self.endpoint)
@@ -105,17 +139,12 @@ public struct OpenRouterClient {
         request.setValue("https://kleoth.dev", forHTTPHeaderField: "HTTP-Referer")
         request.setValue("Kleoth", forHTTPHeaderField: "X-Title")
 
-        let body = RequestBody(
-            model: model,
+        request.httpBody = try Self.makeBody(
             messages: messages,
-            maxTokens: maxTokens,
-            responseFormat: jsonObject ? ResponseFormat(type: "json_object") : nil,
-            provider: ProviderPreferences(requireParameters: true)
+            model: model,
+            responseFormat: responseFormat,
+            maxTokens: maxTokens
         )
-
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        request.httpBody = try encoder.encode(body)
 
         let (data, response) = try await transport.data(for: request)
 
@@ -133,6 +162,44 @@ public struct OpenRouterClient {
         }
 
         return (content, decoded.usage)
+    }
+
+    /// Builds the JSON request body. Uses `JSONSerialization` (rather than a
+    /// `Codable` struct) so a raw JSON-schema document embeds verbatim under
+    /// `response_format.json_schema.schema`.
+    private static func makeBody(
+        messages: [ChatMessage],
+        model: String,
+        responseFormat: OpenRouterResponseFormat,
+        maxTokens: Int
+    ) throws -> Data {
+        var body: [String: Any] = [
+            "model": model,
+            "messages": messages.map { ["role": $0.role, "content": $0.content] },
+            "max_tokens": maxTokens,
+            "provider": ["require_parameters": true],
+        ]
+
+        switch responseFormat {
+        case .none:
+            break
+        case .jsonObject:
+            body["response_format"] = ["type": "json_object"]
+        case let .jsonSchema(name, schemaJSON):
+            let schema = try JSONSerialization.jsonObject(
+                with: Data(schemaJSON.utf8)
+            )
+            body["response_format"] = [
+                "type": "json_schema",
+                "json_schema": [
+                    "name": name,
+                    "strict": true,
+                    "schema": schema,
+                ],
+            ]
+        }
+
+        return try JSONSerialization.data(withJSONObject: body)
     }
 
     /// Returns a bounded, UTF-8-decoded snippet of a response body for error messages.

@@ -67,7 +67,7 @@ import FoundationNetworking
         defer { try? FileManager.default.removeItem(at: baseDir) }
         let store = MeetingStore(baseDir: baseDir)
 
-        let pipeline = MeetingPipeline(scribe: scribe, summarizer: nil, store: store)
+        let pipeline = MeetingPipeline(transcriber: scribe, summarizer: nil, store: store)
 
         // An on-disk file is required to build the multipart upload body.
         let audioFile = FileManager.default.temporaryDirectory
@@ -117,5 +117,68 @@ import FoundationNetworking
         #expect(abs((decoded.cost?.summaryUSD ?? 0) - 0.20) < 1e-9)
         #expect(abs((decoded.cost?.totalUSD ?? 0) - 0.30) < 1e-9)
         #expect(decoded.consentAcknowledged == true)
+    }
+
+    // MARK: - Per-engine cost (on-device local == free)
+
+    @Test func localEngineTranscriptionCostsNothing() async throws {
+        // A zero-cost (on-device) engine returns an hour of audio but bills $0.
+        let response = ScribeResponse(
+            words: [ScribeWord(text: "Hello", start: 0, end: 0.5, type: "word", speakerId: "speaker_0")],
+            audioDurationSecs: 3600
+        )
+        let transcriber = ZeroCostTranscriber(response: response)
+
+        let baseDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kleoth-local-cost-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+        let store = MeetingStore(baseDir: baseDir)
+        let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: nil, store: store)
+
+        let audioFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kleoth-local-\(UUID().uuidString).m4a")
+        try Data("fake-audio".utf8).write(to: audioFile)
+        defer { try? FileManager.default.removeItem(at: audioFile) }
+
+        let result = try await pipeline.run(
+            audioFile: audioFile,
+            metadata: MeetingMetadata(title: "Local", date: "2026-05-31"),
+            options: ScribeOptions(),
+            summarize: false
+        )
+
+        // Duration is still recorded, but the transcription itself is free.
+        #expect(result.cost.audioDurationSecs == 3600)
+        #expect(abs(result.cost.transcriptionUSD) < 1e-12)
+        #expect(abs(result.cost.totalUSD) < 1e-12)
+    }
+
+    // MARK: - transcript_tier round-trip
+
+    @Test func transcriptTierRoundTripsThroughStoreCodec() throws {
+        let meta = MeetingMetadata(
+            title: "Tiered",
+            date: "2026-05-31",
+            transcriptTier: TranscriptTier.local
+        )
+        let data = try MeetingStore.makeEncoder().encode(meta)
+        // On disk the key must be acronym-free snake_case to round-trip.
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(json.contains("transcript_tier"))
+
+        let decoded = try MeetingStore.makeDecoder().decode(MeetingMetadata.self, from: data)
+        #expect(decoded.transcriptTier == TranscriptTier.local)
+        #expect(TranscriptTier.isSOTA(decoded.transcriptTier) == false)
+        #expect(TranscriptTier.isSOTA(TranscriptTier.sotaScribe) == true)
+    }
+}
+
+/// A trivial on-device-style transcriber for cost tests: returns a canned
+/// response and bills nothing (`usdPerHour == 0`).
+private struct ZeroCostTranscriber: Transcriber {
+    let response: ScribeResponse
+    var usdPerHour: Double { 0 }
+    func transcribe(fileURL: URL, options: ScribeOptions) async throws -> ScribeResponse {
+        response
     }
 }

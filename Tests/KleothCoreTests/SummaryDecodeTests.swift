@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import KleothCore
 
 @Suite struct SummaryDecodeTests {
@@ -62,6 +63,34 @@ import Testing
 
     private func makeSummarizer(_ transport: MockTransport) -> Summarizer {
         Summarizer(client: OpenRouterClient(apiKey: "test-key", transport: transport))
+    }
+
+    // MARK: - title (optional, back-compatible)
+
+    /// A summary JSON that includes "title" decodes it.
+    @Test func summaryDecodesTitleWhenPresent() throws {
+        let json = """
+        {
+          "title": "Q3 Launch Planning",
+          "tldr": "x", "decisions": [], "action_items": [], "key_points": [],
+          "per_speaker_highlights": [], "open_questions": [], "suggested_tags": []
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let summary = try decoder.decode(MeetingSummary.self, from: Data(json.utf8))
+        #expect(summary.title == "Q3 Launch Planning")
+    }
+
+    /// An older summary JSON without "title" decodes with title == nil.
+    @Test func summaryDecodesNilTitleWhenAbsent() throws {
+        // Self.summaryJSON has no "title" field.
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let summary = try decoder.decode(MeetingSummary.self, from: Data(Self.summaryJSON.utf8))
+        #expect(summary.title == nil)
+        // Other fields still decode as before.
+        #expect(summary.tldr == "Shipped the beta; agreed on a launch date.")
     }
 
     // MARK: - stripCodeFences (the ```json blob handling)

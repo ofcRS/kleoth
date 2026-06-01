@@ -81,16 +81,32 @@ public struct MeetingStore {
         return dir
     }
 
-    /// Loads the normalized transcript stored in `dir`.
+    /// Loads the normalized transcript stored in `dir`, with speaker names
+    /// applied from `speakers.json` when present.
     ///
     /// `transcript.json` is the raw `ScribeResponse`, so it is normalized back
-    /// into a `Transcript`. There is no standalone normalized-transcript JSON.
+    /// into a `Transcript` (yielding bare `speaker_0` / `speaker_1` ids). This
+    /// is the single chokepoint every reader goes through, so applying any saved
+    /// `SpeakerMap` here is what keeps "You"/"Them" (and renamed) labels intact
+    /// on re-summarize and redisplay — not just on first processing.
     public func loadTranscript(in dir: URL) throws -> Transcript {
         let decoder = Self.makeDecoder()
         let rawURL = dir.appendingPathComponent("transcript.json")
         let data = try Data(contentsOf: rawURL)
         let raw = try decoder.decode(ScribeResponse.self, from: data)
-        return TranscriptNormalizer.normalize(raw)
+        let transcript = TranscriptNormalizer.normalize(raw)
+
+        if let map = loadSpeakerMap(in: dir) {
+            return SpeakerMapper.apply(map, to: transcript)
+        }
+        return transcript
+    }
+
+    /// Loads the `SpeakerMap` stored in `dir/speakers.json`, if any.
+    public func loadSpeakerMap(in dir: URL) -> SpeakerMap? {
+        let url = dir.appendingPathComponent("speakers.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? Self.makeDecoder().decode(SpeakerMap.self, from: data)
     }
 
     /// Loads the summary stored in `dir`, if any.

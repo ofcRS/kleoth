@@ -22,6 +22,9 @@ struct MenuView: View {
 
             recordControl
             statusLine
+            if let progress = controller.modelDownloadProgress {
+                modelDownloadLine(progress)
+            }
 
             Divider()
             recentSection
@@ -98,6 +101,19 @@ struct MenuView: View {
         }
     }
 
+    private func modelDownloadLine(_ progress: Double) -> some View {
+        HStack(spacing: 6) {
+            ProgressView(value: progress)
+                .controlSize(.small)
+                .frame(width: 90)
+            Text("Downloading transcription model… \(Int(progress * 100))%")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+        }
+    }
+
     // MARK: - Recent meetings (quick links into the History window)
 
     @ViewBuilder
@@ -138,7 +154,11 @@ struct MenuView: View {
             HStack(spacing: 6) {
                 Text(rowSubtitle(meeting))
                 Spacer()
-                Text(MeetingFormat.usd(meeting.costUSD))
+                if meeting.isProcessed {
+                    Text(MeetingFormat.usd(meeting.costUSD))
+                } else {
+                    Text("Untranscribed").foregroundStyle(.orange)
+                }
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)

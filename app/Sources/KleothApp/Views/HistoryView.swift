@@ -126,8 +126,23 @@ private struct MeetingSidebarRow: View {
                 if let duration = MeetingFormat.duration(meeting.durationSecs) {
                     Text("· \(duration)")
                 }
+                if !meeting.isProcessed {
+                    Text("Untranscribed")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.18), in: Capsule())
+                } else if TranscriptTier.isSOTA(meeting.transcriptTier) {
+                    Text("SOTA")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                }
                 Spacer()
-                Text(MeetingFormat.usd(meeting.costUSD))
+                if meeting.isProcessed {
+                    Text(MeetingFormat.usd(meeting.costUSD))
+                }
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)

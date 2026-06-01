@@ -2,6 +2,11 @@ import Foundation
 
 /// Structured summary of a meeting, produced by the summarizer.
 public struct MeetingSummary: Codable, Sendable {
+    /// A concise, specific meeting title produced by the summarizer. Optional so
+    /// summaries written before this field existed still decode, and so call
+    /// sites that don't supply one keep compiling. `title` is already
+    /// acronym-free, so it round-trips under MeetingStore's snake_case strategy.
+    public var title: String?
     public var tldr: String
     public var decisions: [String]
     public var actionItems: [ActionItem]
@@ -11,6 +16,7 @@ public struct MeetingSummary: Codable, Sendable {
     public var suggestedTags: [String]
 
     public init(
+        title: String? = nil,
         tldr: String,
         decisions: [String],
         actionItems: [ActionItem],
@@ -19,6 +25,7 @@ public struct MeetingSummary: Codable, Sendable {
         openQuestions: [String],
         suggestedTags: [String]
     ) {
+        self.title = title
         self.tldr = tldr
         self.decisions = decisions
         self.actionItems = actionItems
