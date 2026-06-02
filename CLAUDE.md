@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-06-01. This file is living context for future sessions — keep it current._
+_Last updated: 2026-06-03. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -43,12 +43,19 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
   the **"Fully transcribe"** action in MeetingDetailView (with spend confirmation). For 2-channel
   captures it uses `ChannelAttributedScribeTranscriber`: mic+system are **mixed to one mono file**
   (`ChannelAudio.mixToMono`, resampled to a common rate) sent as a single channel — **1× cost &
-  correct duration** (Scribe sums/bills per channel, so a 2-channel upload was 2×) — then each word
-  is attributed You/Them by **per-channel energy** (`ChannelAudio.envelope` → `ChannelAttribution`).
-  Scribe's own diarization is NOT used (A/B-tested at only 61.8% on Russian w/ ~42% overlap).
+  correct duration** (Scribe sums/bills per channel, so a 2-channel upload was 2×). Scribe runs
+  **with diarization ON**; we then map each diarization **cluster** to You/Them by **per-cluster
+  channel energy** (`ChannelAudio.envelope` → `ChannelAttribution.mapDiarizedSpeakers`), falling
+  back to per-word energy (`assignSpeakers`) only if Scribe returns <2 clusters. Deciding the
+  channel **once per cluster** (not per word) keeps Scribe's coherent voice turns and stops
+  mid-utterance speaker flips. **A/B on a live RU meeting (2026-06-03):** this hybrid scored
+  **96.2%** You/Them vs multichannel ground truth, beating per-word energy (94.4%) and raw Scribe
+  diarization (90.4%). The earlier "Scribe diarization = 61.8%" finding was on the mono mix
+  **without** the cluster→channel map and is superseded. (Multichannel — one Scribe pass per
+  channel — is exact and captures overlap, but costs 2×; rejected for the 1× mono path.)
 - **You vs Them is free:** local transcribes mic & system as **separate channels** → `speaker_0`/
-  `speaker_1`; Scribe uses the mono + channel-energy attribution path above. The app writes a
-  default `speakers.json` `{speaker_0: "You", speaker_1: "Them"}` for 2-channel meetings.
+  `speaker_1`; Scribe uses the mono diarization + per-cluster channel-energy path above. The app
+  writes a default `speakers.json` `{speaker_0: "You", speaker_1: "Them"}` for 2-channel meetings.
 - `MeetingMetadata.transcriptTier` ∈ `TranscriptTier.local` (`"local-whisper"`) /
   `.sotaScribe` (`"sota-scribe"`). Badges in History + Detail.
 - **Duration is wall-clock, derived from the audio file** (`AudioProbe.durationSeconds`, used in
@@ -71,6 +78,11 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
   via `response_format: {type: json_schema, strict}`** (the `MeetingSummary` schema, incl. a
   generated `title`), transparently falling back to `{type: json_object}` on a 400/404 (keeps
   no-train-provider compatibility). Summarizer keeps lenient JSON parse + one repair retry.
+- **Output language follows the transcript:** the system prompt mandates writing every field in the
+  transcript's language (never translating to English), and `buildUserContent` names the detected
+  language via `Summarizer.languageName` (maps both Scribe `rus` and Whisper `ru` → "Russian"), so
+  a RU meeting summarizes in RU. Was the root cause of RU meetings summarized in EN (the prompt
+  never specified an output language, so the model defaulted to its instruction language).
 - **Title from summary:** `MeetingSummary.title` becomes the meeting title only when the existing
   title is an auto-placeholder (`MeetingMetadata.isPlaceholderTitle` — "Meeting <date>" /
   "Recording <date>" / "Recording · …" / empty); calendar/user titles are preserved.
@@ -88,7 +100,7 @@ restrictions and data policy"`) for `openai/*`, `mistralai/*`, `qwen/qwen3.x-max
 ## Build / run
 ```bash
 # Core + CLI
-swift build && swift test                       # 68 tests
+swift build && swift test                       # 86 tests
 swift run kleoth summarize <dir> --model <slug> # re-summarize an existing meeting in place
 
 # App

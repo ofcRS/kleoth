@@ -62,4 +62,82 @@ public enum ChannelAttribution {
             return updated
         }
     }
+
+    /// Relabels Scribe-**diarized** words to You/Them by mapping each diarization
+    /// *cluster* (Scribe's `speaker_id`) to the channel it correlates with —
+    /// mic → `speaker0Id` (You), system → `speaker1Id` (Them).
+    ///
+    /// Unlike ``assignSpeakers`` (one energy decision per word, which flips
+    /// mid-utterance), this makes the channel decision **once per cluster** over
+    /// all of that cluster's words, so a whole turn stays on one speaker. Scribe
+    /// already grouped the words by voice; we only resolve which voice is You.
+    ///
+    /// Clusters are split by **relative** channel affinity, not absolute energy:
+    /// the most mic-leaning cluster becomes You and the most system-leaning
+    /// becomes Them, so a mic that bleeds the far end (both clusters louder on
+    /// channel 0) still separates the two speakers instead of collapsing them.
+    /// Any additional clusters fall to whichever channel they individually lean
+    /// toward. Words without a cluster id are left untouched.
+    public static func mapDiarizedSpeakers(
+        words: [ScribeWord],
+        channel0Energy: [Float],
+        channel1Energy: [Float],
+        hopSeconds: Double,
+        speaker0Id: String = "speaker_0",
+        speaker1Id: String = "speaker_1"
+    ) -> [ScribeWord] {
+        let count = min(channel0Energy.count, channel1Energy.count)
+
+        // Sum each cluster's energy on both channels over its words' spans.
+        var energy0: [String: Double] = [:]
+        var energy1: [String: Double] = [:]
+        for word in words {
+            guard let cluster = word.speakerId,
+                  let start = word.start, let end = word.end,
+                  hopSeconds > 0, count > 0 else { continue }
+            let lower = max(0, Int((start / hopSeconds).rounded(.down)))
+            let upper = min(Int((end / hopSeconds).rounded(.up)), count - 1)
+            guard lower <= upper else { continue }
+            var sum0 = 0.0
+            var sum1 = 0.0
+            for i in lower...upper {
+                sum0 += Double(channel0Energy[i])
+                sum1 += Double(channel1Energy[i])
+            }
+            energy0[cluster, default: 0] += sum0
+            energy1[cluster, default: 0] += sum1
+        }
+
+        // Relative affinity to channel 0: +1 = all mic, -1 = all system, 0 = even.
+        func affinity(_ cluster: String) -> Double {
+            let a = energy0[cluster, default: 0]
+            let b = energy1[cluster, default: 0]
+            let total = a + b
+            return total > 0 ? (a - b) / total : 0
+        }
+
+        let clusters = Set(words.compactMap(\.speakerId))
+        var mapping: [String: String] = [:]
+        if clusters.count >= 2 {
+            // Most mic-leaning cluster → You; most system-leaning → Them; force
+            // them distinct so bleed can't merge both onto one speaker.
+            let ranked = clusters.sorted { affinity($0) > affinity($1) }
+            mapping[ranked.first!] = speaker0Id
+            mapping[ranked.last!] = speaker1Id
+            for cluster in ranked.dropFirst().dropLast() {
+                mapping[cluster] = affinity(cluster) >= 0 ? speaker0Id : speaker1Id
+            }
+        } else {
+            for cluster in clusters {
+                mapping[cluster] = affinity(cluster) >= 0 ? speaker0Id : speaker1Id
+            }
+        }
+
+        return words.map { word in
+            guard let cluster = word.speakerId, let mapped = mapping[cluster] else { return word }
+            var updated = word
+            updated.speakerId = mapped
+            return updated
+        }
+    }
 }

@@ -30,7 +30,11 @@ public struct Summarizer {
     private static let maxOutputTokens = 4096
 
     private static let systemPrompt = """
-    You are a meeting summarizer. You receive a diarized transcript with real speaker names and timestamps. Be precise and factual. Do not invent information. If something is ambiguous, say so. Output ONLY valid JSON matching this schema:
+    You are a meeting summarizer. You receive a diarized transcript with real speaker names and timestamps. Be precise and factual. Do not invent information. If something is ambiguous, say so.
+
+    Write every natural-language value you produce — title, tldr, decisions, every action item task, key_points, per_speaker_highlights, open_questions, and suggested_tags — in the SAME language as the transcript below. Do NOT translate it into English or any other language; mirror the transcript's language exactly. Keep speaker and owner names exactly as given.
+
+    Output ONLY valid JSON matching this schema:
     {
       "title": "string",
       "tldr": "string",
@@ -157,6 +161,40 @@ public struct Summarizer {
 
     // MARK: - Prompt construction
 
+    /// The English name of an ISO language code (e.g. `"rus"`/`"ru"` → `"Russian"`),
+    /// or `nil` when the code is empty or unrecognized. Used to name the
+    /// transcript's language in the prompt so the model writes the summary in it.
+    ///
+    /// Handles both forms the pipeline emits: WhisperKit reports ISO 639-1
+    /// (2-letter, `"ru"`); ElevenLabs Scribe reports ISO 639-2/T (3-letter,
+    /// `"rus"`). Unknown codes return `nil` — the system prompt's "same language
+    /// as the transcript" rule is the fallback — rather than guessing a name.
+    static func languageName(for code: String?) -> String? {
+        guard let raw = code?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !raw.isEmpty else { return nil }
+        // Primary subtag only: "ru-RU" / "ru_RU" → "ru".
+        let base = String(raw.prefix { $0 != "-" && $0 != "_" })
+        guard !base.isEmpty else { return nil }
+
+        // Map the 3-letter codes the pipeline realistically sees down to the
+        // 2-letter codes Foundation can name.
+        let threeToTwo: [String: String] = [
+            "eng": "en", "rus": "ru", "ukr": "uk", "deu": "de", "ger": "de",
+            "fra": "fr", "fre": "fr", "spa": "es", "ita": "it", "por": "pt",
+            "nld": "nl", "dut": "nl", "pol": "pl", "tur": "tr", "ara": "ar",
+            "zho": "zh", "chi": "zh", "jpn": "ja", "kor": "ko", "ces": "cs",
+            "cze": "cs", "ron": "ro", "rum": "ro", "ell": "el", "gre": "el",
+        ]
+        let twoLetter = base.count == 3 ? (threeToTwo[base] ?? base) : base
+
+        let english = Locale(identifier: "en_US")
+        if let name = english.localizedString(forLanguageCode: twoLetter),
+           name.lowercased() != twoLetter {
+            return name
+        }
+        return nil
+    }
+
     private static func buildUserContent(transcript: Transcript, metadata: MeetingMetadata) -> String {
         let participants = metadata.participants.joined(separator: ", ")
         let lines = transcript.utterances.map { utterance -> String in
@@ -165,10 +203,20 @@ public struct Summarizer {
         }
         let transcriptText = lines.joined(separator: "\n")
 
-        return """
+        var header = """
         Meeting: \(metadata.title)
         Date: \(metadata.date)
         Participants: \(participants)
+        """
+        // Name the detected language so the model writes the summary in it rather
+        // than defaulting to English (the language of these instructions). Prefer
+        // the transcript's own detected code; fall back to the meeting metadata.
+        if let name = languageName(for: transcript.languageCode ?? metadata.languageCode) {
+            header += "\nTranscript language: \(name). Write the entire summary in \(name)."
+        }
+
+        return """
+        \(header)
 
         Transcript:
         \(transcriptText)

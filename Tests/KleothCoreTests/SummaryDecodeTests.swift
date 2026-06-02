@@ -173,6 +173,65 @@ import Foundation
         #expect(transport.callCount == 2)
     }
 
+    // MARK: - Output language preservation (a RU transcript must not be summarized in EN)
+
+    /// Joins every message's `content` from the first recorded chat-completions
+    /// request body, so tests can assert what the model was actually told to do.
+    private static func sentMessageText(_ transport: MockTransport) throws -> String {
+        let body = try #require(transport.recordedRequests.first?.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        let messages = (json?["messages"] as? [[String: Any]]) ?? []
+        return messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+    }
+
+    /// A Russian transcript must make the summarizer instruct the model to write
+    /// the summary in Russian. Root cause of "RU meeting → EN summary": the
+    /// prompt never named an output language, so the model defaulted to English.
+    @Test func summarizeInstructsModelToUseTranscriptLanguage() async throws {
+        let transport = MockTransport(json: Self.completionEnvelope(content: Self.summaryJSON))
+        let summarizer = makeSummarizer(transport)
+        let russian = Transcript(
+            utterances: [Utterance(speakerId: "speaker_0", speakerName: "You", text: "Привет, давай по датасету.")],
+            languageCode: "rus",   // ElevenLabs Scribe reports 3-letter codes; Whisper reports "ru".
+            durationSecs: 1
+        )
+
+        _ = try await summarizer.summarize(transcript: russian, metadata: metadata())
+
+        let sent = try Self.sentMessageText(transport)
+        #expect(sent.contains("Russian"))
+        #expect(sent.localizedCaseInsensitiveContains("same language"))
+    }
+
+    /// Even with no detected language, the model is told to match the
+    /// transcript's language rather than silently translating it.
+    @Test func summarizeInstructsSameLanguageWhenUnknown() async throws {
+        let transport = MockTransport(json: Self.completionEnvelope(content: Self.summaryJSON))
+        let summarizer = makeSummarizer(transport)
+        let unknown = Transcript(
+            utterances: [Utterance(speakerId: "speaker_0", speakerName: "You", text: "…")],
+            languageCode: nil,
+            durationSecs: 1
+        )
+
+        _ = try await summarizer.summarize(transcript: unknown, metadata: metadata())
+
+        let sent = try Self.sentMessageText(transport)
+        #expect(sent.localizedCaseInsensitiveContains("same language"))
+    }
+
+    /// `languageName(for:)` maps the codes the pipeline actually emits — 3-letter
+    /// (Scribe) and 2-letter (Whisper) — to an English language name, and leaves
+    /// an unknown code intact rather than inventing one.
+    @Test func languageNameMapsCommonCodes() {
+        #expect(Summarizer.languageName(for: "rus") == "Russian")
+        #expect(Summarizer.languageName(for: "ru") == "Russian")
+        #expect(Summarizer.languageName(for: "en") == "English")
+        #expect(Summarizer.languageName(for: "eng") == "English")
+        #expect(Summarizer.languageName(for: nil) == nil)
+        #expect(Summarizer.languageName(for: "") == nil)
+    }
+
     @Test func summarizeThrowsWhenRepairAlsoFails() async {
         let bad = Self.completionEnvelope(content: "still not json")
         // Both attempts return bad content (the sequence's last element replays,
