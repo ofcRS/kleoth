@@ -1,0 +1,47 @@
+[
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/icon-a.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A premium macOS app icon, square, rounded-square (squircle) shape filling the frame. Centered: a minimalist, elegant ancient Greek lyre rendered in polished gold with subtle dimensional depth and soft studio lighting. Background: a rich vertical gradient from deep indigo to violet. The lyre is geometric, symmetric, with five strings; clean and iconic. Subtle inner glow, refined, Apple-quality, crisp vector-like edges. No text, no letters, generous padding."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/icon-b.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A premium macOS app icon, rounded-square shape filling the frame. A minimalist flat line-art ancient Greek lyre in soft cream-white, centered on a smooth teal-to-deep-blue gradient. Modern, clean, very subtle depth and soft shadow, Apple-quality, crisp edges, generous padding. No text, no letters."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/icon-c.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A premium macOS app icon, rounded-square shape filling the frame. An elegant ancient Greek lyre whose vertical strings double as a glowing audio equalizer of soundwave bars at graduated heights, symbolizing sound and listening. Polished gold lyre with cyan-glowing bars on a deep charcoal-to-indigo gradient, premium, subtle glow and depth, Apple-quality, crisp. No text, no letters, generous padding."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/menubar-a.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A single monochrome icon: a minimalist ancient Greek lyre, solid pure-black line-art with even medium stroke weight, on a pure flat white background, perfectly centered, simple and highly legible at very small sizes (18 pixels), iconographic like an Apple SF Symbol. No shading, no gradient, no 3D, no text. Crisp clean vector look."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/menubar-b.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A single monochrome glyph: a simplified solid-black silhouette of an ancient Greek lyre, bold and clean, on a pure flat white background, perfectly centered, instantly recognizable at 18 pixels, like an Apple SF Symbol filled variant. No gradient, no shading, no text."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/empty-no-meetings.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A friendly minimal spot illustration for an app empty state, transparent background (PNG with alpha). An ancient Greek lyre at rest with soft concentric soundwaves gently emanating, soft muted indigo and warm gold palette, generous negative space, modern clean flat-illustration style with subtle gradients. No background, no text, no frame."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/empty-not-transcribed.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A minimal spot illustration for an app empty state, transparent background (PNG with alpha). An ancient Greek lyre beside a flat, dormant single waveform line (paused / not yet started), soft muted indigo and gold palette, gentle and calm, modern flat-illustration style. No background, no text, no frame."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/empty-select.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A minimal spot illustration for an app empty state, transparent background (PNG with alpha). An open ancient scroll or manuscript next to a small Greek lyre, inviting and calm, soft muted indigo and warm gold palette, modern flat-illustration style with subtle gradients. No background, no text, no frame."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/spot-laurel.png",
+    "aspect": "3:2", "size": "1K",
+    "prompt": "A very subtle, faint, low-contrast decorative horizontal ornament on a transparent background (PNG with alpha): a thin elegant line-art motif of a small Greek lyre flanked by minimal laurel leaves, delicate gold linework, mostly empty space, wide banner composition, suitable as a faint card-header watermark. No solid background, no text."
+  }
+]

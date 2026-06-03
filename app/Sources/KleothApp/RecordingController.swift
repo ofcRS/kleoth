@@ -87,6 +87,22 @@ public final class RecordingController: ObservableObject {
     /// downloading at launch; `nil` when idle or already available.
     @Published public var modelDownloadProgress: Double?
 
+    /// Fractional upload progress (0…1) while a SOTA (ElevenLabs Scribe)
+    /// transcription's audio is being uploaded; `nil` when not uploading. Scribe
+    /// then transcribes server-side with no further progress, so once this
+    /// reaches 1.0 it clears and the UI shows an indeterminate "transcribing"
+    /// phase driven by `isProcessing`.
+    @Published public var transcriptionProgress: Double?
+
+    /// Bumped whenever a displayed meeting's on-disk content changes in place
+    /// (speaker rename, re-transcribe, re-summarize). An open `MeetingDetailView`
+    /// observes this to reload from disk reactively, so edits appear immediately
+    /// instead of only after the app is relaunched. A pure speaker rename changes
+    /// no field of the `RecentMeeting` value (same title/cost/tier), and the
+    /// detail's view identity is pinned with `.id`, so neither `onAppear` nor an
+    /// `onChange(of:)` on the meeting would otherwise refire — hence this signal.
+    @Published public var contentRevision: Int = 0
+
     // MARK: - Owned collaborators
 
     /// The capture recorder. Type-erased because `Recorder` requires macOS
@@ -104,6 +120,26 @@ public final class RecordingController: ObservableObject {
     /// second instance) and our own saves keep `recentMeetings` current without
     /// relying on view lifecycle. See `startWatchingOutputDir()`.
     private var outputDirWatcher: DispatchSourceFileSystemObject?
+
+    /// Coalesces bursts of file-system events into a single reload (the pipeline
+    /// writes several files per save, which would otherwise trigger a re-scan +
+    /// re-probe storm). See `scheduleReload()`.
+    private var pendingReload: DispatchWorkItem?
+
+    /// Caches each meeting audio file's wall-clock duration by path, so repeated
+    /// list reloads don't re-open every audio file from disk on the main actor.
+    /// A meeting folder's audio never changes duration once written, so the cache
+    /// never goes stale.
+    private var durationCache: [String: Double] = [:]
+
+    /// The meeting folder currently being processed (transcribe/summarize), if
+    /// any. It's excluded from the recent-meetings scan while processing so the
+    /// in-progress meeting doesn't briefly flash as "Untranscribed" (it has audio
+    /// but no `meta.json` yet), and so its audio isn't duration-probed while the
+    /// off-main combine may still be writing it. Cleared *before* the list
+    /// refresh when processing ends, so a failed run correctly resurfaces the
+    /// audio as transcribable.
+    private var processingDir: URL?
 
     private let log = Logger(subsystem: "dev.kleoth", category: "RecordingController")
 
@@ -247,6 +283,7 @@ public final class RecordingController: ObservableObject {
                 metadata: meta
             )
             loadRecentMeetings()
+            contentRevision &+= 1
             statusMessage = "Summarized \"\(meta.title)\"."
         } catch {
             statusMessage = "Summarize failed: \(error.localizedDescription)"
@@ -343,6 +380,23 @@ public final class RecordingController: ObservableObject {
         settings.defaultModel = model
     }
 
+    /// Persists the preferred on-device transcription language and updates the
+    /// in-memory settings. Empty / `"auto"` means automatic detection (stored as
+    /// an empty value and surfaced as `nil` to the engine).
+    public func updateTranscriptionLanguage(_ code: String) {
+        let normalized = Self.normalizedTranscriptionLanguage(code)
+        Keychain.set(normalized ?? "", Keychain.Account.transcriptionLanguage)
+        settings.transcriptionLanguage = normalized
+    }
+
+    /// Normalizes a stored/selected language value into a Whisper code or `nil`
+    /// (automatic): trims, lowercases, and maps empty / `"auto"` to `nil`.
+    static func normalizedTranscriptionLanguage(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespaces).lowercased(),
+              !trimmed.isEmpty, trimmed != "auto" else { return nil }
+        return trimmed
+    }
+
     /// Persists the output directory and updates the in-memory settings.
     public func updateOutputDir(_ path: String) {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -412,14 +466,25 @@ public final class RecordingController: ObservableObject {
             return
         }
 
-        // Finalize capture files.
+        // Finalize capture entirely off the main actor: both stopping the audio
+        // devices and — far heavier — decoding both sources and re-encoding the
+        // single 2-channel file is seconds of work for a long meeting, and running
+        // it synchronously on the main actor was the ~30s freeze on stop. The
+        // recorder is used only here after capture ends (nothing else touches it)
+        // and the main actor is suspended at the `await` below, so the
+        // `nonisolated(unsafe)` capture is race-free.
         let audioFileURL: URL
         do {
-            try recorder.stop()
-            // Prefer a single 2-channel file (mic + system) for multi-channel STT.
             let twoChannel = dir.appendingPathComponent("meeting.m4a")
-            audioFileURL = (try? recorder.buildTwoChannelFile(outputURL: twoChannel))
-                ?? dir.appendingPathComponent("mic.m4a")
+            let mic = dir.appendingPathComponent(Recorder.micFileName)
+            let system = dir.appendingPathComponent(Recorder.systemFileName)
+            nonisolated(unsafe) let capture = recorder
+            audioFileURL = try await Task.detached(priority: .userInitiated) {
+                try capture.stop()
+                return (try? Recorder.combineChannels(
+                    micURL: mic, systemURL: system, outputURL: twoChannel
+                )) ?? mic
+            }.value
         } catch {
             statusMessage = "Recording stopped with errors: \(error.localizedDescription)"
             recorderBox = nil
@@ -492,6 +557,7 @@ public final class RecordingController: ObservableObject {
                 metadata: metadata
             )
             loadRecentMeetings()
+            contentRevision &+= 1
             statusMessage = "Updated speaker names."
         } catch {
             statusMessage = "Could not rename speakers: \(error.localizedDescription)"
@@ -524,6 +590,10 @@ public final class RecordingController: ObservableObject {
         participants: [String] = []
     ) async {
         isProcessing = true
+        // Hide this folder from the list while it's being processed (it has audio
+        // but no meta.json yet) and keep its still-writing audio out of the
+        // duration probe. Cleared before the list refresh at the end.
+        processingDir = meetingDir
         statusMessage = "Transcribing…"
 
         let transport = URLSessionTransport()
@@ -540,7 +610,10 @@ public final class RecordingController: ObservableObject {
             let system = meetingDir.appendingPathComponent("system.m4a")
             channelFiles = [mic, system].filter { FileManager.default.fileExists(atPath: $0.path) }
         }
-        let transcriber: any Transcriber = LocalTranscriber(channelFiles: channelFiles)
+        let transcriber: any Transcriber = LocalTranscriber(
+            channelFiles: channelFiles,
+            language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage)
+        )
         let tier = TranscriptTier.local
         let options = ScribeOptions()
         if channelFiles.count == 2, let meetingDir {
@@ -585,8 +658,12 @@ public final class RecordingController: ObservableObject {
 
             // Re-scan from disk so the saved meeting (with its real startedAt)
             // lands in the list in the right position — the disk is the source
-            // of truth now that one meeting is one folder.
+            // of truth now that one meeting is one folder. Clear processingDir
+            // first so the now-complete folder is included (with its final,
+            // fully-written audio probed for duration).
+            processingDir = nil
             loadRecentMeetings()
+            contentRevision &+= 1
             currentCostUSD += result.cost.totalUSD
             isProcessing = false
             if let summaryError = result.summaryError {
@@ -596,11 +673,13 @@ public final class RecordingController: ObservableObject {
             }
         } catch {
             isProcessing = false
-            // The audio is safe on disk — only processing failed. Re-scan so the
-            // recording reappears as an "Untranscribed" item that can be
-            // re-transcribed in place. Without this it silently drops off the
-            // list (the last refresh ran while it was still the active recording)
-            // and looks as though the whole meeting was lost.
+            // The audio is safe on disk — only processing failed. Clear
+            // processingDir and re-scan so the recording reappears as an
+            // "Untranscribed" item that can be re-transcribed in place. Without
+            // this it silently drops off the list (the last refresh ran while it
+            // was still the active recording) and looks as though the whole
+            // meeting was lost.
+            processingDir = nil
             loadRecentMeetings()
             statusMessage = "Processing failed: \(error.localizedDescription) — audio saved; re-transcribe it from the list."
         }
@@ -622,7 +701,10 @@ public final class RecordingController: ObservableObject {
         }
 
         isProcessing = true
-        statusMessage = "Fully transcribing \"\(meeting.title)\" with ElevenLabs Scribe…"
+        // Start indeterminate ("preparing/mixing" has no measurable progress); the
+        // determinate bar appears once the upload begins and reports bytes sent.
+        transcriptionProgress = nil
+        statusMessage = "Preparing audio for ElevenLabs Scribe…"
 
         let transport = URLSessionTransport()
 
@@ -666,6 +748,22 @@ public final class RecordingController: ObservableObject {
         // fallback uses single-channel diarization, so multi-channel is never set.
         var options = ScribeOptions()
         options.useMultiChannel = false
+        // Surface the multipart upload's progress as a determinate bar; once the
+        // bytes are sent (frac == 1), clear it so the UI switches to an
+        // indeterminate "transcribing server-side" phase (Scribe gives no
+        // progress while it works).
+        options.onUploadProgress = { [weak self] frac in
+            Task { @MainActor in
+                guard let self else { return }
+                if frac < 1.0 {
+                    self.transcriptionProgress = frac
+                    self.statusMessage = "Uploading to ElevenLabs… \(Int(frac * 100))%"
+                } else {
+                    self.transcriptionProgress = nil
+                    self.statusMessage = "Transcribing on ElevenLabs (server-side)…"
+                }
+            }
+        }
 
         do {
             let result = try await pipeline.run(
@@ -676,8 +774,10 @@ public final class RecordingController: ObservableObject {
                 meetingDir: dir
             )
             loadRecentMeetings()
+            contentRevision &+= 1
             currentCostUSD += result.cost.totalUSD
             isProcessing = false
+            transcriptionProgress = nil
             if let summaryError = result.summaryError {
                 statusMessage = "Fully transcribed \"\(metadata.title)\" — summary skipped (\(summaryError))"
             } else {
@@ -685,6 +785,7 @@ public final class RecordingController: ObservableObject {
             }
         } catch {
             isProcessing = false
+            transcriptionProgress = nil
             statusMessage = "Full transcription failed: \(error.localizedDescription)"
         }
     }
@@ -760,7 +861,7 @@ public final class RecordingController: ObservableObject {
                 // multichannel response reports a summed (≈2×) duration, so the
                 // stored cost value can overstate length. Falls back to the stored
                 // value when the audio can't be probed.
-                let realDur = Self.meetingAudioURL(in: dir).flatMap { AudioProbe.durationSeconds(of: $0) }
+                let realDur = Self.meetingAudioURL(in: dir).flatMap { cachedDuration(of: $0) }
                 let meeting = RecentMeeting(
                     title: metadata.title,
                     date: metadata.date,
@@ -779,6 +880,10 @@ public final class RecordingController: ObservableObject {
             // but never the in-progress recording itself.
             if let active = activeRecordingDir,
                dir.standardizedFileURL == active.standardizedFileURL { return nil }
+            // Likewise skip a folder that's mid-pipeline: it has audio but no
+            // meta.json yet, and its 2-channel file may still be writing.
+            if let processing = processingDir,
+               dir.standardizedFileURL == processing.standardizedFileURL { return nil }
             guard Self.meetingAudioURL(in: dir) != nil else { return nil }
             let started = Self.folderDate(dir)
             let meeting = RecentMeeting(
@@ -879,6 +984,9 @@ public final class RecordingController: ObservableObject {
         if let model = Keychain.get(Keychain.Account.defaultModel), !model.isEmpty {
             merged.defaultModel = model
         }
+        if let lang = Keychain.get(Keychain.Account.transcriptionLanguage), !lang.isEmpty {
+            merged.transcriptionLanguage = lang
+        }
         if let path = Keychain.get(Keychain.Account.outputDir), !path.isEmpty {
             merged.outputDir = URL(fileURLWithPath: path, isDirectory: true)
         }
@@ -951,11 +1059,32 @@ public final class RecordingController: ObservableObject {
             queue: .main
         )
         source.setEventHandler { [weak self] in
-            Task { @MainActor in self?.loadRecentMeetings() }
+            Task { @MainActor in self?.scheduleReload() }
         }
         source.setCancelHandler { close(fd) }
         outputDirWatcher = source
         source.resume()
+    }
+
+    /// Coalesces a burst of file-system events into a single reload ~0.3s after
+    /// the last event (one save writes several files), so the directory isn't
+    /// re-scanned and re-probed many times in quick succession.
+    private func scheduleReload() {
+        pendingReload?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.loadRecentMeetings() }
+        }
+        pendingReload = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+    }
+
+    /// The wall-clock duration of a meeting audio file, probed once and cached by
+    /// path (the audio for a folder is immutable once written).
+    private func cachedDuration(of url: URL) -> Double? {
+        if let hit = durationCache[url.path] { return hit }
+        guard let dur = AudioProbe.durationSeconds(of: url) else { return nil }
+        durationCache[url.path] = dur
+        return dur
     }
 
     private static func formatUSD(_ value: Double) -> String {

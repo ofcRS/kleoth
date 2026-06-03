@@ -67,11 +67,22 @@ public struct LocalTranscriber: Transcriber {
         // already-downloaded model straight from disk (zero network); only fall
         // back to a background download on a genuine first run. See `modelConfig`.
         let pipe = try await WhisperKit(Self.modelConfig(for: model))
+
+        // Resolve the transcription language ONCE up front. WhisperKit defaults
+        // `detectLanguage` to false (it is `!usePrefillPrompt`, and prefill is on
+        // by default), so passing only `language: nil` silently resolves to
+        // English — the root cause of Russian meetings being transcribed in
+        // English. When no language is pinned we run a single global detection
+        // pass and force that one language across every VAD chunk, so detection
+        // can't drift per chunk; only if that fails do we leave it to WhisperKit's
+        // per-window auto-detect (`detectLanguage: true`).
+        let resolvedLanguage = await Self.resolveLanguage(pinned: language, sources: sources, pipe: pipe)
         let decodeOptions = DecodingOptions(
-            task: .transcribe,
-            language: language,          // nil → auto-detect
+            task: .transcribe,                          // transcribe, never translate
+            language: resolvedLanguage,                 // concrete code → no per-chunk drift
+            detectLanguage: resolvedLanguage == nil,    // last-resort auto-detect
             wordTimestamps: false,
-            chunkingStrategy: .vad       // robust long-form handling
+            chunkingStrategy: .vad                       // robust long-form handling
         )
 
         // Single channel → single-channel `words[]` response.
@@ -82,7 +93,10 @@ public struct LocalTranscriber: Transcriber {
                 words: channel.words,
                 transcripts: nil,
                 audioDurationSecs: channel.duration,
-                languageCode: channel.language,
+                // Prefer the language resolved up front (it considered confidence
+                // across the audio) so the summarizer always learns the real
+                // language and summarizes in it — not English.
+                languageCode: resolvedLanguage ?? channel.language,
                 transcriptionId: nil
             )
         }
@@ -106,9 +120,43 @@ public struct LocalTranscriber: Transcriber {
             words: nil,
             transcripts: transcripts,
             audioDurationSecs: maxDuration,
-            languageCode: detectedLanguage,
+            // Prefer the globally-resolved language over the first channel's tag:
+            // a silent/late-speaking mic (channel 0) can yield no language, which
+            // would otherwise leave this nil and make the summary default to
+            // English even though the transcript is (e.g.) Russian.
+            languageCode: resolvedLanguage ?? detectedLanguage,
             transcriptionId: nil
         )
+    }
+
+    /// Resolves the language to transcribe in. A pinned, non-empty `language`
+    /// always wins (no detection passes). Otherwise a `detectLanguage` pass over a
+    /// source's opening seconds yields a stable code to force across every chunk.
+    ///
+    /// With multiple channels it keeps the most *confident* detection so a
+    /// quiet/silent mic channel never overrides the channel that actually carries
+    /// speech — but it stops early once a channel is confident enough, so the
+    /// common case (clear speech on the first channel) costs a single pass, not
+    /// one per channel. Returns `nil` when detection fails for every source,
+    /// leaving the caller to fall back to WhisperKit's per-window auto-detect.
+    private static func resolveLanguage(
+        pinned: String?,
+        sources: [URL],
+        pipe: WhisperKit
+    ) async -> String? {
+        if let pinned, !pinned.isEmpty { return pinned }
+
+        var best: (language: String, confidence: Float)?
+        for url in sources {
+            guard let result = try? await pipe.detectLanguage(audioPath: url.path) else { continue }
+            let confidence = result.langProbs[result.language] ?? 0
+            if best == nil || confidence > best!.confidence {
+                best = (result.language, confidence)
+            }
+            // Confident on this channel — no need to probe the rest.
+            if confidence >= 0.85 { break }
+        }
+        return best?.language
     }
 
     // MARK: - WhisperKit plumbing
@@ -154,6 +202,33 @@ public struct LocalTranscriber: Transcriber {
         return hasModel ? (modelFolder, downloadBase) : nil
     }
 
+    /// On-disk status of a WhisperKit model for UI (Settings): whether it is
+    /// downloaded and, when present, its total size in bytes. Cheap — it only
+    /// reads the cache directory listing.
+    public static func cachedModelInfo(
+        variant: String = LocalTranscriber.defaultModel
+    ) -> (downloaded: Bool, sizeBytes: Int64) {
+        guard let (folder, _) = cachedModel(variant: variant) else { return (false, 0) }
+        return (true, directorySizeBytes(folder))
+    }
+
+    /// Total size (bytes) of all regular files under `url`, recursively.
+    private static func directorySizeBytes(_ url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if values?.isRegularFile == true {
+                total += Int64(values?.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
     /// Transcribes one audio file with an already-loaded pipeline, returning
     /// segment-timed words, the audio duration (seconds), the joined text, and
     /// the detected language.
@@ -174,7 +249,10 @@ public struct LocalTranscriber: Transcriber {
         for result in results {
             if language == nil { language = result.language }
             for segment in result.segments {
-                let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Strip WhisperKit special tokens (<|startoftranscript|>,
+                // <|en|>, <|transcribe|>, timestamp/<|endoftext|>, …) so the
+                // written transcript.json is clean at the source.
+                let text = WhisperText.clean(segment.text)
                 guard !text.isEmpty else { continue }
                 words.append(ScribeWord(
                     text: text,

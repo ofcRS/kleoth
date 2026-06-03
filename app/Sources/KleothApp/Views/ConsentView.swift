@@ -8,9 +8,8 @@ struct ConsentView: View {
     @EnvironmentObject private var controller: RecordingController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Before you record", systemImage: "exclamationmark.shield")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+            KleothSectionHeader("Before you record", systemImage: "exclamationmark.shield")
 
             Text(
                 "Kleoth records system + microphone audio locally. "
@@ -30,7 +29,6 @@ struct ConsentView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
         }
-        .padding()
-        .frame(maxWidth: 320)
+        .kleothCard(padding: KleothMetrics.spacingM)
     }
 }

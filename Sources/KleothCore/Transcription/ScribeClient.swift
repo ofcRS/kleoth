@@ -13,13 +13,22 @@ public struct ScribeOptions: Sendable {
     public var tagAudioEvents: Bool
     public var useMultiChannel: Bool
 
+    /// Transient callback fired with the multipart upload's fractional progress
+    /// (0…1) as the audio body is sent to Scribe. Not persisted config — set it
+    /// per request to drive a progress bar; `nil` skips progress reporting (and
+    /// the plain, delegate-less upload path). Scribe transcribes server-side
+    /// after the upload completes, with no further progress, so the UI shows an
+    /// indeterminate "transcribing" phase once this reaches 1.0.
+    public var onUploadProgress: (@Sendable (Double) -> Void)?
+
     public init(
         modelId: String = "scribe_v2",
         diarize: Bool = true,
         numSpeakers: Int? = nil,
         languageCode: String? = nil,
         tagAudioEvents: Bool = true,
-        useMultiChannel: Bool = false
+        useMultiChannel: Bool = false,
+        onUploadProgress: (@Sendable (Double) -> Void)? = nil
     ) {
         self.modelId = modelId
         self.diarize = diarize
@@ -27,6 +36,7 @@ public struct ScribeOptions: Sendable {
         self.languageCode = languageCode
         self.tagAudioEvents = tagAudioEvents
         self.useMultiChannel = useMultiChannel
+        self.onUploadProgress = onUploadProgress
     }
 }
 
@@ -104,7 +114,11 @@ public struct ScribeClient {
             forHTTPHeaderField: "Content-Type"
         )
 
-        let (data, response) = try await transport.upload(for: request, fromFile: bodyURL)
+        let (data, response) = try await transport.upload(
+            for: request,
+            fromFile: bodyURL,
+            progress: options.onUploadProgress
+        )
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ScribeError.invalidResponse

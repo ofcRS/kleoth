@@ -10,6 +10,10 @@
     <string>dev.kleoth.app</string>
     <key>CFBundleExecutable</key>
     <string>Kleoth</string>
+    <!-- Classic .icns app icon (Kleoth.icns in Contents/Resources, copied by
+         make-app.sh). The Greek lyre — kleos, "that which is heard". -->
+    <key>CFBundleIconFile</key>
+    <string>Kleoth</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

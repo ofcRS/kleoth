@@ -1,0 +1,9 @@
+# Throwaway generation intermediates. The final, committed assets live in
+# app/Sources/KleothApp/Resources/ (menu-bar glyph + empty-state tiles) and
+# app/bundle/Kleoth.icns (app icon). The tooling (generate.mjs, maketemplate.swift)
+# and the prompt job files + candidates are kept for provenance / regeneration.
+*.log
+gen-result.json
+Kleoth.iconset/
+test-icon.png
+menubar-template.png

@@ -31,6 +31,11 @@ struct HistoryView: View {
                 selection = meetings.first?.id
             }
         }
+        // Become a regular, ⌘-Tab-able app while this window is open, then revert
+        // to a pure menu-bar agent when it closes. Without this, an LSUIElement
+        // (.accessory) app's windows don't show in the ⌘-Tab switcher.
+        .onAppear { AppActivation.shared.windowOpened() }
+        .onDisappear { AppActivation.shared.windowClosed() }
     }
 
     // MARK: - Sidebar
@@ -42,19 +47,26 @@ struct HistoryView: View {
                     ForEach(group.meetings) { meeting in
                         MeetingSidebarRow(meeting: meeting)
                             .tag(meeting.id)
+                            .listRowInsets(EdgeInsets(
+                                top: KleothMetrics.spacingXS,
+                                leading: KleothMetrics.spacingS,
+                                bottom: KleothMetrics.spacingXS,
+                                trailing: KleothMetrics.spacingS
+                            ))
                     }
                 }
             }
         }
         .searchable(text: $search, placement: .sidebar, prompt: "Search meetings")
         .navigationTitle("Meetings")
-        .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+        .navigationSplitViewColumnWidth(min: 260, ideal: 300)
         .overlay {
             if controller.recentMeetings.isEmpty {
                 ContentUnavailableCompat(
                     title: "No meetings yet",
                     systemImage: "waveform",
-                    message: "Record a call from the menu bar, or run `kleoth transcribe`. Meetings appear here automatically."
+                    message: "Record a call from the menu bar, or run `kleoth transcribe`. Meetings appear here automatically.",
+                    illustration: .noMeetings
                 )
             } else if filtered.isEmpty {
                 ContentUnavailableCompat(
@@ -78,7 +90,8 @@ struct HistoryView: View {
             ContentUnavailableCompat(
                 title: "Select a meeting",
                 systemImage: "doc.text",
-                message: "Choose a meeting from the list to read its transcript and summary."
+                message: "Choose a meeting from the list to read its transcript and summary.",
+                illustration: .selectMeeting
             )
         }
     }
@@ -109,44 +122,60 @@ struct HistoryView: View {
     }
 }
 
-/// One row in the history sidebar: title plus a secondary time · duration line
-/// and the meeting cost.
+/// One row in the history sidebar: a title with clear hierarchy over a secondary
+/// "time · duration" line, a color-coded tier badge (or an "Untranscribed"
+/// chip), and a right-aligned cost. Built from the shared Kleoth design system so
+/// it reads as one product with the rest of the app.
 private struct MeetingSidebarRow: View {
     let meeting: RecentMeeting
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(meeting.title)
-                .font(.body)
-                .lineLimit(1)
-            HStack(spacing: 6) {
-                if let time = MeetingFormat.time(meeting) {
-                    Text(time)
+        HStack(alignment: .top, spacing: KleothMetrics.spacingS) {
+            VStack(alignment: .leading, spacing: 3) {
+                // Primary: the meeting title carries the row's weight.
+                Text(meeting.title)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+
+                // Secondary: when it started and how long it ran.
+                if let metadata = timeAndDuration {
+                    Text(metadata)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                if let duration = MeetingFormat.duration(meeting.durationSecs) {
-                    Text("· \(duration)")
-                }
-                if !meeting.isProcessed {
-                    Text("Untranscribed")
-                        .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.orange.opacity(0.18), in: Capsule())
-                } else if TranscriptTier.isSOTA(meeting.transcriptTier) {
-                    Text("SOTA")
-                        .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor.opacity(0.15), in: Capsule())
-                }
-                Spacer()
-                if meeting.isProcessed {
-                    Text(MeetingFormat.usd(meeting.costUSD))
-                }
+
+                // Status / quality: an "Untranscribed" chip for audio-only
+                // folders, otherwise the transcription-tier badge (Local / SOTA).
+                statusBadge
+                    .padding(.top, 1)
             }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Trailing: the meeting's processing cost, top-aligned with the title.
+            if meeting.isProcessed {
+                Text(MeetingFormat.usd(meeting.costUSD))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, KleothMetrics.spacingXS)
+    }
+
+    /// "5:26 PM · 12m 03s", dropping whichever piece is unknown.
+    private var timeAndDuration: String? {
+        let parts = [MeetingFormat.time(meeting), MeetingFormat.duration(meeting.durationSecs)]
+            .compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if meeting.isProcessed {
+            KleothTierBadge(isSOTA: TranscriptTier.isSOTA(meeting.transcriptTier))
+        } else {
+            KleothPill("Untranscribed", systemImage: "waveform.badge.exclamationmark", tint: KleothPalette.pendingTint)
+        }
     }
 }

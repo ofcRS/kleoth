@@ -69,6 +69,14 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
   downloads the model in the background, surfacing `modelDownloadProgress` in the popover.
   First run pulls ~600 MB once, then offline.
 - `LocalTranscriber.downloadModel(useBackgroundSession:progress:)` is the download entry point.
+- **Language (⚠️ gotcha):** WhisperKit's `DecodingOptions.detectLanguage` defaults to
+  `!usePrefillPrompt` = **`false`**, so `language: nil` alone silently resolves to **`"en"`** —
+  this made RU meetings transcribe in English. `LocalTranscriber.resolveLanguage` now runs ONE
+  global `pipe.detectLanguage(audioPath:)` pass (most-confident channel wins, short-circuits at
+  ≥0.85) and forces that language across all VAD chunks; `detectLanguage: true` is only the
+  last-resort fallback. The resolved code is also returned as `ScribeResponse.languageCode` (via
+  `resolvedLanguage ?? …`) so the summarizer writes in that language. Pinnable via Settings →
+  `transcription_language` (Keychain), `nil`/`"auto"` = detect. Verified live: RU meeting → `ru`.
 
 ## Summarization
 - OpenRouter chat-completions. **Default model: `google/gemini-3-flash-preview`** (set in
@@ -119,6 +127,36 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
 (always). One meeting = one folder. Folder name encodes start time.
 
+## Current status (2026-06-03 — 7-fix UX pass)
+- ✅ Both packages build clean; **86 core tests green**; release app installed + running.
+- ✅ **Seven fixes shipped (multi-agent reviewed, then triaged):**
+  1. **Popover header icon** → the lyre app-mark (`KleothAssets.appMark()` loads
+     `Resources/AppMark.png`, derived from `icon-a` via `sips` center-crop; falls back to the app
+     icon then an SF Symbol). Was a generic waveform tile.
+  2. **Mic-vs-system loudness** → `ChannelAudio.normalizeLoudness` (per-channel RMS via vDSP) applied
+     before the Scribe mono-mix (`mixToMono`) and the playback combine (`Recorder.combine`). ffmpeg
+     is NOT installed → native AVFoundation/Accelerate instead. Attribution is unaffected (it reads
+     raw per-channel envelopes, not the normalized mix).
+  3. **Empty-state art** regenerated via OpenRouter (`jobs-empty3.json`, image-to-image off `icon-a`)
+     — polished full-bleed lyre tiles, no squiggle/vignette. In `Resources/Empty*.png` (600px).
+  4. **Local RU→EN bug** fixed (see WhisperKit specifics) + Settings **Language** picker.
+  5. **History as a ⌘-Tab window** → `AppActivation` flips `.accessory`↔`.regular` while a titled
+     window (History/Settings) is open; down-transition recomputed from the live window list
+     (self-healing, handles concurrent windows). Wired from History + Settings `onAppear/onDisappear`.
+  6. **SOTA progress bar** → `ScribeOptions.onUploadProgress` → `HTTPTransport.upload(…progress:)`
+     (URLSession per-task delegate) → `RecordingController.transcriptionProgress` (@Published) →
+     determinate bar (upload) + indeterminate (server-side) in popover + detail.
+  7. **30s freeze on stop** fixed → `recorder.stop()` **and** the 2-channel combine now run off the
+     main actor (`Task.detached`, `nonisolated(unsafe)` capture; `Recorder.combineChannels` static).
+     Dir-watcher reloads debounced (`scheduleReload`, 0.3s); durations cached (`durationCache`);
+     in-progress folder excluded via `activeRecordingDir`/`processingDir` (no flash / no partial-file
+     duration probe).
+- ✅ **Verified live:** local WhisperKit RU meeting → `language_code: ru`, Cyrillic transcript, correct
+  You/Them (ran `localtranscribe` on a /tmp copy; originals untouched).
+- ⚠️ **Not runtime-verified this pass:** the freeze timing under a real long record→stop, the SOTA
+  upload progress against the live API, and the ⌘-Tab behavior visually (no Screen-Recording perm to
+  screenshot). All build clean and the app launches/runs stable.
+
 ## Current status (2026-06-01)
 - ✅ Both packages build clean; **68 tests green** (was 51).
 - ✅ **Four fixes shipped + verified live** (re-summarized a copy of `meeting-2026-05-31-234904`,
@@ -148,8 +186,12 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   `appintentsmetadataprocessor` (needs Swift const-extraction Xcode does). URL scheme + hotkey +
   Raycast work without it. Documented in `KleothIntents.swift`.
 - First-run model download UX is just the popover progress line; consider a clearer affordance.
-- Optional features offered, not built: transcription-language setting (pin `ru`) + model-size
-  picker; a default-engine Settings toggle (local vs Scribe).
+- ✅ **DONE (2026-06-03) — transcription-language setting** (Auto + pin `ru`/`en`/… ) in Settings.
+- Still not built: model-size picker; a default-engine Settings toggle (local vs Scribe). The
+  `localtranscribe` tool builds `LocalTranscriber` with no language pin (auto path) — fine now.
+- SOTA progress is upload-only (Scribe is one POST with no server-side progress) → determinate during
+  upload, then indeterminate while it transcribes. Local (WhisperKit) has a `TranscriptionCallback`
+  if a local progress bar is ever wanted (not wired).
 
 ## Follow-ups from research (not started)
 - **Distribution:** app is self-signed (Gatekeeper-blocked elsewhere). For release: Apple
@@ -168,6 +210,12 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   `transcript_tier`).
 - **`Transcriber: Sendable`:** a type's conformance must be declared in the same file as the
   type (so `ScribeClient: Transcriber` lives in `ScribeClient.swift`, not a separate extension).
+- **`vDSP_measqv` = MEAN of squares** (not sum) → `sqrt(measqv)` IS the correct RMS in
+  `ChannelAudio.normalizeLoudness`/`envelope`. (`vDSP_svesq` is the sum-of-squares one.) A reviewer
+  flagged this as a "divide-by-N missing" bug — it's a false positive; do not "fix" it.
+- **Off-main capture audio work:** decode/re-encode (`Recorder.combine`, `ChannelAudio.mixToMono`)
+  is seconds of CPU for a long meeting — never run it on `@MainActor`. `Recorder.combineChannels`
+  is a pure static over `Sendable` URLs for exactly this; `stop()`+combine run in `Task.detached`.
 - **SwiftPM exe quirk:** `swift build --target <exe>` compiles the module but does NOT link a
   runnable binary; use `swift build --product <exe>` to get `app/.build/debug/<exe>`.
 - **Availability:** `Recorder`/`SystemAudioTap` are `@available(macOS 14.4, *)`; WhisperKit runs

@@ -5,23 +5,21 @@ import KleothCore
 /// as native SwiftUI — not a Markdown string. Empty sections are omitted
 /// entirely so a sparse summary doesn't show a wall of "None" placeholders.
 ///
-/// The on-disk `summary.md` / `transcript.md` are still written by the pipeline
-/// for export and Copy-for-Slack; this view is the in-app display surface.
+/// Each section lives in its own Kleoth content card (a `.regularMaterial`
+/// rounded card with a hairline border — material, not glass) opened by a
+/// `KleothSectionHeader` with an SF Symbol affordance, so the body reads with a
+/// consistent rhythm. The on-disk `summary.md` / `transcript.md` are still
+/// written by the pipeline for export and Copy-for-Slack; this view is the
+/// in-app display surface.
 struct MeetingSummaryView: View {
     let summary: MeetingSummary?
     let transcript: Transcript?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
             if let summary {
-                if let title = trimmed(summary.title) {
-                    Text(title)
-                        .font(.title2.bold())
-                        .textSelection(.enabled)
-                }
-
                 if let tldr = trimmed(summary.tldr) {
-                    section("TL;DR") {
+                    section("TL;DR", systemImage: "text.alignleft") {
                         Text(tldr)
                             .font(.body)
                             .textSelection(.enabled)
@@ -30,8 +28,8 @@ struct MeetingSummaryView: View {
                 }
 
                 if !nonEmpty(summary.decisions).isEmpty {
-                    section("Decisions") {
-                        VStack(alignment: .leading, spacing: 6) {
+                    section("Decisions", systemImage: "checkmark.seal") {
+                        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
                             ForEach(Array(nonEmpty(summary.decisions).enumerated()), id: \.offset) { _, decision in
                                 iconRow("checkmark.seal", decision)
                             }
@@ -40,8 +38,8 @@ struct MeetingSummaryView: View {
                 }
 
                 if !validActionItems(summary.actionItems).isEmpty {
-                    section("Action Items") {
-                        VStack(alignment: .leading, spacing: 8) {
+                    section("Action Items", systemImage: "checklist") {
+                        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
                             ForEach(Array(validActionItems(summary.actionItems).enumerated()), id: \.offset) { _, item in
                                 actionItemRow(item)
                             }
@@ -50,20 +48,28 @@ struct MeetingSummaryView: View {
                 }
 
                 if !nonEmpty(summary.keyPoints).isEmpty {
-                    section("Key Points") {
+                    section("Key Points", systemImage: "list.bullet") {
                         bulletList(nonEmpty(summary.keyPoints))
                     }
                 }
 
                 let highlights = validHighlights(summary.perSpeakerHighlights)
                 if !highlights.isEmpty {
-                    section("Per-Speaker Highlights") {
-                        VStack(alignment: .leading, spacing: 12) {
+                    section("Per-Speaker Highlights", systemImage: "person.2.wave.2") {
+                        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
                             ForEach(Array(highlights.enumerated()), id: \.offset) { _, highlight in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(highlight.speaker)
-                                        .font(.subheadline.bold())
-                                        .textSelection(.enabled)
+                                VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
+                                    HStack(spacing: KleothMetrics.spacingS) {
+                                        SpeakerDot(
+                                            color: KleothPalette.speakerColor(forSpeakerId: highlight.speaker, name: highlight.speaker),
+                                            speakerName: highlight.speaker
+                                        )
+                                        Text(highlight.speaker)
+                                            .font(.subheadline.weight(.semibold))
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .textSelection(.enabled)
+                                    }
                                     bulletList(highlight.highlights)
                                 }
                             }
@@ -72,8 +78,8 @@ struct MeetingSummaryView: View {
                 }
 
                 if !nonEmpty(summary.openQuestions).isEmpty {
-                    section("Open Questions") {
-                        VStack(alignment: .leading, spacing: 6) {
+                    section("Open Questions", systemImage: "questionmark.circle") {
+                        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
                             ForEach(Array(nonEmpty(summary.openQuestions).enumerated()), id: \.offset) { _, question in
                                 iconRow("questionmark.circle", question)
                             }
@@ -83,15 +89,15 @@ struct MeetingSummaryView: View {
 
                 let tags = nonEmpty(summary.suggestedTags)
                 if !tags.isEmpty {
-                    section("Tags") {
+                    section("Tags", systemImage: "tag") {
                         tagChips(tags)
                     }
                 }
             }
 
             if let transcript, !transcript.utterances.isEmpty {
-                section("Transcript") {
-                    VStack(alignment: .leading, spacing: 10) {
+                section("Transcript", systemImage: "waveform") {
+                    VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
                         ForEach(Array(transcript.utterances.enumerated()), id: \.offset) { _, utterance in
                             utteranceRow(utterance)
                         }
@@ -103,26 +109,30 @@ struct MeetingSummaryView: View {
 
     // MARK: - Section scaffolding
 
-    /// A titled section with a `.headline` header and its content below.
+    /// A titled section rendered as a Kleoth content card: a `KleothSectionHeader`
+    /// (accent SF Symbol + `.headline` title) above its content.
     @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
+    private func section<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+            KleothSectionHeader(title, systemImage: systemImage)
             content()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .kleothCard()
     }
 
     // MARK: - Rows
 
     /// A bulleted list of plain strings.
     private func bulletList(_ items: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
             ForEach(Array(nonEmpty(items).enumerated()), id: \.offset) { _, item in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
                     Text("•")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                     Text(item)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -131,33 +141,30 @@ struct MeetingSummaryView: View {
         }
     }
 
-    /// A row led by an SF Symbol, with selectable text.
+    /// A row led by an accent-tinted SF Symbol, with selectable text.
     private func iconRow(_ systemImage: String, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
             Image(systemName: systemImage)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accentColor)
+                .symbolRenderingMode(.hierarchical)
             Text(text)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// An action item: an owner badge, the task text, and an optional due date.
+    /// An action item: an owner pill, the task text, and an optional due date.
     private func actionItemRow(_ item: ActionItem) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
             if let owner = trimmed(item.owner) {
-                Text(owner)
-                    .font(.caption.weight(.medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
+                KleothPill(owner, systemImage: "person", tint: .accentColor)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
                 Text(item.task)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 if let due = trimmed(item.due) {
-                    Text("Due \(due)")
+                    Label("Due \(due)", systemImage: "calendar")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -165,16 +172,25 @@ struct MeetingSummaryView: View {
         }
     }
 
-    /// A single transcript line: speaker (bold), a monospaced m:ss timestamp,
-    /// then the text.
+    /// A single transcript line in the "polished speaker card" layout: a colored
+    /// speaker dot + the speaker name (semibold) + a monospaced `m:ss` timestamp
+    /// on one line, with the utterance text below. You/Them are color-coded
+    /// consistently via `KleothPalette.speakerColor`.
     private func utteranceRow(_ utterance: Utterance) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(utterance.speakerName ?? utterance.speakerId)
-                    .font(.subheadline.bold())
+        let color = KleothPalette.speakerColor(forSpeakerId: utterance.speakerId, name: utterance.speakerName)
+        let name = utterance.speakerName ?? utterance.speakerId
+        return VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            HStack(spacing: KleothMetrics.spacingS) {
+                SpeakerDot(color: color, speakerName: name)
+                Text(name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Text(Self.timestamp(utterance.start))
-                    .font(.caption.monospaced())
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
             Text(utterance.text)
                 .textSelection(.enabled)
@@ -186,13 +202,9 @@ struct MeetingSummaryView: View {
 
     @ViewBuilder
     private func tagChips(_ tags: [String]) -> some View {
-        FlowLayout(spacing: 6) {
+        KleothFlowLayout(spacing: KleothMetrics.spacingS) {
             ForEach(Array(tags.enumerated()), id: \.offset) { _, tag in
-                Text("#\(Self.tagSlug(tag))")
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.quaternary, in: Capsule())
+                KleothPill("#\(Self.tagSlug(tag))", tint: .accentColor)
             }
         }
     }
@@ -239,56 +251,5 @@ struct MeetingSummaryView: View {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: "-")
-    }
-}
-
-// MARK: - Wrapping layout for tag chips
-
-/// A minimal left-to-right wrapping layout: lays children out in rows, wrapping
-/// to the next row when the proposed width is exceeded. Used for tag chips.
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var rowWidth: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var totalHeight: CGFloat = 0
-        var totalWidth: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if rowWidth > 0, rowWidth + spacing + size.width > maxWidth {
-                totalWidth = max(totalWidth, rowWidth)
-                totalHeight += rowHeight + spacing
-                rowWidth = size.width
-                rowHeight = size.height
-            } else {
-                rowWidth += (rowWidth > 0 ? spacing : 0) + size.width
-                rowHeight = max(rowHeight, size.height)
-            }
-        }
-        totalWidth = max(totalWidth, rowWidth)
-        totalHeight += rowHeight
-        return CGSize(width: totalWidth, height: totalHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
-        let maxWidth = bounds.width
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width - bounds.minX > maxWidth {
-                x = bounds.minX
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
     }
 }

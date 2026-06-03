@@ -122,12 +122,16 @@ public enum TranscriptNormalizer {
         return (nextStart - prevEnd) > maxGap
     }
 
-    /// Builds an utterance from a non-empty run of speech tokens: text is
-    /// the token texts joined by single spaces (with internal whitespace
-    /// trimmed and collapsed), and start/end come from the first/last token.
+    /// Builds an utterance from a non-empty run of speech tokens: each token's
+    /// text is cleaned of Whisper special tokens (`<|…|>`) and trimmed/collapsed
+    /// via `WhisperText.clean`, tokens that become empty are dropped, and the
+    /// survivors are joined by single spaces; start/end come from the
+    /// first/last token. Cleaning here means re-normalizing an existing
+    /// transcript (e.g. `loadTranscript`) retroactively scrubs legacy local
+    /// meetings whose stored text still carries the tokens.
     private static func makeUtterance(_ words: [ScribeWord], speakerId: String) -> Utterance {
         let text = words
-            .map { $0.text.trimmingCharacters(in: .whitespaces) }
+            .map { WhisperText.clean($0.text) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         return Utterance(

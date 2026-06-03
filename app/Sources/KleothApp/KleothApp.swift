@@ -16,12 +16,11 @@ struct KleothApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra(
-            "Kleoth",
-            systemImage: controller.isRecording ? "record.circle" : "waveform"
-        ) {
+        MenuBarExtra {
             MenuView()
                 .environmentObject(controller)
+        } label: {
+            KleothMenuBarLabel(isRecording: controller.isRecording)
         }
         .menuBarExtraStyle(.window)
 
@@ -35,6 +34,24 @@ struct KleothApp: App {
         Settings {
             SettingsView()
                 .environmentObject(controller)
+        }
+    }
+}
+
+/// The menu-bar item's icon: the custom Kleoth lyre template glyph at rest, and
+/// the system record symbol while capturing (both monochrome templates that
+/// follow the menu bar's appearance). Falls back to an SF Symbol if the bundled
+/// glyph is unavailable.
+private struct KleothMenuBarLabel: View {
+    let isRecording: Bool
+
+    var body: some View {
+        if isRecording {
+            Image(systemName: "record.circle")
+        } else if let glyph = KleothAssets.menuBarGlyph() {
+            Image(nsImage: glyph)
+        } else {
+            Image(systemName: "waveform")
         }
     }
 }

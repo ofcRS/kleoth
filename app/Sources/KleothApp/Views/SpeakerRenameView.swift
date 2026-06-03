@@ -23,9 +23,8 @@ struct SpeakerRenameView: View {
     @State private var names: [String: String] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Rename speakers")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+            KleothSectionHeader("Rename speakers", systemImage: "person.2")
 
             if speakerIds.isEmpty {
                 Text("No speakers were detected in this transcript.")
@@ -33,7 +32,7 @@ struct SpeakerRenameView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: KleothMetrics.spacingL) {
                         ForEach(speakerIds, id: \.self) { speakerId in
                             speakerRow(speakerId)
                         }
@@ -60,22 +59,35 @@ struct SpeakerRenameView: View {
     // MARK: - Rows
 
     private func speakerRow(_ speakerId: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextField(
-                speakerId,
-                text: Binding(
-                    get: { names[speakerId] ?? "" },
-                    set: { names[speakerId] = $0 }
-                ),
-                prompt: Text("Name for \(speakerId)")
-            )
-            .textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            HStack(spacing: KleothMetrics.spacingS) {
+                SpeakerDot(
+                    color: KleothPalette.speakerColor(forSpeakerId: speakerId, name: names[speakerId]),
+                    speakerName: names[speakerId] ?? speakerId
+                )
+                TextField(
+                    speakerId,
+                    text: Binding(
+                        get: { names[speakerId] ?? "" },
+                        set: { names[speakerId] = $0 }
+                    ),
+                    prompt: Text("Name for \(speakerId)")
+                )
+                .textFieldStyle(.roundedBorder)
+            }
 
-            ForEach(Array((samples[speakerId] ?? []).enumerated()), id: \.offset) { _, sample in
-                Text("“\(sample)”")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+            let speakerSamples = samples[speakerId] ?? []
+            if !speakerSamples.isEmpty {
+                VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+                    ForEach(Array(speakerSamples.enumerated()), id: \.offset) { _, sample in
+                        Text("“\(sample)”")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                }
+                .padding(.leading, KleothMetrics.spacingL)
+                .padding(.top, KleothMetrics.spacingXS)
             }
         }
     }

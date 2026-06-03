@@ -72,22 +72,32 @@ enum MeetingFormat {
 // MARK: - Empty / unavailable state
 
 /// Small stand-in for `ContentUnavailableView` (kept compatible across
-/// toolchains): a centered glyph, title, and message.
+/// toolchains): a centered illustration (or SF Symbol glyph), title, and message.
+///
+/// Pass an `illustration` to show a bundled brand tile; when it's missing (or
+/// `nil`) it falls back to the `systemImage` SF Symbol, so the empty state always
+/// renders something sensible.
 struct ContentUnavailableCompat: View {
     let title: String
     let systemImage: String
     let message: String
+    var illustration: KleothAssets.Illustration?
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
+        VStack(spacing: KleothMetrics.spacingM) {
+            if let illustration, let image = KleothAssets.illustration(illustration) {
+                KleothIllustration(image: image, size: 132)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+            }
             Text(title).font(.headline)
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 320)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

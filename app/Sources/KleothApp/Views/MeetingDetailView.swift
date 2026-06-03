@@ -22,12 +22,27 @@ struct MeetingDetailView: View {
     @State private var confirmDelete = false
     @State private var confirmFullTranscribe = false
     @State private var copied = false
+    /// Whether this meeting has no transcript on disk yet (audio-only). Decided in
+    /// `reload()` from the disk, not the (possibly stale) `meeting.isProcessed`
+    /// flag, so an in-place transcribe surfaces the result without a relaunch.
+    @State private var isUnprocessed = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
             headerCard
 
-            if !meeting.isProcessed {
+            if let audio = audioURL {
+                MeetingAudioPlayer(url: audio)
+            }
+
+            // Live progress while this (already-transcribed) meeting is being
+            // upgraded with ElevenLabs Scribe or re-summarized: a determinate bar
+            // during the audio upload, indeterminate while Scribe works server-side.
+            if controller.isProcessing && !isUnprocessed {
+                transcriptionProgressBanner
+            }
+
+            if isUnprocessed {
                 unprocessedState
             } else if let loadError {
                 ContentUnavailableCompat(
@@ -40,26 +55,32 @@ struct MeetingDetailView: View {
                 // pre-rendered summary.md exists on disk — show it as plain text.
                 ScrollView {
                     Text(fallbackMarkdown)
-                        .font(.system(.body))
+                        .font(.body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
+                        .padding(.vertical, KleothMetrics.spacingXS)
                 }
                 .kleothSoftScrollEdge()
             } else {
                 ScrollView {
                     MeetingSummaryView(summary: summary, transcript: transcript)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
+                        .padding(.vertical, KleothMetrics.spacingXS)
                 }
                 .kleothSoftScrollEdge()
             }
         }
         .padding()
-        .frame(minWidth: 440, minHeight: 380)
+        .frame(minWidth: 440, minHeight: 320)
         .navigationTitle(meeting.title)
         .toolbar { toolbarContent }
         .onAppear(perform: reload)
+        // Reload from disk when this meeting's content changes in place (speaker
+        // rename, re-transcribe, re-summarize). The detail's view identity is
+        // pinned with `.id(meeting.id)`, so `onAppear` fires only once and a pure
+        // rename changes no `RecentMeeting` field — without this reactive signal
+        // the new names would surface only after the app is relaunched.
+        .onChange(of: controller.contentRevision) { _, _ in reload() }
         .sheet(isPresented: $showRename) {
             if let transcript {
                 SpeakerRenameView(
@@ -94,59 +115,67 @@ struct MeetingDetailView: View {
 
     // MARK: - Header
 
+    /// Metadata + cost summary for the meeting, in a Kleoth content card: the
+    /// prominent title, a wrapping row of metadata chips (date · time, duration,
+    /// model, color-coded tier badge, and a "No summary yet" hint), and the cost
+    /// breakdown as aligned stat tiles.
     private var headerCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ForEach(metaChips, id: \.self) { chip in
-                    Text(chip)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+            Text(meeting.title)
+                .font(.title2.weight(.semibold))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            metaChipRow
 
             if let cost = metadata?.cost {
-                HStack(spacing: 16) {
-                    costItem("Total", cost.totalUSD)
-                    costItem("Transcription", cost.transcriptionUSD)
-                    if cost.summaryUSD > 0 { costItem("Summary", cost.summaryUSD) }
-                    Spacer()
+                Divider()
+                // Equal-width columns so the tiles fill the card evenly whether
+                // there are two (no summary cost) or three — avoids both the old
+                // left-pinned dead space and an asymmetric single-Spacer gap.
+                HStack(alignment: .top, spacing: KleothMetrics.spacingM) {
+                    KleothStatTile(label: "Total", value: MeetingFormat.usd(cost.totalUSD))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    KleothStatTile(label: "Transcription", value: MeetingFormat.usd(cost.transcriptionUSD))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if cost.summaryUSD > 0 {
+                        KleothStatTile(label: "Summary", value: MeetingFormat.usd(cost.summaryUSD))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .kleothCard()
     }
 
-    private var metaChips: [String] {
-        var chips: [String] = []
+    /// The wrapping row of metadata chips that sits under the title.
+    @ViewBuilder
+    private var metaChipRow: some View {
+        KleothFlowLayout(spacing: KleothMetrics.spacingS) {
+            KleothPill(dateTimeChip, systemImage: "calendar")
+            if let duration = MeetingFormat.duration(meeting.durationSecs ?? metadata?.cost?.audioDurationSecs) {
+                KleothPill(duration, systemImage: "clock")
+            }
+            if let model = metadata?.model, !model.isEmpty {
+                KleothPill(model, systemImage: "sparkles")
+            }
+            if let tier = metadata?.transcriptTier {
+                KleothTierBadge(isSOTA: TranscriptTier.isSOTA(tier))
+            }
+            if summary == nil {
+                KleothPill("No summary yet", systemImage: "doc.text", tint: KleothPalette.pendingTint)
+            }
+        }
+    }
+
+    /// "May 31, 2026 · 5:26 PM" (or just the date when the start time is unknown).
+    private var dateTimeChip: String {
         let dateStr = metadata?.date ?? meeting.date
         if let time = MeetingFormat.time(meeting) {
-            chips.append("\(dateStr) · \(time)")
-        } else {
-            chips.append(dateStr)
+            return "\(dateStr) · \(time)"
         }
-        if let duration = MeetingFormat.duration(meeting.durationSecs ?? metadata?.cost?.audioDurationSecs) {
-            chips.append(duration)
-        }
-        if let model = metadata?.model, !model.isEmpty {
-            chips.append(model)
-        }
-        if let tier = metadata?.transcriptTier {
-            chips.append(TranscriptTier.isSOTA(tier) ? "SOTA · diarized" : "Local · free")
-        }
-        if summary == nil {
-            chips.append("no summary yet")
-        }
-        return chips
-    }
-
-    private func costItem(_ label: String, _ value: Double) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-            Text(MeetingFormat.usd(value)).font(.caption.monospacedDigit())
-        }
+        return dateStr
     }
 
     /// "Transcribe (~$X)" using the known audio duration, when available.
@@ -161,13 +190,43 @@ struct MeetingDetailView: View {
         "Sends this meeting's audio to ElevenLabs for a higher-accuracy, diarized transcript, then re-summarizes. Replaces the current transcript and incurs ElevenLabs cost (~$0.22 per hour of audio)."
     }
 
+    // MARK: - Transcription progress
+
+    /// Progress banner for an in-flight SOTA transcription / re-summarization:
+    /// a determinate bar during the multipart upload (`transcriptionProgress`),
+    /// otherwise an indeterminate spinner while Scribe transcribes server-side.
+    /// Mirrors the popover's status line so progress reads consistently.
+    private var transcriptionProgressBanner: some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            HStack(spacing: KleothMetrics.spacingS) {
+                if controller.transcriptionProgress == nil {
+                    ProgressView().controlSize(.small)
+                }
+                Text(controller.statusMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            if let progress = controller.transcriptionProgress {
+                ProgressView(value: progress)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .kleothCard(padding: KleothMetrics.spacingM)
+    }
+
     // MARK: - Unprocessed (audio-only) state
 
     private var unprocessedState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "waveform.badge.exclamationmark")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
+        VStack(spacing: KleothMetrics.spacingM) {
+            if let image = KleothAssets.illustration(.notTranscribed) {
+                KleothIllustration(image: image, size: 120)
+            } else {
+                Image(systemName: "waveform.badge.exclamationmark")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+            }
             Text("Not transcribed yet")
                 .font(.headline)
             Text("The audio for this recording is saved, but transcription didn't finish. Transcribe it now — free and on-device.")
@@ -179,7 +238,7 @@ struct MeetingDetailView: View {
                 Task { await controller.transcribeSaved(meeting) }
             } label: {
                 Label("Transcribe (free, on-device)", systemImage: "sparkles")
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, KleothMetrics.spacingS)
             }
             .kleothProminentButton()
             .controlSize(.large)
@@ -197,22 +256,23 @@ struct MeetingDetailView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
-            if let audio = audioURL {
-                Button { NSWorkspace.shared.open(audio) } label: {
-                    Label("Play audio", systemImage: "play.circle")
-                }
-            }
+            // Playback is handled by the inline MeetingAudioPlayer; the toolbar
+            // keeps the file/share/edit actions. `.help` gives every icon-only
+            // button an accessible hint.
             Button { revealInFinder() } label: {
                 Label("Reveal in Finder", systemImage: "folder")
             }
+            .help("Show the meeting folder in Finder")
             Button { copyForSlack() } label: {
                 Label(copied ? "Copied!" : "Copy for Slack", systemImage: copied ? "checkmark" : "doc.on.clipboard")
             }
             .disabled(summary == nil)
+            .help("Copy a Slack-formatted summary to the clipboard")
             Button { showRename = true } label: {
                 Label("Rename speakers", systemImage: "person.2")
             }
             .disabled(transcript == nil || (transcript?.utterances.isEmpty ?? true))
+            .help("Assign names to the detected speakers")
             if !TranscriptTier.isSOTA(metadata?.transcriptTier) {
                 Button { confirmFullTranscribe = true } label: {
                     Label("Fully transcribe", systemImage: "sparkles")
@@ -225,17 +285,14 @@ struct MeetingDetailView: View {
             Button(role: .destructive) { confirmDelete = true } label: {
                 Label("Delete", systemImage: "trash")
             }
+            .help("Move this meeting to the Trash")
         }
     }
 
-    /// The best available audio file co-located with the meeting, if any.
+    /// The best available audio file co-located with the meeting, if any. Shares
+    /// the single lookup in `RecordingController` so the two never diverge.
     private var audioURL: URL? {
-        let fm = FileManager.default
-        for name in ["meeting.m4a", "combined.m4a", "mic.m4a", "system.m4a"] {
-            let url = meeting.directory.appendingPathComponent(name)
-            if fm.fileExists(atPath: url.path) { return url }
-        }
-        return nil
+        RecordingController.meetingAudioURL(in: meeting.directory)
     }
 
     private func revealInFinder() {
@@ -246,29 +303,38 @@ struct MeetingDetailView: View {
 
     private func reload() {
         copied = false
-        guard meeting.isProcessed else {
-            // Audio-only recording (processing didn't finish): nothing to load.
-            metadata = loadMetadata()
+        metadata = loadMetadata()
+        let store = MeetingStore(baseDir: meeting.directory.deletingLastPathComponent())
+
+        // Decide from the disk, not the handed-in `meeting.isProcessed` flag:
+        // transcribing an audio-only meeting in place writes transcript.json, and
+        // the reactive `contentRevision` reload must reflect that immediately even
+        // if the RecentMeeting value we were passed is momentarily stale. No
+        // transcript file → genuinely audio-only ("Not transcribed yet").
+        let transcriptURL = meeting.directory.appendingPathComponent("transcript.json")
+        guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
             transcript = nil
             summary = nil
             fallbackMarkdown = ""
             loadError = nil
+            isUnprocessed = true
             return
         }
-        let store = MeetingStore(baseDir: meeting.directory.deletingLastPathComponent())
+
         do {
             // `loadTranscript` applies speakers.json, so utterances already carry
             // You/Them names — the structured view renders them natively.
             transcript = try store.loadTranscript(in: meeting.directory)
             summary = try store.loadSummary(in: meeting.directory)
-            metadata = loadMetadata()
             fallbackMarkdown = ""
             loadError = nil
+            isUnprocessed = false
         } catch {
-            // Fall back to any pre-rendered summary.md on disk (plain text).
-            metadata = loadMetadata()
+            // transcript.json exists but couldn't be decoded: fall back to any
+            // pre-rendered summary.md (plain text), else surface the error.
             transcript = nil
             summary = nil
+            isUnprocessed = false
             if let onDisk = try? String(
                 contentsOf: meeting.directory.appendingPathComponent("summary.md"),
                 encoding: .utf8

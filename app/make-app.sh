@@ -24,6 +24,20 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$DIR/bundle/Info.plist" "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/Kleoth"
 
+# App icon (classic .icns; CFBundleIconFile = "Kleoth" in Info.plist).
+if [ -f "$DIR/bundle/Kleoth.icns" ]; then
+    cp "$DIR/bundle/Kleoth.icns" "$APP/Contents/Resources/Kleoth.icns"
+    echo "    bundled app icon Kleoth.icns"
+fi
+
+# Bundle the SwiftPM resource bundle (menu-bar glyph + empty-state illustrations)
+# next to the executable so Bundle.module resolves at runtime.
+RESBUNDLE="$DIR/.build/$CONFIG/KleothApp_KleothApp.bundle"
+if [ -d "$RESBUNDLE" ]; then
+    cp -R "$RESBUNDLE" "$APP/Contents/Resources/"
+    echo "    bundled resources $(basename "$RESBUNDLE")"
+fi
+
 echo "==> codesigning"
 KC="$HOME/Library/Keychains/kleoth-codesign.keychain-db"
 IDENTITY="Kleoth Self-Signed"

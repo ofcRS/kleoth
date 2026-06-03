@@ -1,0 +1,17 @@
+[
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/empty2-no-meetings.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A full-bleed square app illustration, soft and premium, filling the entire square frame edge to edge. A warm gold ancient Greek lyre centered with gentle concentric soundwaves radiating outward, on a smooth deep indigo-to-violet gradient background with a subtle vignette and soft inner glow. Modern, clean, calm, flat-illustration style with subtle depth. No text, no checkerboard, no transparency pattern, no border."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/empty2-not-transcribed.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A full-bleed square app illustration, soft and premium, filling the entire square frame edge to edge. A warm gold ancient Greek lyre beside a flat, dormant single waveform line (paused, not yet started), centered on a smooth deep indigo gradient background with a subtle vignette. Calm, gentle, modern flat-illustration style. No text, no checkerboard, no transparency pattern, no border."
+  },
+  {
+    "out": "/Users/shck/projects/kleoth-app/app/branding-src/candidates/empty2-select.png",
+    "aspect": "1:1", "size": "1K",
+    "prompt": "A full-bleed square app illustration, soft and premium, filling the entire square frame edge to edge. An open ancient scroll or manuscript next to a small warm-gold Greek lyre, centered on a smooth deep indigo gradient background with a subtle vignette and warm glow. Inviting and calm, modern flat-illustration style. No text, no checkerboard, no transparency pattern, no border."
+  }
+]

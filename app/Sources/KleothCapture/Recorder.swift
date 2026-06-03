@@ -135,6 +135,21 @@ public final class Recorder {
         )
     }
 
+    /// Builds the 2-channel `.m4a` (channel 0 = mic, channel 1 = system) from the
+    /// two per-channel files **without a live `Recorder`**, so the heavy decode +
+    /// AAC re-encode can be hopped off the main actor.
+    ///
+    /// `buildTwoChannelFile()` does the same work but is an instance method that
+    /// reads `outputDirectory`; this static form takes only `Sendable` URLs, so a
+    /// caller on the main actor can run it inside `Task.detached` and `await` the
+    /// result. For a long recording the combine is seconds of CPU-bound work that
+    /// would otherwise freeze the UI when run synchronously on stop. At least one
+    /// source must exist.
+    @discardableResult
+    public static func combineChannels(micURL: URL, systemURL: URL, outputURL: URL) throws -> URL {
+        try combine(channel0: micURL, channel1: systemURL, outputURL: outputURL)
+    }
+
     /// Spec-named convenience: builds the 2-channel upload file at
     /// `combined.m4a` inside the output directory and returns it.
     @discardableResult
@@ -168,6 +183,11 @@ public final class Recorder {
         guard mono0 != nil || mono1 != nil else {
             throw RecorderError.missingSourceFile(channel0)
         }
+
+        // Balance the two channels' loudness so the combined file (in-app
+        // playback) isn't lopsided when the mic is much quieter than system audio.
+        ChannelAudio.normalizeLoudness(mono0)
+        ChannelAudio.normalizeLoudness(mono1)
 
         // Common sample rate: prefer channel0's, else channel1's.
         let sampleRate = mono0?.format.sampleRate

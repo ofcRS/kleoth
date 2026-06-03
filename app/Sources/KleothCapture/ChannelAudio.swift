@@ -56,6 +56,12 @@ public enum ChannelAudio {
         mono0 = try resample(mono0, toSampleRate: targetRate)
         mono1 = try resample(mono1, toSampleRate: targetRate)
 
+        // Balance the two channels' loudness before summing so the (usually
+        // quieter) mic isn't drowned out by system audio in the mono mix sent to
+        // Scribe — the user-reported "mic much quieter" issue.
+        normalizeLoudness(mono0)
+        normalizeLoudness(mono1)
+
         let frames0 = mono0?.frameLength ?? 0
         let frames1 = mono1?.frameLength ?? 0
         let totalFrames = max(frames0, frames1)
@@ -134,6 +140,38 @@ public enum ChannelAudio {
     }
 
     // MARK: - Helpers
+
+    /// Scales a mono buffer **in place** toward a target RMS loudness, so two
+    /// channels captured at very different levels — typically a quiet mic vs loud
+    /// system audio — are balanced before they are summed/combined. Without this,
+    /// a plain sum buries the mic user's voice, which both hurts Scribe's
+    /// recognition of "You" and makes playback lopsided.
+    ///
+    /// Near-silent channels (RMS below `noiseFloor`) are left untouched so a
+    /// genuinely silent channel isn't amplified into noise, and the boost is
+    /// capped at `maxGain` for the same reason. No-op for a `nil` buffer. Speaker
+    /// attribution is unaffected: it reads energy from the original per-channel
+    /// files, never from a normalized buffer. (This is the native AVFoundation/
+    /// Accelerate equivalent of an ffmpeg loudness pass — no external binary.)
+    static func normalizeLoudness(
+        _ buffer: AVAudioPCMBuffer?,
+        targetRMS: Float = 0.12,
+        maxGain: Float = 8,
+        noiseFloor: Float = 0.0008
+    ) {
+        guard let buffer, let data = buffer.floatChannelData else { return }
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return }
+
+        var meanSquare: Float = 0
+        vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(count))
+        let rms = meanSquare > 0 ? sqrt(meanSquare) : 0
+        guard rms > noiseFloor else { return }
+
+        var gain = min(targetRMS / rms, maxGain)
+        guard gain.isFinite, gain > 0, gain != 1 else { return }
+        vDSP_vsmul(data[0], 1, &gain, data[0], 1, vDSP_Length(count))
+    }
 
     /// Adds `source`'s mono samples into `destination` (sized `frames`), updating
     /// `peak` with the running absolute maximum. Frames past the source's end are

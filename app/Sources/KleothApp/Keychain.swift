@@ -17,6 +17,7 @@ public enum Keychain {
         public static let slackWebhook = "slack_webhook"
         public static let outputDir = "output_dir"
         public static let defaultModel = "default_model"
+        public static let transcriptionLanguage = "transcription_language"
         public static let consentAcknowledged = "consent_acknowledged"
     }
 

@@ -1,0 +1,23 @@
+[
+  {
+    "out": "app/branding-src/candidates/empty3-no-meetings.png",
+    "input": "app/branding-src/candidates/icon-a.png",
+    "aspect": "1:1",
+    "size": "1K",
+    "prompt": "Using the attached Kleoth icon ONLY as the exact style, palette, and lyre reference, create a premium full-bleed empty-state illustration for a macOS app. A single elegant golden Greek lyre (cithara), softly lit, centered, floating with a gentle volumetric glow and a few faint sparkling motes of light around it to feel inviting and 'ready to begin'. Background: a rich deep indigo-to-violet radial gradient that fills the ENTIRE square frame edge to edge. Refined, modern, Apple-quality, soft shadows, subtle depth. STRICT: no text, no letters, no words, no UI, no checkerboard, no transparency, no rounded corners, no border, no frame — a solid full-bleed square image only."
+  },
+  {
+    "out": "app/branding-src/candidates/empty3-not-transcribed.png",
+    "input": "app/branding-src/candidates/icon-a.png",
+    "aspect": "1:1",
+    "size": "1K",
+    "prompt": "Using the attached Kleoth icon ONLY as the exact style, palette, and lyre reference, create a premium full-bleed empty-state illustration for a macOS app, conveying 'audio saved, not yet transcribed / waiting'. A single elegant golden Greek lyre (cithara), centered, softly lit, with a calm, slightly dimmed mood and a soft glowing halo behind it — quiet and patient, NOT busy. Do NOT add any detached squiggles, EKG lines, waveforms, or floating doodads. Background: a rich deep indigo-to-violet radial gradient filling the ENTIRE square frame edge to edge. Refined, modern, Apple-quality, soft depth. STRICT: no text, no letters, no words, no UI, no checkerboard, no transparency, no rounded corners, no border — a solid full-bleed square image only."
+  },
+  {
+    "out": "app/branding-src/candidates/empty3-select.png",
+    "input": "app/branding-src/candidates/icon-a.png",
+    "aspect": "1:1",
+    "size": "1K",
+    "prompt": "Using the attached Kleoth icon ONLY as the exact style, palette, and lyre reference, create a premium full-bleed empty-state illustration for a macOS app, conveying 'pick a meeting to view'. A single elegant golden Greek lyre (cithara), centered, softly lit, with warm gentle light and a refined glow, feeling open and welcoming. Background: a rich deep indigo-to-violet radial gradient filling the ENTIRE square frame edge to edge. Refined, modern, Apple-quality, soft shadows and depth. STRICT: no text, no letters, no words, no UI, no checkerboard, no transparency, no rounded corners, no border, no frame — a solid full-bleed square image only."
+  }
+]

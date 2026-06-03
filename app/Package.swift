@@ -33,6 +33,11 @@ let package = Package(
                 .product(name: "KleothCore", package: "kleoth-app"),
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
+            // Brand assets (menu-bar template glyph + empty-state illustrations),
+            // loaded at runtime via `Bundle.module` (see `KleothAssets`).
+            resources: [
+                .process("Resources")
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
