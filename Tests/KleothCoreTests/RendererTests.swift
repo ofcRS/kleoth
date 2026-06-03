@@ -7,17 +7,14 @@ import Testing
     private func sampleSummary() -> MeetingSummary {
         MeetingSummary(
             tldr: "We shipped the beta and picked a launch date.",
-            decisions: ["Launch on June 10", "Use the blue theme"],
+            overview: "The team walked through the beta rollout, reviewed feedback, and agreed to launch on June 10.\n\nAlice took the changelog; Bob will email the beta list.",
             actionItems: [
                 ActionItem(owner: "alice", task: "Finalize the changelog", due: "2026-06-05"),
                 ActionItem(owner: "bob", task: "Email the beta list", due: nil),
             ],
-            keyPoints: ["Beta feedback was positive", "Perf regressions resolved"],
             perSpeakerHighlights: [
                 SpeakerHighlight(speaker: "Alice", highlights: ["Owns the changelog"]),
-            ],
-            openQuestions: ["Do we need a press release?"],
-            suggestedTags: ["launch", "beta release"]
+            ]
         )
     }
 
@@ -52,13 +49,33 @@ import Testing
         )
 
         #expect(md.contains("## TL;DR"), "Missing TL;DR header in:\n\(md)")
-        #expect(md.contains("## Decisions"), "Missing Decisions header in:\n\(md)")
+        #expect(md.contains("## Summary"), "Missing Summary header in:\n\(md)")
         #expect(md.contains("## Action Items"), "Missing Action Items header in:\n\(md)")
-        // Other sections that should also be present.
-        #expect(md.contains("## Key Points"))
-        #expect(md.contains("## Open Questions"))
+        #expect(md.contains("## Per-Speaker Highlights"))
+        // The overview's prose lands under Summary.
+        #expect(md.contains("agreed to launch on June 10"))
+        // Removed sections must not come back.
+        #expect(!md.contains("## Decisions"))
+        #expect(!md.contains("## Key Points"))
+        #expect(!md.contains("## Open Questions"))
+        #expect(!md.contains("## Tags"))
         // Title header.
         #expect(md.contains("# Launch Planning"))
+    }
+
+    /// Legacy summaries (no overview) skip the Summary section instead of
+    /// rendering an empty one.
+    @Test func markdownOmitsSummarySectionWithoutOverview() {
+        var legacy = sampleSummary()
+        legacy.overview = nil
+        let md = MarkdownRenderer.render(
+            summary: legacy,
+            transcript: sampleTranscript(),
+            metadata: sampleMetadata(),
+            includeTranscript: false
+        )
+        #expect(!md.contains("## Summary"))
+        #expect(md.contains("## TL;DR"))
     }
 
     @Test func markdownEmbedsActionItemChecklist() {
@@ -104,7 +121,7 @@ import Testing
             includeTranscript: true
         )
         #expect(!md.contains("## TL;DR"))
-        #expect(!md.contains("## Decisions"))
+        #expect(!md.contains("## Summary"))
         // Header + transcript still render.
         #expect(md.contains("# Launch Planning"))
         #expect(md.contains("## Transcript"))
@@ -129,10 +146,7 @@ import Testing
     }
 
     @Test func actionItemsRendererEmptyShowsPlaceholderCheckbox() {
-        let empty = MeetingSummary(
-            tldr: "x", decisions: [], actionItems: [], keyPoints: [],
-            perSpeakerHighlights: [], openQuestions: [], suggestedTags: []
-        )
+        let empty = MeetingSummary(tldr: "x")
         let rendered = ActionItemsRenderer.render(empty)
         #expect(rendered.hasPrefix("- [ ]"))
     }
@@ -145,8 +159,9 @@ import Testing
         // Slack mrkdwn bold is single asterisks.
         #expect(slack.contains("*Launch Planning*"), "Missing bold title in:\n\(slack)")
         #expect(slack.contains("*TL;DR*"), "Missing bold TL;DR in:\n\(slack)")
-        #expect(slack.contains("*Decisions*"))
         #expect(slack.contains("*Action items*"))
+        // The removed Decisions section must not come back.
+        #expect(!slack.contains("*Decisions*"))
         // Slack must not emit Markdown ATX headers.
         #expect(!slack.contains("## "))
     }

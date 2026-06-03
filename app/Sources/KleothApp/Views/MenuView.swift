@@ -34,7 +34,10 @@ struct MenuView: View {
 
             footer
         }
-        .padding(KleothMetrics.spacingL)
+        .padding([.top, .horizontal], KleothMetrics.spacingL)
+        // The popover window's large corner radius curves into the last row, so
+        // the footer needs more room below than the sides to read as balanced.
+        .padding(.bottom, KleothMetrics.spacingXL)
         .frame(width: 340)
         .onAppear { controller.loadRecentMeetings() }
     }
@@ -65,21 +68,25 @@ struct MenuView: View {
         }
     }
 
-    /// The Kleoth lyre brand mark for the popover header — the same identity as
-    /// the Dock/Finder icon. Falls back to a tinted waveform tile if the bundled
-    /// mark can't be loaded, so the header never renders empty.
-    @ViewBuilder
+    /// The brand mark for the popover header: the lyre glyph (the same template
+    /// asset as the menu-bar icon) tinted with the accent on a quiet accent-washed
+    /// tile — minimal and native, but still unmistakably Kleoth. (A full-color
+    /// artwork chip was tried here and read as too heavy against the popover's
+    /// material chrome.) Falls back to an SF Symbol tile if the asset is missing,
+    /// so the header never renders empty.
     private var appMark: some View {
-        if let mark = KleothAssets.appMark() {
-            Image(nsImage: mark)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFill()
-                .clipShape(RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusChip, style: .continuous))
-        } else {
-            ZStack {
-                RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusChip, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.22))
+        ZStack {
+            RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusChip, style: .continuous)
+                .fill(Color.accentColor.opacity(0.22))
+            if let glyph = KleothAssets.menuBarGlyph() {
+                Image(nsImage: glyph)
+                    .renderingMode(.template)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(height: 20)
+                    .foregroundStyle(Color.accentColor)
+            } else {
                 Image(systemName: "waveform")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
@@ -96,9 +103,10 @@ struct MenuView: View {
 
     // MARK: - Record control
 
-    /// The hero record button (the single glass element), the session-cost line,
-    /// and the transient status / model-download lines, grouped on one card so
-    /// the popover's primary action reads as a distinct block.
+    /// The hero record button (the single glass element) and the transient
+    /// status / model-download lines, grouped on one card so the popover's
+    /// primary action reads as a distinct block. Deliberately money-free —
+    /// provider usage lives in Settings → Usage, nowhere else.
     @ViewBuilder
     private var recordControl: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
@@ -122,8 +130,6 @@ struct MenuView: View {
             .controlSize(.large)
             .disabled(!controller.consentAcknowledged || controller.isProcessing)
 
-            sessionCostLine
-
             statusLine
 
             if let progress = controller.modelDownloadProgress {
@@ -131,20 +137,6 @@ struct MenuView: View {
             }
         }
         .kleothCard(padding: KleothMetrics.spacingM)
-    }
-
-    /// "Session cost" with a monospaced-digit total, styled like a compact stat
-    /// row so it aligns with the cost language used elsewhere.
-    private var sessionCostLine: some View {
-        HStack {
-            Label("Session cost", systemImage: "dollarsign.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .labelStyle(.titleAndIcon)
-            Spacer()
-            Text(MeetingFormat.usd(controller.currentCostUSD))
-                .font(.caption.monospacedDigit())
-        }
     }
 
     // MARK: - Status
@@ -280,9 +272,10 @@ struct MenuView: View {
 // MARK: - Recent meeting row
 
 /// One tappable row in the popover's recent list: a speaker-style status dot, the
-/// title, a secondary time · duration line, and a trailing tier badge / cost (or
-/// an "Untranscribed" chip). Highlights on hover so it reads as actionable, and
-/// matches the History sidebar's badge/cost language.
+/// title, a secondary time · duration line, and a trailing tier badge (or an
+/// "Untranscribed" chip). Highlights on hover so it reads as actionable, and
+/// matches the History sidebar's badge language. No costs here — provider usage
+/// lives in Settings → Usage only.
 private struct RecentMeetingRow: View {
     let meeting: RecentMeeting
     @State private var isHovering = false
@@ -336,21 +329,15 @@ private struct RecentMeetingRow: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Trailing accessory: a tier badge for SOTA meetings then the cost, or an
-    /// "Untranscribed" chip for audio-only folders.
+    /// Trailing accessory: a "Cloud" badge for cloud-transcribed meetings, or an
+    /// "Untranscribed" chip for audio-only folders. On-device rows stay quiet —
+    /// that's the default, so it needs no badge in this compact list.
     @ViewBuilder
     private var trailing: some View {
         if !meeting.isProcessed {
             KleothPill("Untranscribed", tint: KleothPalette.pendingTint)
-        } else {
-            HStack(spacing: KleothMetrics.spacingS) {
-                if TranscriptTier.isSOTA(meeting.transcriptTier) {
-                    KleothTierBadge(isSOTA: true)
-                }
-                Text(MeetingFormat.usd(meeting.costUSD))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+        } else if TranscriptTier.isSOTA(meeting.transcriptTier) {
+            KleothTierBadge(isSOTA: true)
         }
     }
 }

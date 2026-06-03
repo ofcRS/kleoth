@@ -19,7 +19,6 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
     /// and for showing a time, not just a day. `nil` for legacy meetings.
     public var startedAt: Date?
     public var directory: URL
-    public var costUSD: Double
     /// Audio length in seconds, when known (from the cost breakdown).
     public var durationSecs: Double?
     /// Transcription quality tier (see `TranscriptTier`); `nil` for legacy meetings.
@@ -33,7 +32,6 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         date: String,
         startedAt: Date? = nil,
         directory: URL,
-        costUSD: Double = 0,
         durationSecs: Double? = nil,
         transcriptTier: String? = nil,
         isProcessed: Bool = true
@@ -42,7 +40,6 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         self.date = date
         self.startedAt = startedAt
         self.directory = directory
-        self.costUSD = costUSD
         self.durationSecs = durationSecs
         self.transcriptTier = transcriptTier
         self.isProcessed = isProcessed
@@ -73,7 +70,6 @@ public final class RecordingController: ObservableObject {
 
     /// Set by the popover to deep-link the History window to a specific meeting.
     @Published public var selectedMeetingID: RecentMeeting.ID?
-    @Published public var currentCostUSD: Double = 0
     @Published public var consentAcknowledged: Bool = false
 
     /// True only while a transcription/summarization pipeline run is in flight.
@@ -539,8 +535,16 @@ public final class RecordingController: ObservableObject {
             let metadata = loadMetadata(in: meetingDir)
 
             let renamed = SpeakerMapper.apply(map, to: transcript)
+            // The summary stores display *names* (action-item owners, highlight
+            // speakers), so it must follow the rename too — `transcript` still
+            // carries the previous names here, which is exactly the old→new link
+            // the remap needs. Without this, summary.json kept the old names
+            // forever and the detail view showed them on every reload.
+            let renamedSummary = summary.map {
+                SpeakerMapper.apply(map, toSummary: $0, previousTranscript: transcript)
+            }
             let markdown = MarkdownRenderer.render(
-                summary: summary,
+                summary: renamedSummary,
                 transcript: renamed,
                 metadata: metadata,
                 includeTranscript: true
@@ -551,7 +555,7 @@ public final class RecordingController: ObservableObject {
                 in: meetingDir,
                 raw: nil,
                 transcript: renamed,
-                summary: summary,
+                summary: renamedSummary,
                 summaryMarkdown: markdown,
                 speakerMap: map,
                 metadata: metadata
@@ -664,12 +668,11 @@ public final class RecordingController: ObservableObject {
             processingDir = nil
             loadRecentMeetings()
             contentRevision &+= 1
-            currentCostUSD += result.cost.totalUSD
             isProcessing = false
             if let summaryError = result.summaryError {
                 statusMessage = "Transcribed \"\(title)\" — summary skipped (\(summaryError))"
             } else {
-                statusMessage = "Saved \"\(title)\" — $\(Self.formatUSD(result.cost.totalUSD))"
+                statusMessage = "Saved \"\(title)\"."
             }
         } catch {
             isProcessing = false
@@ -685,8 +688,8 @@ public final class RecordingController: ObservableObject {
         }
     }
 
-    /// Re-transcribes an existing meeting with ElevenLabs Scribe (SOTA, diarized)
-    /// in place — the opt-in paid upgrade from the free local transcript. Reuses
+    /// Re-transcribes an existing meeting with ElevenLabs Scribe (cloud, diarized)
+    /// in place — the opt-in paid upgrade from the free on-device transcript. Reuses
     /// the meeting's folder, audio, and original metadata, keeps any speaker map,
     /// and re-summarizes when an OpenRouter key is configured.
     public func fullyTranscribe(_ meeting: RecentMeeting) async {
@@ -775,13 +778,12 @@ public final class RecordingController: ObservableObject {
             )
             loadRecentMeetings()
             contentRevision &+= 1
-            currentCostUSD += result.cost.totalUSD
             isProcessing = false
             transcriptionProgress = nil
             if let summaryError = result.summaryError {
                 statusMessage = "Fully transcribed \"\(metadata.title)\" — summary skipped (\(summaryError))"
             } else {
-                statusMessage = "Fully transcribed \"\(metadata.title)\" — $\(Self.formatUSD(result.cost.totalUSD))"
+                statusMessage = "Fully transcribed \"\(metadata.title)\"."
             }
         } catch {
             isProcessing = false
@@ -867,7 +869,6 @@ public final class RecordingController: ObservableObject {
                     date: metadata.date,
                     startedAt: started,
                     directory: dir,
-                    costUSD: metadata.cost?.totalUSD ?? 0,
                     durationSecs: realDur ?? metadata.cost?.audioDurationSecs,
                     transcriptTier: metadata.transcriptTier,
                     isProcessed: true
@@ -891,7 +892,6 @@ public final class RecordingController: ObservableObject {
                 date: Self.dayString(started ?? modified),
                 startedAt: started,
                 directory: dir,
-                costUSD: 0,
                 durationSecs: nil,
                 transcriptTier: nil,
                 isProcessed: false
@@ -1085,9 +1085,5 @@ public final class RecordingController: ObservableObject {
         guard let dur = AudioProbe.durationSeconds(of: url) else { return nil }
         durationCache[url.path] = dur
         return dur
-    }
-
-    private static func formatUSD(_ value: Double) -> String {
-        String(format: "%.4f", value)
     }
 }

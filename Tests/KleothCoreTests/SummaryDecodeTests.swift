@@ -9,17 +9,14 @@ import Foundation
     static let summaryJSON = """
     {
       "tldr": "Shipped the beta; agreed on a launch date.",
-      "decisions": ["Launch June 10"],
+      "overview": "The team reviewed the beta rollout in detail and settled on June 10 as the launch date.",
       "action_items": [
         { "owner": "alice", "task": "Write changelog", "due": "2026-06-05" },
         { "owner": "unassigned", "task": "Book the venue", "due": null }
       ],
-      "key_points": ["Feedback positive"],
       "per_speaker_highlights": [
         { "speaker": "Alice", "highlights": ["Owns changelog"] }
-      ],
-      "open_questions": ["Press release?"],
-      "suggested_tags": ["launch"]
+      ]
     }
     """
 
@@ -72,14 +69,14 @@ import Foundation
         let json = """
         {
           "title": "Q3 Launch Planning",
-          "tldr": "x", "decisions": [], "action_items": [], "key_points": [],
-          "per_speaker_highlights": [], "open_questions": [], "suggested_tags": []
+          "tldr": "x", "overview": "o", "action_items": [], "per_speaker_highlights": []
         }
         """
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let summary = try decoder.decode(MeetingSummary.self, from: Data(json.utf8))
         #expect(summary.title == "Q3 Launch Planning")
+        #expect(summary.overview == "o")
     }
 
     /// An older summary JSON without "title" decodes with title == nil.
@@ -91,6 +88,45 @@ import Foundation
         #expect(summary.title == nil)
         // Other fields still decode as before.
         #expect(summary.tldr == "Shipped the beta; agreed on a launch date.")
+    }
+
+    /// A legacy summary.json (the pre-2026-06-04 shape with decisions /
+    /// key_points / open_questions / suggested_tags and no "overview") still
+    /// decodes: removed keys are ignored, `overview` is nil, and the kept
+    /// fields come through intact.
+    @Test func summaryDecodesLegacyShape() throws {
+        let legacy = """
+        {
+          "tldr": "Old-shape summary.",
+          "decisions": ["Launch June 10"],
+          "action_items": [{ "owner": "alice", "task": "Write changelog", "due": null }],
+          "key_points": ["Feedback positive"],
+          "per_speaker_highlights": [{ "speaker": "Alice", "highlights": ["Owns changelog"] }],
+          "open_questions": ["Press release?"],
+          "suggested_tags": ["launch"]
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let summary = try decoder.decode(MeetingSummary.self, from: Data(legacy.utf8))
+        #expect(summary.tldr == "Old-shape summary.")
+        #expect(summary.overview == nil)
+        #expect(summary.actionItems.count == 1)
+        #expect(summary.perSpeakerHighlights.first?.speaker == "Alice")
+    }
+
+    /// A provider's looser `json_object` fallback may omit the arrays entirely;
+    /// they decode as empty rather than failing the whole summary.
+    @Test func summaryDecodesWithMissingArraysAsEmpty() throws {
+        let sparse = """
+        { "tldr": "Just the gist." }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let summary = try decoder.decode(MeetingSummary.self, from: Data(sparse.utf8))
+        #expect(summary.actionItems.isEmpty)
+        #expect(summary.perSpeakerHighlights.isEmpty)
+        #expect(summary.overview == nil)
     }
 
     // MARK: - stripCodeFences (the ```json blob handling)
@@ -122,14 +158,13 @@ import Foundation
         )
 
         #expect(summary.tldr == "Shipped the beta; agreed on a launch date.")
-        #expect(summary.decisions == ["Launch June 10"])
+        #expect(summary.overview?.contains("June 10") == true)
         #expect(summary.actionItems.count == 2)
         #expect(summary.actionItems[0].owner == "alice")
         #expect(summary.actionItems[0].task == "Write changelog")
         #expect(summary.actionItems[0].due == "2026-06-05")
         // null due maps to nil.
         #expect(summary.actionItems[1].due == nil)
-        #expect(summary.suggestedTags == ["launch"])
         #expect(abs(costUSD - 0.0123) < 1e-9)
 
         // Only one round trip needed.

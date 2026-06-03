@@ -83,15 +83,11 @@ public enum TranscriptTier {
         tier?.hasPrefix("sota") ?? false
     }
 
-    /// A short, human-facing label for a tier value (for badges).
+    /// A short, human-facing label for a tier value (for badges). Worded by
+    /// where the audio went — "On-device" (never left the Mac) vs "Cloud"
+    /// (ElevenLabs Scribe) — rather than the old "Local"/"SOTA" jargon.
     public static func label(_ tier: String?) -> String {
-        switch tier {
-        case sotaScribe: return "SOTA"
-        case local: return "Local"
-        case .some(let other) where other.hasPrefix("sota"): return "SOTA"
-        case .some: return "Local"
-        case .none: return "Local"
-        }
+        isSOTA(tier) ? "Cloud" : "On-device"
     }
 }
 

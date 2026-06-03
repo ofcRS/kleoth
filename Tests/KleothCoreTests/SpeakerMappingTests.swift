@@ -54,6 +54,76 @@ import Testing
         #expect(result.utterances[0].speakerName == nil)
     }
 
+    // MARK: - apply(toSummary:) — the rename must reach summary name fields
+
+    /// A summary whose owners/highlight speakers were written against the
+    /// default "You"/"Them" names (plus a bare id and an unrelated owner).
+    private func summary() -> MeetingSummary {
+        MeetingSummary(
+            tldr: "t",
+            overview: "You said things to Them.",
+            actionItems: [
+                ActionItem(owner: "You", task: "Send the dataset"),
+                ActionItem(owner: "speaker_1", task: "Review the PR"),
+                ActionItem(owner: "unassigned", task: "Book a room"),
+            ],
+            perSpeakerHighlights: [
+                SpeakerHighlight(speaker: "You", highlights: ["Asked for the dataset"]),
+                SpeakerHighlight(speaker: "Them", highlights: ["Promised the PR"]),
+            ]
+        )
+    }
+
+    /// The pre-rename transcript carrying the previous display names — the
+    /// old→new link the summary remap relies on.
+    private func namedTranscript() -> Transcript {
+        SpeakerMapper.apply(
+            SpeakerMap(names: ["speaker_0": "You", "speaker_1": "Them"]),
+            to: transcript()
+        )
+    }
+
+    @Test func applyToSummaryRenamesOwnersAndHighlightSpeakers() {
+        let map = SpeakerMap(names: ["speaker_0": "Alice", "speaker_1": "Bob"])
+        let result = SpeakerMapper.apply(map, toSummary: summary(), previousTranscript: namedTranscript())
+
+        // Previous display names follow the rename…
+        #expect(result.actionItems[0].owner == "Alice")
+        #expect(result.perSpeakerHighlights[0].speaker == "Alice")
+        #expect(result.perSpeakerHighlights[1].speaker == "Bob")
+        // …and so does a summary that referenced the bare id.
+        #expect(result.actionItems[1].owner == "Bob")
+        // Non-speaker owners and free prose are untouched.
+        #expect(result.actionItems[2].owner == "unassigned")
+        #expect(result.overview == "You said things to Them.")
+        // Tasks are never rewritten.
+        #expect(result.actionItems[0].task == "Send the dataset")
+    }
+
+    /// Renaming a second time keeps working: the previous transcript now carries
+    /// the first rename's names, which is exactly what the saved summary holds.
+    @Test func applyToSummaryChainsAcrossConsecutiveRenames() {
+        let first = SpeakerMap(names: ["speaker_0": "Alice", "speaker_1": "Bob"])
+        let renamedSummary = SpeakerMapper.apply(first, toSummary: summary(), previousTranscript: namedTranscript())
+        let renamedTranscript = SpeakerMapper.apply(first, to: transcript())
+
+        let second = SpeakerMap(names: ["speaker_0": "Алексей", "speaker_1": "Bob"])
+        let result = SpeakerMapper.apply(second, toSummary: renamedSummary, previousTranscript: renamedTranscript)
+
+        #expect(result.actionItems[0].owner == "Алексей")
+        #expect(result.perSpeakerHighlights[0].speaker == "Алексей")
+        #expect(result.perSpeakerHighlights[1].speaker == "Bob")
+    }
+
+    /// Ids absent from the map keep their existing summary names.
+    @Test func applyToSummaryLeavesUnmappedSpeakersAlone() {
+        let map = SpeakerMap(names: ["speaker_0": "Alice"]) // speaker_1 unmapped
+        let result = SpeakerMapper.apply(map, toSummary: summary(), previousTranscript: namedTranscript())
+
+        #expect(result.actionItems[0].owner == "Alice")
+        #expect(result.perSpeakerHighlights[1].speaker == "Them")
+    }
+
     // MARK: - samples
 
     @Test func samplesReturnsFirstNPerSpeakerInTranscriptOrder() {

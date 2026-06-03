@@ -23,20 +23,19 @@ public enum MarkdownRenderer {
             out += "## TL;DR\n"
             out += "\(textOrNone(summary.tldr))\n\n"
 
-            // Decisions
-            out += "## Decisions\n"
-            out += bulletedSection(summary.decisions)
-            out += "\n"
+            // Summary — the detailed narrative overview. Omitted (not "_None_")
+            // when absent, so summaries from before the field existed don't
+            // render an empty section.
+            if let overview = summary.overview,
+               !overview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                out += "## Summary\n"
+                out += "\(overview)\n\n"
+            }
 
             // Action Items
             out += "## Action Items\n"
             out += ActionItemsRenderer.render(summary)
             out += "\n\n"
-
-            // Key Points
-            out += "## Key Points\n"
-            out += bulletedSection(summary.keyPoints)
-            out += "\n"
 
             // Per-Speaker Highlights
             out += "## Per-Speaker Highlights\n"
@@ -47,23 +46,6 @@ public enum MarkdownRenderer {
                     out += "**\(highlight.speaker)**\n"
                     out += bulletedSection(highlight.highlights)
                 }
-            }
-            out += "\n"
-
-            // Open Questions
-            out += "## Open Questions\n"
-            out += bulletedSection(summary.openQuestions)
-            out += "\n"
-
-            // Tags
-            out += "## Tags\n"
-            if summary.suggestedTags.isEmpty {
-                out += "_None_\n"
-            } else {
-                out += summary.suggestedTags
-                    .map { "#\(tagSlug($0))" }
-                    .joined(separator: " ")
-                out += "\n"
             }
             out += "\n"
         }
@@ -106,14 +88,5 @@ public enum MarkdownRenderer {
         let minutes = total / 60
         let secs = total % 60
         return String(format: "%d:%02d", minutes, secs)
-    }
-
-    /// Converts an arbitrary tag string into a hashtag-friendly slug by
-    /// collapsing whitespace to a single token.
-    private static func tagSlug(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: "-")
     }
 }

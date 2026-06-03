@@ -42,6 +42,14 @@ struct SettingsView: View {
     /// a quiet/short opening as English.
     @State private var transcriptionLanguage: String = "auto"
 
+    /// Provider-reported account usage — the ONLY place money appears in the
+    /// app. Both numbers come live from the providers (ElevenLabs subscription
+    /// credits, OpenRouter credit balance); Kleoth keeps no tally of its own.
+    @State private var elevenUsage: ElevenLabsUsage?
+    @State private var openRouterCredits: OpenRouterCredits?
+    @State private var usageError: String?
+    @State private var isLoadingUsage = false
+
     /// Provider prefixes that 404 under this account's no-train data policy (see
     /// CLAUDE.md). A stored default with one of these prefixes (e.g. the obsolete
     /// `openai/gpt-4.1-mini`) is migrated to ``ModelCatalog/defaultModel`` on load.
@@ -74,12 +82,13 @@ struct SettingsView: View {
             outputSection
             localModelSection
             summarizationSection
+            usageSection
             slackSection
             shortcutsSection
             calendarSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 520)
+        .frame(width: 460, height: 560)
         .kleothSoftScrollEdge()
         .onAppear {
             loadFromController()
@@ -96,6 +105,8 @@ struct SettingsView: View {
         }
         // Refresh the model catalog from the live feed (fail-soft; never throws).
         .task { await refreshModels() }
+        // Fetch provider-reported usage (fail-soft; errors surface in-section).
+        .task { await refreshUsage() }
         // Re-read on-device model status when a background download completes.
         .onChange(of: controller.modelDownloadProgress) { _, progress in
             if progress == nil { refreshModelStatus() }
@@ -113,7 +124,7 @@ struct SettingsView: View {
         } header: {
             KleothSectionHeader("Credentials", systemImage: "key.fill")
         } footer: {
-            captionFooter("Stored in your macOS Keychain and never logged. ElevenLabs powers SOTA transcription; OpenRouter powers summaries.")
+            captionFooter("Stored in your macOS Keychain and never logged. ElevenLabs powers cloud transcription; OpenRouter powers summaries.")
         }
     }
 
@@ -228,6 +239,169 @@ struct SettingsView: View {
         } footer: {
             captionFooter("Models available under your OpenRouter data policy. The default runs locally-friendly Gemini Flash; pick any provider that fits your privacy and cost.")
         }
+    }
+
+    /// Account usage as reported live by the providers — deliberately the only
+    /// money surface in the app. Nothing here is computed by Kleoth: ElevenLabs
+    /// reports its billing-cycle credit quota, OpenRouter its credit balance.
+    private var usageSection: some View {
+        Section {
+            if !hasUsageKeys {
+                Text("Add an API key above to see your account usage here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                if let usage = elevenUsage {
+                    elevenLabsUsageRow(usage)
+                }
+                if let credits = openRouterCredits {
+                    openRouterUsageRow(credits)
+                }
+                if isLoadingUsage && elevenUsage == nil && openRouterCredits == nil {
+                    HStack(spacing: KleothMetrics.spacingS) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching from the providers…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let usageError {
+                    Label(usageError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(KleothPalette.pendingTint)
+                }
+            }
+        } header: {
+            HStack(spacing: KleothMetrics.spacingS) {
+                KleothSectionHeader("Usage", systemImage: "chart.bar")
+                if isLoadingUsage {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button {
+                    Task { await refreshUsage() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .imageScale(.small)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh usage from ElevenLabs and OpenRouter")
+                .accessibilityLabel("Refresh usage")
+                .disabled(isLoadingUsage || !hasUsageKeys)
+            }
+        } footer: {
+            captionFooter("Account-wide numbers reported live by ElevenLabs and OpenRouter — Kleoth keeps no tally of its own.")
+        }
+    }
+
+    /// "ElevenLabs · 17,231 of 100,000 credits this cycle · resets Jun 12" with a
+    /// thin consumption gauge.
+    private func elevenLabsUsageRow(_ usage: ElevenLabsUsage) -> some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            HStack(spacing: KleothMetrics.spacingS) {
+                Text("ElevenLabs")
+                    .font(.callout.weight(.medium))
+                if let tier = usage.tier, !tier.isEmpty {
+                    KleothPill(tier.capitalized)
+                }
+                Spacer(minLength: 0)
+            }
+            Text(elevenLabsDetail(usage))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if usage.characterLimit > 0 {
+                ProgressView(value: min(1, Double(usage.characterCount) / Double(usage.characterLimit)))
+                    .controlSize(.small)
+                    .tint(.accentColor)
+            }
+        }
+        .padding(.vertical, KleothMetrics.spacingXS)
+    }
+
+    private func elevenLabsDetail(_ usage: ElevenLabsUsage) -> String {
+        var text = "\(usage.characterCount.formatted()) of \(usage.characterLimit.formatted()) credits this cycle"
+        if let reset = usage.nextReset {
+            text += " · resets \(Self.shortDate(reset))"
+        }
+        return text
+    }
+
+    /// "OpenRouter · $10.03 left of $25.00 purchased · $14.97 used all-time".
+    private func openRouterUsageRow(_ credits: OpenRouterCredits) -> some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            Text("OpenRouter")
+                .font(.callout.weight(.medium))
+            Text("\(Self.money(credits.remaining)) left of \(Self.money(credits.totalCredits)) purchased · \(Self.money(credits.totalUsage)) used all-time")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, KleothMetrics.spacingXS)
+    }
+
+    /// Whether any provider key is available to fetch usage with.
+    private var hasUsageKeys: Bool {
+        !elevenLabsKey.trimmingCharacters(in: .whitespaces).isEmpty
+            || !openRouterKey.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Fetches usage from each configured provider. Fail-soft per provider: one
+    /// failing (offline, revoked key) doesn't hide the other; errors surface as
+    /// a quiet caption. Keys go only into request headers and are never logged.
+    private func refreshUsage() async {
+        guard hasUsageKeys else { return }
+        isLoadingUsage = true
+        defer { isLoadingUsage = false }
+        usageError = nil
+
+        let transport = URLSessionTransport()
+        var errors: [String] = []
+
+        let elevenKey = elevenLabsKey.trimmingCharacters(in: .whitespaces)
+        if !elevenKey.isEmpty {
+            do {
+                elevenUsage = try await ElevenLabsUsageClient(apiKey: elevenKey, transport: transport).fetch()
+            } catch ProviderUsageError.httpStatus(401) {
+                // A key scoped to Speech-to-Text only (no "User" read permission)
+                // can transcribe fine but can't report usage — verified live.
+                errors.append("ElevenLabs: the API key needs the “User” read permission to report usage")
+            } catch {
+                errors.append("ElevenLabs: \(Self.shortError(error))")
+            }
+        }
+
+        let routerKey = openRouterKey.trimmingCharacters(in: .whitespaces)
+        if !routerKey.isEmpty {
+            do {
+                openRouterCredits = try await OpenRouterUsageClient(apiKey: routerKey, transport: transport).fetch()
+            } catch {
+                errors.append("OpenRouter: \(Self.shortError(error))")
+            }
+        }
+
+        usageError = errors.isEmpty ? nil : errors.joined(separator: " · ")
+    }
+
+    /// Compact, user-facing error text (no raw error dumps in the form).
+    private static func shortError(_ error: Error) -> String {
+        if case let ProviderUsageError.httpStatus(code) = error {
+            return code == 401 ? "key rejected (HTTP 401)" : "HTTP \(code)"
+        }
+        return error.localizedDescription
+    }
+
+    /// "$12.34" — provider balances are plain USD with cent precision.
+    private static func money(_ value: Double) -> String {
+        String(format: "$%.2f", value)
+    }
+
+    /// "Jun 12, 2026"
+    private static func shortDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 
     private var slackSection: some View {

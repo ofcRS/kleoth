@@ -2,8 +2,10 @@ import SwiftUI
 import KleothCore
 
 /// Renders a meeting's structured `MeetingSummary` (and optional `Transcript`)
-/// as native SwiftUI — not a Markdown string. Empty sections are omitted
-/// entirely so a sparse summary doesn't show a wall of "None" placeholders.
+/// as native SwiftUI — not a Markdown string. The deliberate, lean reading
+/// order: TL;DR → Summary (detailed overview) → Action Items → Per-Speaker
+/// Highlights → Transcript. Empty sections are omitted entirely so a sparse
+/// summary doesn't show a wall of "None" placeholders.
 ///
 /// Each section lives in its own Kleoth content card (a `.regularMaterial`
 /// rounded card with a hairline border — material, not glass) opened by a
@@ -27,13 +29,17 @@ struct MeetingSummaryView: View {
                     }
                 }
 
-                if !nonEmpty(summary.decisions).isEmpty {
-                    section("Decisions", systemImage: "checkmark.seal") {
-                        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
-                            ForEach(Array(nonEmpty(summary.decisions).enumerated()), id: \.offset) { _, decision in
-                                iconRow("checkmark.seal", decision)
-                            }
-                        }
+                // The detailed narrative overview. Multi-paragraph prose (the
+                // model separates paragraphs with blank lines, which Text
+                // renders directly). Absent on summaries from before the field
+                // existed — the section is simply omitted then.
+                if let overview = trimmed(summary.overview) {
+                    section("Summary", systemImage: "doc.text") {
+                        Text(overview)
+                            .font(.body)
+                            .lineSpacing(2)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -44,12 +50,6 @@ struct MeetingSummaryView: View {
                                 actionItemRow(item)
                             }
                         }
-                    }
-                }
-
-                if !nonEmpty(summary.keyPoints).isEmpty {
-                    section("Key Points", systemImage: "list.bullet") {
-                        bulletList(nonEmpty(summary.keyPoints))
                     }
                 }
 
@@ -77,22 +77,6 @@ struct MeetingSummaryView: View {
                     }
                 }
 
-                if !nonEmpty(summary.openQuestions).isEmpty {
-                    section("Open Questions", systemImage: "questionmark.circle") {
-                        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
-                            ForEach(Array(nonEmpty(summary.openQuestions).enumerated()), id: \.offset) { _, question in
-                                iconRow("questionmark.circle", question)
-                            }
-                        }
-                    }
-                }
-
-                let tags = nonEmpty(summary.suggestedTags)
-                if !tags.isEmpty {
-                    section("Tags", systemImage: "tag") {
-                        tagChips(tags)
-                    }
-                }
             }
 
             if let transcript, !transcript.utterances.isEmpty {
@@ -141,18 +125,6 @@ struct MeetingSummaryView: View {
         }
     }
 
-    /// A row led by an accent-tinted SF Symbol, with selectable text.
-    private func iconRow(_ systemImage: String, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
-            Image(systemName: systemImage)
-                .foregroundStyle(Color.accentColor)
-                .symbolRenderingMode(.hierarchical)
-            Text(text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
     /// An action item: an owner pill, the task text, and an optional due date.
     private func actionItemRow(_ item: ActionItem) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
@@ -198,17 +170,6 @@ struct MeetingSummaryView: View {
         }
     }
 
-    // MARK: - Tags
-
-    @ViewBuilder
-    private func tagChips(_ tags: [String]) -> some View {
-        KleothFlowLayout(spacing: KleothMetrics.spacingS) {
-            ForEach(Array(tags.enumerated()), id: \.offset) { _, tag in
-                KleothPill("#\(Self.tagSlug(tag))", tint: .accentColor)
-            }
-        }
-    }
-
     // MARK: - Filtering helpers
 
     /// Returns the trimmed string, or `nil` when empty/whitespace.
@@ -244,12 +205,5 @@ struct MeetingSummaryView: View {
         guard let seconds, seconds >= 0 else { return "--" }
         let total = Int(seconds.rounded(.down))
         return String(format: "%d:%02d", total / 60, total % 60)
-    }
-
-    /// Collapses whitespace in a tag into a single hashtag-friendly token.
-    private static func tagSlug(_ raw: String) -> String {
-        raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: "-")
     }
 }

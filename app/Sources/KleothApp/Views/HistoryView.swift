@@ -123,43 +123,35 @@ struct HistoryView: View {
 }
 
 /// One row in the history sidebar: a title with clear hierarchy over a secondary
-/// "time · duration" line, a color-coded tier badge (or an "Untranscribed"
-/// chip), and a right-aligned cost. Built from the shared Kleoth design system so
-/// it reads as one product with the rest of the app.
+/// "time · duration" line and a color-coded tier badge (or an "Untranscribed"
+/// chip). Built from the shared Kleoth design system so it reads as one product
+/// with the rest of the app. No costs here — provider usage lives in
+/// Settings → Usage only.
 private struct MeetingSidebarRow: View {
     let meeting: RecentMeeting
 
     var body: some View {
-        HStack(alignment: .top, spacing: KleothMetrics.spacingS) {
-            VStack(alignment: .leading, spacing: 3) {
-                // Primary: the meeting title carries the row's weight.
-                Text(meeting.title)
-                    .font(.body.weight(.medium))
-                    .lineLimit(2)
-                    .truncationMode(.tail)
+        VStack(alignment: .leading, spacing: 3) {
+            // Primary: the meeting title carries the row's weight.
+            Text(meeting.title)
+                .font(.body.weight(.medium))
+                .lineLimit(2)
+                .truncationMode(.tail)
 
-                // Secondary: when it started and how long it ran.
-                if let metadata = timeAndDuration {
-                    Text(metadata)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                // Status / quality: an "Untranscribed" chip for audio-only
-                // folders, otherwise the transcription-tier badge (Local / SOTA).
-                statusBadge
-                    .padding(.top, 1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Trailing: the meeting's processing cost, top-aligned with the title.
-            if meeting.isProcessed {
-                Text(MeetingFormat.usd(meeting.costUSD))
+            // Secondary: when it started and how long it ran.
+            if let metadata = timeAndDuration {
+                Text(metadata)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+
+            // Status / quality: an "Untranscribed" chip for audio-only folders,
+            // otherwise the transcription-tier badge (On-device / Cloud).
+            statusBadge
+                .padding(.top, 1)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, KleothMetrics.spacingXS)
     }
 

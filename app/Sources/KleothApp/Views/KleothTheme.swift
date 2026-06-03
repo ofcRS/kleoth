@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import KleothCore
 
 // MARK: - Kleoth design system
 //
@@ -204,9 +205,10 @@ struct KleothPill: View {
 
 // MARK: - Tier badge
 
-/// The transcription-tier badge: "SOTA" (ElevenLabs, accent) or "Local"
-/// (on-device, green). A compact capsule, `.caption2.bold()`, matching the
-/// History list's badge language.
+/// The transcription-tier badge, worded by where the audio went: "Cloud"
+/// (ElevenLabs Scribe, accent) or "On-device" (never left the Mac, green).
+/// A compact capsule, `.caption2.bold()`, matching the History list's badge
+/// language. (Was "SOTA"/"Local" — jargon the user vetoed.)
 ///
 /// Usage: `KleothTierBadge(isSOTA: TranscriptTier.isSOTA(meeting.transcriptTier))`
 struct KleothTierBadge: View {
@@ -214,7 +216,7 @@ struct KleothTierBadge: View {
 
     var body: some View {
         let tint: Color = isSOTA ? .accentColor : .green
-        Text(isSOTA ? "SOTA" : "Local")
+        Text(TranscriptTier.label(isSOTA ? TranscriptTier.sotaScribe : TranscriptTier.local))
             .font(.caption2.bold())
             .foregroundStyle(tint)
             .padding(.horizontal, KleothMetrics.spacingS)
@@ -375,16 +377,6 @@ enum KleothAssets {
     /// A full-bleed brand illustration, or `nil` if missing.
     static func illustration(_ which: Illustration) -> NSImage? {
         image(named: which.rawValue)
-    }
-
-    /// The Kleoth lyre app mark for in-app chrome (the menu-bar popover header),
-    /// so it reads as the same brand as the Dock/Finder icon — not a generic
-    /// waveform glyph. Prefers a bundled full-bleed `AppMark.png`, falling back to
-    /// the running app's own icon image, then `nil` (callers use an SF Symbol).
-    static func appMark() -> NSImage? {
-        if let bundled = image(named: "AppMark") { return bundled }
-        let icon = NSApp.applicationIconImage
-        return (icon?.size.width ?? 0) > 0 ? icon : nil
     }
 
     private static func image(named name: String) -> NSImage? {

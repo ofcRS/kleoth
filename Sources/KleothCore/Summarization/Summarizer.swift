@@ -26,43 +26,45 @@ public struct Summarizer {
     /// Approximate token-budget ceiling for the user content. Above this we
     /// refuse rather than attempt a doomed single-shot request.
     private static let tokenLimit = 180_000
-    /// Maximum output tokens requested from the model.
-    private static let maxOutputTokens = 4096
+    /// Maximum output tokens requested from the model. Generous because the
+    /// `overview` is deliberately detailed multi-paragraph prose (and non-Latin
+    /// scripts tokenize heavier).
+    private static let maxOutputTokens = 8192
 
     private static let systemPrompt = """
     You are a meeting summarizer. You receive a diarized transcript with real speaker names and timestamps. Be precise and factual. Do not invent information. If something is ambiguous, say so.
 
-    Write every natural-language value you produce — title, tldr, decisions, every action item task, key_points, per_speaker_highlights, open_questions, and suggested_tags — in the SAME language as the transcript below. Do NOT translate it into English or any other language; mirror the transcript's language exactly. Keep speaker and owner names exactly as given.
+    Write every natural-language value you produce — title, tldr, overview, every action item task, and per_speaker_highlights — in the SAME language as the transcript below. Do NOT translate it into English or any other language; mirror the transcript's language exactly. Keep speaker and owner names exactly as given.
 
     Output ONLY valid JSON matching this schema:
     {
       "title": "string",
       "tldr": "string",
-      "decisions": ["string"],
+      "overview": "string",
       "action_items": [{ "owner": "string", "task": "string", "due": "string or null" }],
-      "key_points": ["string"],
-      "per_speaker_highlights": [{ "speaker": "string", "highlights": ["string"] }],
-      "open_questions": ["string"],
-      "suggested_tags": ["string"]
+      "per_speaker_highlights": [{ "speaker": "string", "highlights": ["string"] }]
     }
-    Also produce "title": a concise, specific 4-8 word meeting title.
-    Use the exact participant names provided. Only include an action item if a concrete task was stated or clearly implied; if the owner is unstated use "unassigned", and if the due date is unstated use null.
+    "title": a concise, specific 4-8 word meeting title.
+    "tldr": 2-4 sentences capturing the essence of the meeting.
+    "overview": a detailed, faithful overview of the whole meeting — what was discussed and in what order, the context and reasoning behind each topic, concrete specifics (names, numbers, dates, agreements and who made them), and how things were left. Write it as flowing prose in several paragraphs separated by blank lines — no bullet lists, no headings. Make it complete enough that someone who missed the meeting needs nothing else.
+    "per_speaker_highlights": for each speaker, their most important statements, positions, and commitments.
+    Only include an action item if a concrete task was stated or clearly implied; if the owner is unstated use "unassigned", and if the due date is unstated use null.
     """
 
     /// Strict JSON schema for ``MeetingSummary`` (snake_case keys), sent as the
     /// `json_schema` response format. All fields are required (the model emits
-    /// every key; `title` is still decoded as optional for older summaries and
-    /// the `json_object` fallback). `additionalProperties` is disabled so the
-    /// provider can enforce the shape exactly.
+    /// every key; `title`/`overview` are still decoded as optional for older
+    /// summaries and the `json_object` fallback). `additionalProperties` is
+    /// disabled so the provider can enforce the shape exactly.
     static let schemaJSON = """
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["title", "tldr", "decisions", "action_items", "key_points", "per_speaker_highlights", "open_questions", "suggested_tags"],
+      "required": ["title", "tldr", "overview", "action_items", "per_speaker_highlights"],
       "properties": {
-        "title": { "type": "string" },
-        "tldr": { "type": "string" },
-        "decisions": { "type": "array", "items": { "type": "string" } },
+        "title": { "type": "string", "description": "Concise, specific 4-8 word meeting title, in the transcript's language." },
+        "tldr": { "type": "string", "description": "2-4 sentences capturing the essence of the meeting." },
+        "overview": { "type": "string", "description": "Detailed multi-paragraph prose overview of the entire meeting, in the transcript's language. Paragraphs separated by blank lines; no bullets or headings." },
         "action_items": {
           "type": "array",
           "items": {
@@ -76,7 +78,6 @@ public struct Summarizer {
             }
           }
         },
-        "key_points": { "type": "array", "items": { "type": "string" } },
         "per_speaker_highlights": {
           "type": "array",
           "items": {
@@ -88,9 +89,7 @@ public struct Summarizer {
               "highlights": { "type": "array", "items": { "type": "string" } }
             }
           }
-        },
-        "open_questions": { "type": "array", "items": { "type": "string" } },
-        "suggested_tags": { "type": "array", "items": { "type": "string" } }
+        }
       }
     }
     """

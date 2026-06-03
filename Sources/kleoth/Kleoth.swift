@@ -404,9 +404,14 @@ struct Rename: AsyncParsableCommand {
         let speakerMap = SpeakerMap(names: names)
         let named = SpeakerMapper.apply(speakerMap, to: transcript)
 
-        // Re-render Markdown with applied names, preserving any existing summary.
+        // Re-render Markdown with applied names. The summary's name-bearing
+        // fields (action-item owners, highlight speakers) follow the rename too;
+        // `transcript` still carries the previous names, which is the old→new
+        // link the remap needs.
         let metadata = loadMetadata(in: dir, fallbackTitle: dir.lastPathComponent)
-        let summary = (try? store.loadSummary(in: dir)) ?? nil
+        let summary = ((try? store.loadSummary(in: dir)) ?? nil).map {
+            SpeakerMapper.apply(speakerMap, toSummary: $0, previousTranscript: transcript)
+        }
         let raw = loadRawResponse(in: dir)
 
         let markdown = MarkdownRenderer.render(

@@ -57,7 +57,9 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
   `speaker_1`; Scribe uses the mono diarization + per-cluster channel-energy path above. The app
   writes a default `speakers.json` `{speaker_0: "You", speaker_1: "Them"}` for 2-channel meetings.
 - `MeetingMetadata.transcriptTier` ∈ `TranscriptTier.local` (`"local-whisper"`) /
-  `.sotaScribe` (`"sota-scribe"`). Badges in History + Detail.
+  `.sotaScribe` (`"sota-scribe"`). Badges in History + Detail read **"On-device" / "Cloud"**
+  (`TranscriptTier.label` — was "Local"/"SOTA", jargon the user vetoed 2026-06-04); stored tier
+  strings are unchanged.
 - **Duration is wall-clock, derived from the audio file** (`AudioProbe.durationSeconds`, used in
   the pipeline + History list), never the STT-reported value — engine-robust, and fixes legacy
   2× Scribe meetings on next view.
@@ -94,6 +96,13 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
 - **Title from summary:** `MeetingSummary.title` becomes the meeting title only when the existing
   title is an auto-placeholder (`MeetingMetadata.isPlaceholderTitle` — "Meeting <date>" /
   "Recording <date>" / "Recording · …" / empty); calendar/user titles are preserved.
+- **Summary shape (lean since 2026-06-04):** `MeetingSummary` = `title?`, `tldr`, **`overview?`**
+  (detailed multi-paragraph prose — the "Summary" section), `action_items`,
+  `per_speaker_highlights`. The old decisions / key_points / open_questions / suggested_tags were
+  removed as slop at the user's request; legacy summary.json files still decode (extra keys
+  ignored, `overview` nil → section omitted, arrays lenient-default to `[]`). Reading order
+  everywhere (app view, summary.md): TL;DR → Summary → Action Items → Per-Speaker Highlights →
+  Transcript. `maxOutputTokens` 8192. Slack render = title + TL;DR + top-3 action items.
 
 ### ⚠️ OpenRouter data-policy constraint (important, account-specific)
 This account's privacy setting blocks providers that may train on data. Combined with
@@ -117,6 +126,13 @@ bash app/setup-signing.sh                       # one-time: self-signed "Kleoth 
 bash app/make-app.sh release                    # bundle + sign + install /Applications/Kleoth.app
 pkill -x Kleoth; open -a Kleoth                 # relaunch
 
+# Distribution
+bash app/make-dmg.sh                            # → app/dist/Kleoth-<version>.dmg (drag-to-/Applications,
+                                                #   Read Me, volume icon, signed; prints SHA-256)
+# Public (Gatekeeper-clean) tier once in the Apple Developer Program:
+#   KLEOTH_SIGN_IDENTITY="Developer ID Application: …" KLEOTH_NOTARY_PROFILE=<profile> bash app/make-dmg.sh
+# Version comes from app/bundle/Info.plist CFBundleShortVersionString (0.1.0).
+
 # Recovery / headless transcribe (NOTE: --product, not --target — see gotchas)
 swift build --package-path app --product localtranscribe
 app/.build/debug/localtranscribe <meeting-dir> [scribe]
@@ -127,12 +143,51 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
 (always). One meeting = one folder. Folder name encodes start time.
 
+## Current status (2026-06-04 — summary/wording/usage pass)
+- ✅ **Rename now reaches the summary.** `SpeakerMapper.apply(_:toSummary:previousTranscript:)`
+  rewrites action-item owners + highlight speaker names on rename (exact-match on the previous
+  display name or bare id; free prose untouched). Wired in `RecordingController.rename` AND the
+  CLI `kleoth rename`; the rewritten summary.json + `contentRevision` bump means the open detail
+  view updates immediately. (Bug: rename only rewrote the transcript; summary kept old names
+  forever.) Unit-tested incl. consecutive renames.
+- ✅ **Summary restructured** (see "Summary shape" above) — user: "too many slop categories".
+- ✅ **Money de-emphasized:** removed the popover Session-cost line, per-row $ in popover/History,
+  the detail cost tiles, and $ amounts in status messages. `RecentMeeting.costUSD` +
+  `currentCostUSD` deleted. Costs still land in meta.json. The ONE remaining $ surface besides
+  Settings → Usage is the "Fully transcribe" **spend-confirmation** dialog (~$0.22/hr estimate) —
+  deliberate: it's a payment consent gate.
+- ✅ **Settings → Usage section** (the only money/quota surface): live provider-reported numbers via
+  new `Sources/KleothCore/Usage/ProviderUsage.swift` — `ElevenLabsUsageClient`
+  (`GET /v1/user/subscription`, `xi-api-key`; credits used/limit + cycle reset) and
+  `OpenRouterUsageClient` (`GET /api/v1/credits`, Bearer; lifetime purchased/used → remaining).
+  Fail-soft per provider, refresh button, keys only ever in headers. 5 unit tests on MockTransport.
+- ✅ **Wording:** tier badges now "On-device" / "Cloud" everywhere user-facing.
+- ✅ **Keychain prompts (5–6 per launch) fixed structurally:** `Keychain` now stores ALL values in
+  ONE consolidated item (service `dev.kleoth`, account `settings`, JSON dict) read once per launch
+  into an in-memory cache → at most ONE permission prompt ever (the app used to read 6 separate
+  items at startup → 6 prompts on any ACL/signature mismatch, recurring if the user clicked
+  "Allow" instead of "Always Allow"). Legacy per-value items migrate on first load and are deleted
+  only after a successful read — a denied prompt never destroys a key, and a denied *blob* read
+  throws rather than falling into migration (which would re-burst) or clobbering on a later write.
+  Call sites unchanged (same `Keychain.get/set` API). Tell the user: click **Always Allow**.
+- ⚠️ **ElevenLabs usage needs a key scope:** the account's current API key is STT-scoped;
+  `GET /v1/user/subscription` returns **401** (verified live) → the Usage row shows an actionable
+  hint ("needs the “User” read permission"). OpenRouter `GET /api/v1/credits` verified live
+  (`total_credits` 25, decodes into `OpenRouterCredits`).
+- ✅ 97 core tests green; both packages build clean; release installed + running.
+- ⚠️ Not runtime-verified: the Usage section against the live APIs, and a live rename round-trip in
+  the app UI (the remap itself is unit-tested; controller flow compile-checked).
+- Note: old names inside free prose (tldr/overview text) survive a rename by design — only the
+  structured name fields are rewritten; a re-summarize regenerates prose with new names.
+
 ## Current status (2026-06-03 — 7-fix UX pass)
 - ✅ Both packages build clean; **86 core tests green**; release app installed + running.
 - ✅ **Seven fixes shipped (multi-agent reviewed, then triaged):**
-  1. **Popover header icon** → the lyre app-mark (`KleothAssets.appMark()` loads
-     `Resources/AppMark.png`, derived from `icon-a` via `sips` center-crop; falls back to the app
-     icon then an SF Symbol). Was a generic waveform tile.
+  1. **Popover header icon** → the lyre. First pass used a full-color `AppMark.png` chip; the user
+     found it too heavy ("minimalistic was better"), so it's now (2026-06-04) the **menu-bar
+     template glyph** (`KleothAssets.menuBarGlyph()`) accent-tinted on a quiet accent-washed tile
+     (SF Symbol fallback). `appMark()` + `AppMark.png` were removed as dead. Popover bottom padding
+     bumped to `spacingXL` (24) — the window's corner radius curved into the footer at uniform 16.
   2. **Mic-vs-system loudness** → `ChannelAudio.normalizeLoudness` (per-channel RMS via vDSP) applied
      before the Scribe mono-mix (`mixToMono`) and the playback combine (`Recorder.combine`). ffmpeg
      is NOT installed → native AVFoundation/Accelerate instead. Attribution is unaffected (it reads
@@ -193,11 +248,15 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   upload, then indeterminate while it transcribes. Local (WhisperKit) has a `TranscriptionCallback`
   if a local progress bar is ever wanted (not wired).
 
-## Follow-ups from research (not started)
-- **Distribution:** app is self-signed (Gatekeeper-blocked elsewhere). For release: Apple
-  Developer Program + Developer ID Application cert → hardened runtime → notarize (`notarytool`)
-  → staple → ship a **DMG** + **Sparkle** auto-update. PKG only if enterprise/MDM. Scriptable;
-  no Xcode project required.
+## Follow-ups from research
+- **Distribution (DMG pipeline DONE 2026-06-04 — `app/make-dmg.sh`):** builds, signs, and packages
+  `Kleoth-<version>.dmg` (staging with /Applications symlink + Read Me + volume icon; UDRW→UDZO;
+  DMG itself signed; `hdiutil verify` + SHA-256 printed). Two tiers: default self-signed (installs
+  on this Mac; elsewhere right-click → Open), and a wired-but-unused public tier —
+  `KLEOTH_SIGN_IDENTITY` (Developer ID → hardened runtime + timestamp re-sign) +
+  `KLEOTH_NOTARY_PROFILE` (notarytool submit --wait + staple). **Still needed for true public
+  release:** Apple Developer Program membership ($99/yr) for the Developer ID cert + notarization;
+  repo LICENSE/README; Sparkle auto-update later. PKG rejected (enterprise/MDM only).
 - **Branding:** macOS 26 layered `.icon` via Icon Composer → compile with `actool` inside
   `make-app.sh` (no Xcode project) → set `CFBundleIconName` (Tahoe) + `CFBundleIconFile`
   (legacy). AI for concept, finalize as vector. Theme: Greek *kleos* "that which is heard".

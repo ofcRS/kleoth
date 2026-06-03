@@ -115,10 +115,11 @@ struct MeetingDetailView: View {
 
     // MARK: - Header
 
-    /// Metadata + cost summary for the meeting, in a Kleoth content card: the
-    /// prominent title, a wrapping row of metadata chips (date · time, duration,
-    /// model, color-coded tier badge, and a "No summary yet" hint), and the cost
-    /// breakdown as aligned stat tiles.
+    /// Metadata header for the meeting, in a Kleoth content card: the prominent
+    /// title and a wrapping row of metadata chips (date · time, duration, model,
+    /// color-coded tier badge, and a "No summary yet" hint). Deliberately
+    /// money-free — per-meeting costs stay in `meta.json`, and account usage
+    /// lives in Settings → Usage.
     private var headerCard: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
             Text(meeting.title)
@@ -128,23 +129,6 @@ struct MeetingDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             metaChipRow
-
-            if let cost = metadata?.cost {
-                Divider()
-                // Equal-width columns so the tiles fill the card evenly whether
-                // there are two (no summary cost) or three — avoids both the old
-                // left-pinned dead space and an asymmetric single-Spacer gap.
-                HStack(alignment: .top, spacing: KleothMetrics.spacingM) {
-                    KleothStatTile(label: "Total", value: MeetingFormat.usd(cost.totalUSD))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    KleothStatTile(label: "Transcription", value: MeetingFormat.usd(cost.transcriptionUSD))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if cost.summaryUSD > 0 {
-                        KleothStatTile(label: "Summary", value: MeetingFormat.usd(cost.summaryUSD))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
         }
         .kleothCard()
     }
@@ -279,7 +263,7 @@ struct MeetingDetailView: View {
                 }
                 .disabled(controller.isProcessing || !controller.hasElevenLabsKey)
                 .help(controller.hasElevenLabsKey
-                      ? "Re-transcribe with ElevenLabs Scribe (SOTA, diarized)."
+                      ? "Re-transcribe in the cloud with ElevenLabs Scribe — higher accuracy, diarized."
                       : "Add an ElevenLabs API key in Settings to enable.")
             }
             Button(role: .destructive) { confirmDelete = true } label: {
