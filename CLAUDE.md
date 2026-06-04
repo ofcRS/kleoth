@@ -158,14 +158,19 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   (`AVCaptureDevice.requestAccess`) + system audio (`SystemAudioTap.primePermission()` — creates &
   destroys a throwaway tap; macOS has NO query/request API for it). Replayable via Settings →
   "Show Welcome Window".
-- ✅ **Welcome jingle + animation:** chime = **ElevenLabs sound-generation** (the user fixed the
-  key's missing `sound_generation` permission; first attempt 401'd and fell back to an offline
-  Karplus-Strong synth, kept as `synth-chime.m4a`). Bundled `Resources/WelcomeChime.m4a` =
-  `eleven-1.mp3` (rising harp glissando, 2.48s); two alternate candidates + prompts + swap
-  instructions in `app/branding-src/jingle/NOTES.md`. Played once on onboarding appear
-  (fail-silent if missing). Welcome step: spring-in lyre mark + staggered text reveals, all gated
-  on Reduce Motion. The key fix also unblocked `/v1/user/subscription` → Settings → Usage now
-  reports ElevenLabs live (verified: payg tier, credits populate).
+- ✅ **Welcome jingle + animation:** chime = **ElevenLabs sound-generation**, chosen BY EAR across
+  three batches (12 candidates): the first harp-glissando prompts came out cinematic-eerie ("so
+  scary"), notification-style timbres (marimba/music box/kalimba/celesta/felt piano) landed felt
+  piano, and a third batch added the user's requested extra note. Bundled
+  `Resources/WelcomeChime.m4a` = `chime3-feltpiano-3chords` (three warm felt-piano chords rising,
+  2.4s). All candidates + prompts + the offline Karplus-Strong fallback (`synth-chime.m4a`) + swap
+  instructions live in `app/branding-src/jingle/NOTES.md`. Played once on onboarding appear
+  (fail-silent if missing). Welcome step: spring-in lyre mark + staggered text reveals, gated on
+  Reduce Motion. **Prompt lesson:** for app chimes, ask the SFX model for notification language
+  ("soft felt piano… clean and dry", prompt_influence 0.6), never "glissando/reverb tail".
+  The key fix also unblocked `/v1/user/subscription` → Settings → Usage reports ElevenLabs live
+  (verified: payg tier, credits populate). `afplay` from the agent shell plays through the user's
+  speakers — useful for letting them audition candidates.
 - ✅ **Raycast extension** (`integrations/raycast-extension/` — TypeScript, @raycast/api): Toggle/
   Start/Stop Recording (kleoth:// URLs), Search Meetings (reads ~/Kleoth, open/copy summary &
   transcript + paths), Latest Summary (markdown Detail). Validated with `ray build`; registered in

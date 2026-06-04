@@ -72,3 +72,17 @@ All three prompts generated successfully (HTTP 200, ~2.5 s each):
 To audition and swap: `afplay eleven-2.mp3`, then re-run the afconvert line
 with the preferred file and rebuild (`bash app/make-app.sh release`).
 The original offline synthesis is kept as `synth-chime.m4a` (+ the script).
+
+## Final choice 2026-06-04: `chime3-feltpiano-3chords.mp3`
+
+The eleven-* harp candidates were rejected by ear ("scary"); a second batch of
+notification-style timbres (chime2-*) surfaced felt piano as the keeper, and a
+third batch added the requested extra note. **Bundled chime = three warm felt-
+piano chords rising (2.4 s)**, chosen by ear from 12 generated candidates:
+
+  afconvert -f m4af -d aac -b 96000 chime3-feltpiano-3chords.mp3 \
+    ../../Sources/KleothApp/Resources/WelcomeChime.m4a
+
+Prompt: "Soft felt piano, three warm major chords rising one after another,
+cozy reassuring app welcome sound, intimate, gentle touch, clean and dry"
+(duration_seconds 2.4, prompt_influence 0.6).
