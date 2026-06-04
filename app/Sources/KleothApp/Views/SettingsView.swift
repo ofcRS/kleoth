@@ -14,6 +14,7 @@ import KeyboardShortcuts
 /// a belt-and-suspenders commit when the window goes away.
 struct SettingsView: View {
     @EnvironmentObject private var controller: RecordingController
+    @Environment(\.openWindow) private var openWindow
 
     // Local editable copies; committed to the controller (and Keychain) on change.
     @State private var elevenLabsKey: String = ""
@@ -57,10 +58,10 @@ struct SettingsView: View {
 
     /// On-device transcription language choices: automatic detection plus a
     /// curated set of common languages to pin. Values are Whisper language codes
-    /// ("auto" = detect). Russian is surfaced near the top as the primary use case.
-    private static let transcriptionLanguages: [(code: String, label: String)] = [
+    /// ("auto" = detect). Non-private so the onboarding language picker reuses the
+    /// exact same list rather than duplicating it.
+    static let transcriptionLanguages: [(code: String, label: String)] = [
         ("auto", "Auto-detect"),
-        ("ru", "Russian"),
         ("en", "English"),
         ("uk", "Ukrainian"),
         ("de", "German"),
@@ -74,6 +75,7 @@ struct SettingsView: View {
         ("zh", "Chinese"),
         ("ja", "Japanese"),
         ("ko", "Korean"),
+        ("ru", "Russian"),
     ]
 
     var body: some View {
@@ -86,6 +88,7 @@ struct SettingsView: View {
             slackSection
             shortcutsSection
             calendarSection
+            onboardingSection
         }
         .formStyle(.grouped)
         .frame(width: 460, height: 560)
@@ -182,7 +185,7 @@ struct SettingsView: View {
         } header: {
             KleothSectionHeader("On-device transcription", systemImage: "cpu")
         } footer: {
-            captionFooter("Kleoth transcribes locally on the Apple Neural Engine — free, private, offline, and multilingual. The model downloads once (~626 MB) and is cached on this Mac. Leave Language on Auto-detect, or pin one (e.g. Russian) if detection ever guesses wrong.")
+            captionFooter("Kleoth transcribes locally on the Apple Neural Engine — free, private, offline, and multilingual. The model downloads once (~626 MB) and is cached on this Mac. Leave Language on Auto-detect, or pin one if detection ever guesses wrong.")
         }
     }
 
@@ -445,6 +448,22 @@ struct SettingsView: View {
             KleothSectionHeader("Calendar", systemImage: "calendar")
         } footer: {
             captionFooter("When enabled, a recording started during a calendar event takes that event's title.")
+        }
+    }
+
+    /// Re-runs the first-run welcome flow on demand (name, permissions, model,
+    /// and the start-recording finish). Opening it does not reset any state — it's
+    /// purely a way back into the guided setup.
+    private var onboardingSection: some View {
+        Section {
+            Button("Show Welcome Window") {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openWindow(id: "kleoth-onboarding")
+            }
+        } header: {
+            KleothSectionHeader("Onboarding", systemImage: "sparkles.rectangle.stack")
+        } footer: {
+            captionFooter("Replay the first-run setup.")
         }
     }
 

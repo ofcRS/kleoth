@@ -29,8 +29,6 @@ extension View {
 // MARK: - Display formatting for meetings
 
 enum MeetingFormat {
-    static func usd(_ value: Double) -> String { String(format: "$%.4f", value) }
-
     /// "1m 03s" / "47s", or nil when unknown/zero.
     static func duration(_ secs: Double?) -> String? {
         guard let secs, secs > 0 else { return nil }

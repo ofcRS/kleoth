@@ -143,6 +143,47 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
 (always). One meeting = one folder. Folder name encodes start time.
 
+## Current status (2026-06-04 — onboarding/raycast/polish pass)
+- ✅ **First-run onboarding** (user: "it should be experience… ready? start recording"). Researched
+  via a 4-agent workflow (Transcribe-Anything-style name question; menu-bar-app welcome-window
+  norms; permission priming; the openWindow/TabView(.page)/TCC traps), then implemented:
+  `Views/OnboardingView.swift` — fixed 560×600 five-step machine (Welcome → Name → Permissions →
+  Model+Language → "Ready? Start recording."), `Window(id: "kleoth-onboarding")` scene, launch
+  trigger = `.task` on the **MenuBarExtra label** (the only view mounted at launch with a live
+  SwiftUI env; `openWindow` is unusable from App.init/AppDelegate). Gating:
+  `needsOnboarding = onboarding_completed != "true" && !consentAcknowledged` (existing installs
+  never see it); closing the window mid-flow counts as done (idempotent `finalize()`).
+  The NAME step seeds `speaker_0` (default map becomes `{speaker_0: <name|You>, speaker_1: Them}`),
+  prefilled from `NSFullUserName()`. Permissions step primes consent + mic
+  (`AVCaptureDevice.requestAccess`) + system audio (`SystemAudioTap.primePermission()` — creates &
+  destroys a throwaway tap; macOS has NO query/request API for it). Replayable via Settings →
+  "Show Welcome Window".
+- ✅ **Welcome jingle + animation:** chime = **ElevenLabs sound-generation** (the user fixed the
+  key's missing `sound_generation` permission; first attempt 401'd and fell back to an offline
+  Karplus-Strong synth, kept as `synth-chime.m4a`). Bundled `Resources/WelcomeChime.m4a` =
+  `eleven-1.mp3` (rising harp glissando, 2.48s); two alternate candidates + prompts + swap
+  instructions in `app/branding-src/jingle/NOTES.md`. Played once on onboarding appear
+  (fail-silent if missing). Welcome step: spring-in lyre mark + staggered text reveals, all gated
+  on Reduce Motion. The key fix also unblocked `/v1/user/subscription` → Settings → Usage now
+  reports ElevenLabs live (verified: payg tier, credits populate).
+- ✅ **Raycast extension** (`integrations/raycast-extension/` — TypeScript, @raycast/api): Toggle/
+  Start/Stop Recording (kleoth:// URLs), Search Meetings (reads ~/Kleoth, open/copy summary &
+  transcript + paths), Latest Summary (markdown Detail). Validated with `ray build`; registered in
+  Raycast via a one-shot `ray develop`. Re-import: `npm run dev` in that dir. Gotcha:
+  `@types/react` must be ^19 with current @raycast/api. The old script commands in
+  `integrations/raycast/` remain.
+- ✅ Smaller asks: Russian moved to the END of the Settings language list (+footer de-Russified;
+  user-facing copy mentions no language); the "Fully transcribe" price-confirmation dialog REMOVED
+  (button transcribes immediately; `MeetingFormat.usd` deleted — the Usage section is now the only
+  money surface anywhere); detail toolbar's copy button is now a menu: Copy for Slack / Copy
+  Transcript Path / Copy Summary Path.
+- ⚠️ Orchestration note: the implementation workflow's final review agent stalled (3-min
+  no-progress watchdog ×6) and the run was marked failed — but Create+Build phases had already
+  landed everything (both packages compiled, 97 tests green); the review was redone by hand.
+- ⚠️ Not runtime-verified: the onboarding window visually (it only auto-opens on a fresh install;
+  use Settings → Show Welcome Window or the from-scratch DMG test), the chime audibly, and the
+  Raycast commands end-to-end.
+
 ## Current status (2026-06-04 — summary/wording/usage pass)
 - ✅ **Rename now reaches the summary.** `SpeakerMapper.apply(_:toSummary:previousTranscript:)`
   rewrites action-item owners + highlight speaker names on rename (exact-match on the previous

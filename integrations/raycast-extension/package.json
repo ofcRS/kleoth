@@ -1,0 +1,71 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "kleoth",
+  "title": "Kleoth",
+  "description": "Control the Kleoth meeting recorder and browse your transcribed meetings — local-first, bot-free.",
+  "icon": "icon.png",
+  "author": "shck",
+  "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
+  "categories": [
+    "Productivity",
+    "Media"
+  ],
+  "commands": [
+    {
+      "name": "toggle-recording",
+      "title": "Toggle Recording",
+      "description": "Start the recording if idle, stop & transcribe if recording.",
+      "mode": "no-view"
+    },
+    {
+      "name": "start-recording",
+      "title": "Start Recording",
+      "description": "Start recording the current meeting (mic + system audio).",
+      "mode": "no-view"
+    },
+    {
+      "name": "stop-recording",
+      "title": "Stop & Transcribe",
+      "description": "Stop the recording and transcribe it on-device.",
+      "mode": "no-view"
+    },
+    {
+      "name": "meetings",
+      "title": "Search Meetings",
+      "description": "Browse, open, and copy your recorded meetings.",
+      "mode": "view"
+    },
+    {
+      "name": "latest-summary",
+      "title": "Latest Summary",
+      "description": "Read the most recent meeting's summary.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "kleothDir",
+      "type": "directory",
+      "required": false,
+      "title": "Meetings Folder",
+      "description": "Where Kleoth writes meetings (default: ~/Kleoth).",
+      "default": "~/Kleoth"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.88.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.5.4"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "ray lint"
+  }
+}

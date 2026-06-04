@@ -39,6 +39,12 @@ public enum Keychain {
         public static let defaultModel = "default_model"
         public static let transcriptionLanguage = "transcription_language"
         public static let consentAcknowledged = "consent_acknowledged"
+        /// The user's display name — labels their own voice (`speaker_0`) in
+        /// transcripts instead of the generic "You". Set during onboarding.
+        public static let userName = "user_name"
+        /// "true" once the first-run onboarding window has been completed (or
+        /// skipped), so it never auto-opens again.
+        public static let onboardingCompleted = "onboarding_completed"
     }
 
     /// Every legacy per-value account, for the one-time migration.

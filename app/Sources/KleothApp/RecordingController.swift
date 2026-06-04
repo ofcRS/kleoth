@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import AppKit
+import AVFoundation
 import EventKit
 import SwiftUI
 import os
@@ -71,6 +72,17 @@ public final class RecordingController: ObservableObject {
     /// Set by the popover to deep-link the History window to a specific meeting.
     @Published public var selectedMeetingID: RecentMeeting.ID?
     @Published public var consentAcknowledged: Bool = false
+
+    /// The user's display name, used to label their own voice (`speaker_0`) in
+    /// every transcript and summary instead of the generic "You". Captured during
+    /// first-run onboarding and editable there; empty means fall back to "You".
+    @Published public var userName: String = ""
+
+    /// Whether the first-run onboarding window should auto-open at launch. True
+    /// only for a genuinely fresh install: set false once onboarding completes (or
+    /// is skipped), and — critically — never shown to an existing install that has
+    /// already acknowledged consent, so upgraders aren't ambushed by a welcome flow.
+    @Published public var needsOnboarding: Bool = false
 
     /// True only while a transcription/summarization pipeline run is in flight.
     @Published public var isProcessing: Bool = false
@@ -153,6 +165,13 @@ public final class RecordingController: ObservableObject {
         self.credentials = Self.mergeCredentialsFromKeychain(credentials)
         self.settings = Self.mergeSettingsFromKeychain(settings)
         self.consentAcknowledged = (Keychain.get(Keychain.Account.consentAcknowledged) == "true")
+        self.userName = Keychain.get(Keychain.Account.userName) ?? ""
+        // Onboard only a fresh install. An existing user who has already
+        // acknowledged consent has clearly been through the app before, so they
+        // must NEVER see the first-run flow even though they predate the
+        // `onboarding_completed` flag (which didn't exist when they installed).
+        self.needsOnboarding =
+            Keychain.get(Keychain.Account.onboardingCompleted) != "true" && !consentAcknowledged
         loadRecentMeetings()
         startWatchingOutputDir()
         self.calendarAuthorized = (EKEventStore.authorizationStatus(for: .event) == .fullAccess)
@@ -336,6 +355,49 @@ public final class RecordingController: ObservableObject {
     public func acknowledgeConsent() {
         consentAcknowledged = true
         Keychain.set("true", Keychain.Account.consentAcknowledged)
+    }
+
+    // MARK: - Onboarding
+
+    /// Persists the user's display name (trimmed) and updates in-memory state, so
+    /// the next recording labels their own voice (`speaker_0`) with it. An empty
+    /// name is stored as empty and falls back to "You" at speaker-map time.
+    public func updateUserName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        Keychain.set(trimmed, Keychain.Account.userName)
+        userName = trimmed
+    }
+
+    /// Marks first-run onboarding as finished, so the welcome window never
+    /// auto-opens again. Idempotent — safe to call from both the explicit "Done"
+    /// path and the window's `onDisappear` (closing mid-flow counts as done).
+    public func completeOnboarding() {
+        Keychain.set("true", Keychain.Account.onboardingCompleted)
+        needsOnboarding = false
+    }
+
+    /// Requests microphone access, surfacing the system permission prompt the
+    /// first time. Returns whether access was granted (already-granted resolves
+    /// immediately as `true`).
+    public func requestMicrophoneAccess() async -> Bool {
+        await AVCaptureDevice.requestAccess(for: .audio)
+    }
+
+    /// The current microphone authorization status, for reflecting permission
+    /// state in the onboarding UI without triggering a prompt. `nonisolated` so a
+    /// view can read it synchronously off the main actor.
+    nonisolated public static func microphoneStatus() -> AVAuthorizationStatus {
+        AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+
+    /// Triggers the one-time System Audio Recording permission prompt by creating
+    /// and immediately tearing down a throwaway process tap — the only
+    /// App-Store-safe way to surface it (there is no query/request API). No-op on
+    /// systems below macOS 14.4, where the audio tap is unavailable.
+    public func primeSystemAudioPermission() {
+        if #available(macOS 14.4, *) {
+            SystemAudioTap.primePermission()
+        }
     }
 
     // MARK: - Settings / credentials refresh
@@ -621,7 +683,13 @@ public final class RecordingController: ObservableObject {
         let tier = TranscriptTier.local
         let options = ScribeOptions()
         if channelFiles.count == 2, let meetingDir {
-            writeDefaultSpeakerMapIfNeeded(["speaker_0": "You", "speaker_1": "Them"], in: meetingDir)
+            // Label the local channel with the user's real name (from onboarding)
+            // when set, so their own voice reads as e.g. "Anna" rather than "You";
+            // the remote channel stays "Them" until renamed after the meeting.
+            writeDefaultSpeakerMapIfNeeded(
+                ["speaker_0": userName.isEmpty ? "You" : userName, "speaker_1": "Them"],
+                in: meetingDir
+            )
         }
 
         // Summarize only when an OpenRouter key is configured.

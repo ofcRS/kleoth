@@ -1,0 +1,4 @@
+# Dependencies and Raycast build output — reproducible via `npm install` / `ray build`.
+node_modules/
+dist/
+raycast-env.d.ts

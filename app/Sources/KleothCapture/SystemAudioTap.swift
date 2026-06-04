@@ -109,6 +109,30 @@ public final class SystemAudioTap {
         try start { _ in handler }
     }
 
+    /// Creates and immediately destroys a minimal process tap, purely to make
+    /// macOS show its one-time System Audio Recording permission prompt (used
+    /// by first-run onboarding). There is NO public API to query or request
+    /// this permission, so attempting a real tap is the only App-Store-safe
+    /// trigger. Harmless when the permission is already granted or denied —
+    /// the system only ever prompts once.
+    ///
+    /// - Returns: `true` when the tap could be created (permission granted or
+    ///   prompt accepted); `false` on failure (denied, or pre-prompt state
+    ///   where macOS returns zeros silently — indistinguishable by design).
+    @discardableResult
+    public static func primePermission() -> Bool {
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        description.isPrivate = true
+        description.muteBehavior = .unmuted
+        description.name = "Kleoth Permission Check"
+
+        var tapID = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateProcessTap(description, &tapID)
+        guard status == noErr, tapID != kAudioObjectUnknown else { return false }
+        AudioHardwareDestroyProcessTap(tapID)
+        return true
+    }
+
     /// `true` if a file-backed session reported a write failure on the IO thread.
     public var didEncounterWriteFailure: Bool { writeFailed.isRaised }
 

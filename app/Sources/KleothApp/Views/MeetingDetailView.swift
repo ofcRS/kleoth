@@ -20,7 +20,6 @@ struct MeetingDetailView: View {
     @State private var loadError: String?
     @State private var showRename = false
     @State private var confirmDelete = false
-    @State private var confirmFullTranscribe = false
     @State private var copied = false
     /// Whether this meeting has no transcript on disk yet (audio-only). Decided in
     /// `reload()` from the disk, not the (possibly stale) `meeting.isProcessed`
@@ -101,16 +100,6 @@ struct MeetingDetailView: View {
         } message: {
             Text("The whole meeting folder — audio, transcript, and summary — goes to the Trash.")
         }
-        .confirmationDialog(
-            "Fully transcribe with ElevenLabs Scribe?",
-            isPresented: $confirmFullTranscribe,
-            titleVisibility: .visible
-        ) {
-            Button(fullTranscribeButtonTitle) { Task { await controller.fullyTranscribe(meeting) } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(fullTranscribeMessage)
-        }
     }
 
     // MARK: - Header
@@ -160,18 +149,6 @@ struct MeetingDetailView: View {
             return "\(dateStr) · \(time)"
         }
         return dateStr
-    }
-
-    /// "Transcribe (~$X)" using the known audio duration, when available.
-    private var fullTranscribeButtonTitle: String {
-        if let secs = meeting.durationSecs ?? metadata?.cost?.audioDurationSecs, secs > 0 {
-            return "Transcribe (~\(MeetingFormat.usd(0.22 * secs / 3600)))"
-        }
-        return "Transcribe"
-    }
-
-    private var fullTranscribeMessage: String {
-        "Sends this meeting's audio to ElevenLabs for a higher-accuracy, diarized transcript, then re-summarizes. Replaces the current transcript and incurs ElevenLabs cost (~$0.22 per hour of audio)."
     }
 
     // MARK: - Transcription progress
@@ -247,18 +224,27 @@ struct MeetingDetailView: View {
                 Label("Reveal in Finder", systemImage: "folder")
             }
             .help("Show the meeting folder in Finder")
-            Button { copyForSlack() } label: {
-                Label(copied ? "Copied!" : "Copy for Slack", systemImage: copied ? "checkmark" : "doc.on.clipboard")
+            // Copy actions: the Slack-formatted summary, or the on-disk file
+            // paths (handy for piping a meeting into other tools).
+            Menu {
+                Button("Copy for Slack") { copyForSlack() }
+                    .disabled(summary == nil)
+                Divider()
+                Button("Copy Transcript Path") { copyPath("transcript.md") }
+                    .disabled(!hasFile("transcript.md"))
+                Button("Copy Summary Path") { copyPath("summary.md") }
+                    .disabled(!hasFile("summary.md"))
+            } label: {
+                Label(copied ? "Copied!" : "Copy", systemImage: copied ? "checkmark" : "doc.on.clipboard")
             }
-            .disabled(summary == nil)
-            .help("Copy a Slack-formatted summary to the clipboard")
+            .help("Copy the Slack-formatted summary, or the transcript/summary file path")
             Button { showRename = true } label: {
                 Label("Rename speakers", systemImage: "person.2")
             }
             .disabled(transcript == nil || (transcript?.utterances.isEmpty ?? true))
             .help("Assign names to the detected speakers")
             if !TranscriptTier.isSOTA(metadata?.transcriptTier) {
-                Button { confirmFullTranscribe = true } label: {
+                Button { Task { await controller.fullyTranscribe(meeting) } } label: {
                     Label("Fully transcribe", systemImage: "sparkles")
                 }
                 .disabled(controller.isProcessing || !controller.hasElevenLabsKey)
@@ -343,7 +329,7 @@ struct MeetingDetailView: View {
         return MeetingMetadata(title: meeting.title, date: meeting.date)
     }
 
-    // MARK: - Slack
+    // MARK: - Copy actions
 
     private func copyForSlack() {
         guard let summary, let metadata else { return }
@@ -352,5 +338,19 @@ struct MeetingDetailView: View {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         copied = true
+    }
+
+    /// Copies the absolute path of a file in the meeting folder (e.g.
+    /// `transcript.md`) — handy for handing a meeting to other tools.
+    private func copyPath(_ filename: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(meeting.directory.appendingPathComponent(filename).path, forType: .string)
+        copied = true
+    }
+
+    /// Whether `filename` exists in this meeting's folder.
+    private func hasFile(_ filename: String) -> Bool {
+        FileManager.default.fileExists(atPath: meeting.directory.appendingPathComponent(filename).path)
     }
 }
