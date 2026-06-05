@@ -34,10 +34,12 @@ struct MeetingDetailView: View {
                 MeetingAudioPlayer(url: audio)
             }
 
-            // Live progress while this (already-transcribed) meeting is being
+            // Live progress while THIS (already-transcribed) meeting is being
             // upgraded with ElevenLabs Scribe or re-summarized: a determinate bar
             // during the audio upload, indeterminate while Scribe works server-side.
-            if controller.isProcessing && !isUnprocessed {
+            // Keyed to this meeting's folder — other meetings processing in the
+            // background don't banner here.
+            if controller.isProcessingMeeting(meeting.directory) && !isUnprocessed {
                 transcriptionProgressBanner
             }
 
@@ -163,7 +165,7 @@ struct MeetingDetailView: View {
                 if controller.transcriptionProgress == nil {
                     ProgressView().controlSize(.small)
                 }
-                Text(controller.statusMessage)
+                Text(bannerText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -177,39 +179,62 @@ struct MeetingDetailView: View {
         .kleothCard(padding: KleothMetrics.spacingM)
     }
 
+    /// The banner's caption: the live status when one is being reported, or a
+    /// generic "Transcribing…" while this meeting waits its turn in the queue
+    /// (the shared status may read "Idle" then).
+    private var bannerText: String {
+        let trimmed = controller.statusMessage.trimmingCharacters(in: .whitespaces)
+        return trimmed.lowercased() == "idle" ? "Transcribing…" : trimmed
+    }
+
     // MARK: - Unprocessed (audio-only) state
 
+    @ViewBuilder
     private var unprocessedState: some View {
-        VStack(spacing: KleothMetrics.spacingM) {
-            if let image = KleothAssets.illustration(.notTranscribed) {
-                KleothIllustration(image: image, size: 120)
-            } else {
-                Image(systemName: "waveform.badge.exclamationmark")
-                    .font(.largeTitle)
+        if controller.isProcessingMeeting(meeting.directory) {
+            // Queued or actively transcribing in the background — the content
+            // fills in by itself (`contentRevision` reloads this view on save).
+            VStack(spacing: KleothMetrics.spacingM) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("Transcribing…")
+                    .font(.headline)
+                Text("This recording is being transcribed in the background. The transcript and summary will appear here when it finishes.")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Not transcribed yet")
-                .font(.headline)
-            Text("The audio for this recording is saved, but transcription didn't finish. Transcribe it now — free and on-device.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            Button {
-                Task { await controller.transcribeSaved(meeting) }
-            } label: {
-                Label("Transcribe (free, on-device)", systemImage: "sparkles")
-                    .padding(.horizontal, KleothMetrics.spacingS)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        } else {
+            VStack(spacing: KleothMetrics.spacingM) {
+                if let image = KleothAssets.illustration(.notTranscribed) {
+                    KleothIllustration(image: image, size: 120)
+                } else {
+                    Image(systemName: "waveform.badge.exclamationmark")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Not transcribed yet")
+                    .font(.headline)
+                Text("The audio for this recording is saved, but transcription didn't finish. Transcribe it now — free and on-device.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    Task { await controller.transcribeSaved(meeting) }
+                } label: {
+                    Label("Transcribe (free, on-device)", systemImage: "sparkles")
+                        .padding(.horizontal, KleothMetrics.spacingS)
+                }
+                .kleothProminentButton()
+                .controlSize(.large)
             }
-            .kleothProminentButton()
-            .controlSize(.large)
-            .disabled(controller.isProcessing)
-            if controller.isProcessing {
-                ProgressView().controlSize(.small)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 
     // MARK: - Toolbar
@@ -247,7 +272,9 @@ struct MeetingDetailView: View {
                 Button { Task { await controller.fullyTranscribe(meeting) } } label: {
                     Label("Fully transcribe", systemImage: "sparkles")
                 }
-                .disabled(controller.isProcessing || !controller.hasElevenLabsKey)
+                // Gated per-meeting: other meetings processing in the background
+                // don't block this one (jobs queue up and run one at a time).
+                .disabled(controller.isProcessingMeeting(meeting.directory) || !controller.hasElevenLabsKey)
                 .help(controller.hasElevenLabsKey
                       ? "Re-transcribe in the cloud with ElevenLabs Scribe — higher accuracy, diarized."
                       : "Add an ElevenLabs API key in Settings to enable.")

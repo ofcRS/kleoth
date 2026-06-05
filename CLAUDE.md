@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-06-03. This file is living context for future sessions — keep it current._
+_Last updated: 2026-06-05. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -142,6 +142,42 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 `mic.m4a`, `system.m4a`, `meeting.m4a` (2-channel combined) · `transcript.json` (raw Scribe or
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
 (always). One meeting = one folder. Folder name encodes start time.
+
+## Current status (2026-06-05 — background processing pass)
+- ✅ **All prior work merged to `main`** (fast-forward from `fix/scribe-attribution-and-summary-language`
+  at `22fe200`); development now happens on `main`.
+- ✅ **Stop is non-blocking** (user: "when recording is over, i want it to be moved into the list
+  below, and start recording button to be unlocked immediately"). `stop()` frees the capture slot
+  up front (recorder/dir/startedAt captured into locals, controller state cleared), marks the
+  folder as processing, and returns after queueing — the record button is gated ONLY on consent
+  now, so a new recording can start while the previous one transcribes.
+- ✅ **Serial pipeline queue:** `enqueuePipelineJob` chains jobs on `pipelineQueueTail` (strict
+  FIFO). Rationale: every `LocalTranscriber.transcribe` builds its own ~600 MB WhisperKit, so
+  concurrent runs would double memory + fight over the ANE. `stop()`, `transcribeSaved`,
+  `transcribeExistingFile` (now pre-creates its meeting dir via `makeSessionDirectory`), and
+  `fullyTranscribe` (split into guard+enqueue and `runFullTranscription` worker) all queue;
+  multiple meetings can be queued back-to-back and run one at a time.
+- ✅ **In-flight meetings live in the list:** `processingDir: URL?` → `@Published
+  processingPaths: Set<String>` (standardized paths; `markProcessing`/`unmarkProcessing` reload the
+  list; `isProcessing` is now derived + `private(set)`). `loadRecentMeetings` no longer hides the
+  mid-pipeline folder — it lists it (`RecentMeeting.isTranscribing`) with a spinner +
+  "Transcribing…" in the popover row, History sidebar row, and a dedicated detail-view state;
+  only the *active recording* folder stays hidden (files still being written; that branch never
+  probes duration, so listing during the off-main combine is safe). Failure paths unmark → row
+  resurfaces as "Untranscribed". `processingPaths` is in-memory only: quit mid-run → folder shows
+  as "Untranscribed" on relaunch (self-healing).
+- ✅ **Per-meeting gating instead of global:** detail's "Fully transcribe" + progress banner key on
+  `isProcessingMeeting(dir)`, so other meetings processing in the background don't block/banner
+  this one. Double-queueing the same dir is guarded everywhere. Popover header subtitle shows
+  "Transcribing in the background"; the top status line is reserved for transient messages
+  ("Finalizing recording…", "Saved …", errors) and hides at "Idle" — pipeline progress lives on
+  the row spinner. Quit while processing now asks (confirmationDialog) — audio survives either way.
+- ✅ `stop()` returns a `String` outcome (`@discardableResult`) — "Recording saved — transcribing
+  in the background." — used by `StopRecordingIntent`'s dialog (statusMessage may already be
+  reset/overwritten by then).
+- ✅ Both packages build; 97 core tests green; release app installed; DMG rebuilt (7.8M, SHA-256
+  `681e4aba…`). ⚠️ Not runtime-verified: a live stop→record-again overlap and the queue under
+  real long meetings (logic compile-checked only; WhisperKit serialization is by construction).
 
 ## Current status (2026-06-04 — onboarding/raycast/polish pass)
 - ✅ **First-run onboarding** (user: "it should be experience… ready? start recording"). Researched
@@ -281,8 +317,8 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   the audio file via `AudioProbe`.
 - **Minor leftovers (low):** the new `ChannelAudio` DSP (`mixToMono`/`envelope`) has no pure unit
   test (lives in the app package, which has no test target; `ChannelAttribution` IS tested and the
-  mix was A/B-validated); and `RecordingController.process(useMultiChannel:)` is now a vestigial
-  unused param.
+  mix was A/B-validated); and `RecordingController.runPipeline(useMultiChannel:)` (ex-`process`)
+  still carries a vestigial unused param.
 - App Intents don't auto-surface in Shortcuts/Spotlight: SwiftPM build doesn't run
   `appintentsmetadataprocessor` (needs Swift const-extraction Xcode does). URL scheme + hotkey +
   Raycast work without it. Documented in `KleothIntents.swift`.

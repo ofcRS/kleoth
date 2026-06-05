@@ -42,8 +42,10 @@ struct StopRecordingIntent: AppIntent {
         guard let controller = RecordingController.shared else {
             return .result(dialog: "Kleoth isn't running.")
         }
-        await controller.stop()
-        return .result(dialog: IntentDialog(stringLiteral: controller.statusMessage))
+        // `stop()` returns once capture is finalized and processing is queued in
+        // the background — its message describes that, not the eventual result.
+        let outcome = await controller.stop()
+        return .result(dialog: IntentDialog(stringLiteral: outcome))
     }
 }
 

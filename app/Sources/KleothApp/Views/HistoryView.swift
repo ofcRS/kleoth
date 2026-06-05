@@ -164,7 +164,15 @@ private struct MeetingSidebarRow: View {
 
     @ViewBuilder
     private var statusBadge: some View {
-        if meeting.isProcessed {
+        if meeting.isTranscribing {
+            HStack(spacing: KleothMetrics.spacingXS) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Transcribing…")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        } else if meeting.isProcessed {
             KleothTierBadge(isSOTA: TranscriptTier.isSOTA(meeting.transcriptTier))
         } else {
             KleothPill("Untranscribed", systemImage: "waveform.badge.exclamationmark", tint: KleothPalette.pendingTint)

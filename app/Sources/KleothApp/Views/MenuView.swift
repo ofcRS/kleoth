@@ -19,6 +19,9 @@ struct MenuView: View {
     /// How many recent meetings the popover surfaces before "Show all …".
     private let recentLimit = 5
 
+    /// Quit pressed while background processing is running — confirm first.
+    @State private var confirmQuit = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingL) {
             header
@@ -98,6 +101,7 @@ struct MenuView: View {
     /// One quiet line under the wordmark reflecting the current state.
     private var headerSubtitle: String {
         if controller.isRecording { return "Recording in progress" }
+        if controller.isProcessing { return "Transcribing in the background" }
         return "Local-first meeting recorder"
     }
 
@@ -128,7 +132,10 @@ struct MenuView: View {
             .kleothProminentButton()
             .tint(controller.isRecording ? KleothPalette.recordingTint : .accentColor)
             .controlSize(.large)
-            .disabled(!controller.consentAcknowledged || controller.isProcessing)
+            // Never locked by processing: transcription runs in the background
+            // (the in-flight meeting spins in the list below) and the next
+            // recording can start immediately.
+            .disabled(!controller.consentAcknowledged)
 
             statusLine
 
@@ -141,11 +148,13 @@ struct MenuView: View {
 
     // MARK: - Status
 
-    /// Transient status text; shows a small spinner while the pipeline runs.
-    /// Hidden when there's nothing meaningful to say (idle, no download).
+    /// Transient status text (saves, errors, brief "Finalizing…"). Background
+    /// transcription progress is NOT surfaced here — the in-flight meeting's
+    /// list row carries its own spinner — so this hides whenever the message is
+    /// just the resting "Idle".
     @ViewBuilder
     private var statusLine: some View {
-        if controller.isProcessing || !isIdleStatus {
+        if !isIdleStatus {
             VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
                 HStack(spacing: KleothMetrics.spacingS) {
                     // Indeterminate spinner only when there's no determinate
@@ -251,7 +260,14 @@ struct MenuView: View {
             .help("Open Settings")
 
             Button {
-                NSApplication.shared.terminate(nil)
+                // Quitting kills any background transcription with it — warn
+                // first so a freshly-stopped meeting isn't silently abandoned
+                // (the audio stays on disk and resurfaces as "Untranscribed").
+                if controller.isProcessing {
+                    confirmQuit = true
+                } else {
+                    NSApplication.shared.terminate(nil)
+                }
             } label: {
                 Label("Quit", systemImage: "power")
             }
@@ -260,6 +276,16 @@ struct MenuView: View {
         .font(.callout)
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
+        .confirmationDialog(
+            "A meeting is still transcribing.",
+            isPresented: $confirmQuit,
+            titleVisibility: .visible
+        ) {
+            Button("Quit Anyway", role: .destructive) { NSApplication.shared.terminate(nil) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Quitting stops the processing. The audio stays saved — you can transcribe it later from the list.")
+        }
     }
 
     private func openHistory(select id: RecentMeeting.ID?) {
@@ -329,12 +355,22 @@ private struct RecentMeetingRow: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Trailing accessory: a "Cloud" badge for cloud-transcribed meetings, or an
-    /// "Untranscribed" chip for audio-only folders. On-device rows stay quiet —
-    /// that's the default, so it needs no badge in this compact list.
+    /// Trailing accessory: a live spinner while the meeting is queued/being
+    /// transcribed in the background, a "Cloud" badge for cloud-transcribed
+    /// meetings, or an "Untranscribed" chip for audio-only folders. On-device
+    /// rows stay quiet — that's the default, so it needs no badge in this
+    /// compact list.
     @ViewBuilder
     private var trailing: some View {
-        if !meeting.isProcessed {
+        if meeting.isTranscribing {
+            HStack(spacing: KleothMetrics.spacingXS) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Transcribing…")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        } else if !meeting.isProcessed {
             KleothPill("Untranscribed", tint: KleothPalette.pendingTint)
         } else if TranscriptTier.isSOTA(meeting.transcriptTier) {
             KleothTierBadge(isSOTA: true)

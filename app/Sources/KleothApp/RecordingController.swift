@@ -27,6 +27,9 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
     /// False for folders that hold only raw audio (no `meta.json`/transcript yet)
     /// — e.g. a recording whose processing failed. These can be transcribed in place.
     public var isProcessed: Bool
+    /// True while this meeting is queued for or undergoing background processing
+    /// (transcribe/summarize) — rows show a progress spinner instead of status chips.
+    public var isTranscribing: Bool
 
     public init(
         title: String,
@@ -35,7 +38,8 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         directory: URL,
         durationSecs: Double? = nil,
         transcriptTier: String? = nil,
-        isProcessed: Bool = true
+        isProcessed: Bool = true,
+        isTranscribing: Bool = false
     ) {
         self.title = title
         self.date = date
@@ -44,6 +48,7 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         self.durationSecs = durationSecs
         self.transcriptTier = transcriptTier
         self.isProcessed = isProcessed
+        self.isTranscribing = isTranscribing
     }
 }
 
@@ -84,8 +89,16 @@ public final class RecordingController: ObservableObject {
     /// already acknowledged consent, so upgraders aren't ambushed by a welcome flow.
     @Published public var needsOnboarding: Bool = false
 
-    /// True only while a transcription/summarization pipeline run is in flight.
-    @Published public var isProcessing: Bool = false
+    /// True while any transcription/summarization work is queued or in flight.
+    /// Mirrors `processingPaths.isEmpty` — purely informational now: processing
+    /// happens in the background and never locks the record button.
+    @Published public private(set) var isProcessing: Bool = false
+
+    /// Meeting folders queued for or undergoing background processing, by
+    /// standardized path. Drives the per-row "Transcribing…" spinners in the
+    /// popover and History lists. In-memory only: if the app quits mid-run the
+    /// folder simply resurfaces as "Untranscribed" on next launch.
+    @Published public private(set) var processingPaths: Set<String> = []
 
     /// Whether Kleoth has full calendar access, enabling meetings to be named
     /// from the overlapping calendar event. Opt-in (see `requestCalendarAccess`).
@@ -140,14 +153,11 @@ public final class RecordingController: ObservableObject {
     /// never goes stale.
     private var durationCache: [String: Double] = [:]
 
-    /// The meeting folder currently being processed (transcribe/summarize), if
-    /// any. It's excluded from the recent-meetings scan while processing so the
-    /// in-progress meeting doesn't briefly flash as "Untranscribed" (it has audio
-    /// but no `meta.json` yet), and so its audio isn't duration-probed while the
-    /// off-main combine may still be writing it. Cleared *before* the list
-    /// refresh when processing ends, so a failed run correctly resurfaces the
-    /// audio as transcribable.
-    private var processingDir: URL?
+    /// Serializes background pipeline runs in submission order. Each on-device
+    /// run loads its own ~600 MB WhisperKit model, so two at once would double
+    /// memory and contend for the ANE; a strict FIFO keeps exactly one engine
+    /// alive while letting any number of meetings queue up behind it.
+    private var pipelineQueueTail: Task<Void, Never>?
 
     private let log = Logger(subsystem: "dev.kleoth", category: "RecordingController")
 
@@ -254,9 +264,10 @@ public final class RecordingController: ObservableObject {
             return
         }
 
-        isProcessing = true
-        statusMessage = "Summarizing latest meeting…"
         let dir = latest.directory
+        guard !isProcessingMeeting(dir) else { return }  // already queued or running
+        markProcessing(dir)
+        statusMessage = "Summarizing latest meeting…"
         let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
         do {
             let transcript = try store.loadTranscript(in: dir)
@@ -297,13 +308,12 @@ public final class RecordingController: ObservableObject {
                 speakerMap: nil,
                 metadata: meta
             )
-            loadRecentMeetings()
             contentRevision &+= 1
             statusMessage = "Summarized \"\(meta.title)\"."
         } catch {
             statusMessage = "Summarize failed: \(error.localizedDescription)"
         }
-        isProcessing = false
+        unmarkProcessing(dir)
     }
 
     /// Posts the most recent meeting's summary to the configured Slack webhook,
@@ -506,31 +516,50 @@ public final class RecordingController: ObservableObject {
         }
     }
 
-    /// Stops the current session and runs the processing pipeline
-    /// (transcribe, and summarize when an OpenRouter key is present).
-    public func stop() async {
+    /// Stops the current session, surfaces the meeting in the recent list right
+    /// away (as a spinner row), and queues transcription/summarization in the
+    /// background — the record button is free for the next meeting immediately.
+    ///
+    /// Returns a short user-facing description of the outcome (used as the
+    /// Shortcuts dialog); the popover reads live state instead.
+    @discardableResult
+    public func stop() async -> String {
         guard isRecording, #available(macOS 14.4, *) else {
             isRecording = false
-            return
+            return "Nothing is recording."
         }
 
         isRecording = false
-        statusMessage = "Finalizing recording…"
 
         guard let recorder = recorderBox as? Recorder, let dir = activeRecordingDir else {
             statusMessage = "No active recording to stop."
             recorderBox = nil
             activeRecordingDir = nil
-            return
+            return statusMessage
         }
+
+        // Capture everything this meeting needs, then free the capture slot
+        // immediately so the next recording can start while this one finalizes
+        // and transcribes in the background.
+        let startedAt = activeRecordingStartedAt ?? Date()
+        recorderBox = nil
+        activeRecordingDir = nil
+        activeRecordingStartedAt = nil
+
+        // Mark the folder as processing *before* the scan: that's what flips
+        // `loadRecentMeetings` from hiding it (active recording) to listing it
+        // as an in-flight row with a spinner.
+        statusMessage = "Finalizing recording…"
+        markProcessing(dir)
 
         // Finalize capture entirely off the main actor: both stopping the audio
         // devices and — far heavier — decoding both sources and re-encoding the
         // single 2-channel file is seconds of work for a long meeting, and running
         // it synchronously on the main actor was the ~30s freeze on stop. The
-        // recorder is used only here after capture ends (nothing else touches it)
-        // and the main actor is suspended at the `await` below, so the
-        // `nonisolated(unsafe)` capture is race-free.
+        // recorder is used only here after capture ends (nothing else touches it:
+        // `start()` builds a fresh `Recorder` per session) and this method's only
+        // reference is moved into the task, so the `nonisolated(unsafe)` capture
+        // is race-free.
         let audioFileURL: URL
         do {
             let twoChannel = dir.appendingPathComponent("meeting.m4a")
@@ -545,44 +574,55 @@ public final class RecordingController: ObservableObject {
             }.value
         } catch {
             statusMessage = "Recording stopped with errors: \(error.localizedDescription)"
-            recorderBox = nil
-            activeRecordingDir = nil
-            return
+            // Resurfaces the saved audio as an "Untranscribed" row.
+            unmarkProcessing(dir)
+            return statusMessage
         }
-
-        let startedAt = activeRecordingStartedAt ?? Date()
-        recorderBox = nil
-        activeRecordingDir = nil
-        activeRecordingStartedAt = nil
 
         // Name the meeting from the overlapping calendar event when available.
         let calendar = calendarMeetingInfo(at: startedAt)
+        let title = calendar?.title ?? defaultMeetingTitle()
+        let participants = calendar?.participants ?? []
 
-        // Save the transcript into the SAME folder the audio was captured into,
-        // so one meeting is one self-contained folder.
-        await process(
-            audioFile: audioFileURL,
-            title: calendar?.title ?? defaultMeetingTitle(),
-            useMultiChannel: true,
-            meetingDir: dir,
-            startedAt: startedAt,
-            participants: calendar?.participants ?? []
-        )
+        // Hand off to the serial pipeline queue. From here the in-list spinner
+        // row is the progress surface, so clear the transient status — unless a
+        // newer recording already owns it.
+        if statusMessage == "Finalizing recording…" { statusMessage = "Idle" }
+        enqueuePipelineJob { [weak self] in
+            // One meeting = one folder: the transcript saves into the SAME
+            // folder the audio was captured into.
+            await self?.runPipeline(
+                audioFile: audioFileURL,
+                title: title,
+                useMultiChannel: true,
+                meetingDir: dir,
+                startedAt: startedAt,
+                participants: participants
+            )
+        }
+        return "Recording saved — transcribing in the background."
     }
 
     /// Transcribes (and optionally summarizes) an existing audio file the user
-    /// selected, reusing the same pipeline as live recordings.
+    /// selected, reusing the same background pipeline as live recordings.
     public func transcribeExistingFile(_ url: URL) async {
         let title = url.deletingPathExtension().lastPathComponent
-        // An imported file has no capture folder; let the pipeline create a fresh
-        // unique meeting folder for it.
-        await process(
-            audioFile: url,
-            title: title.isEmpty ? defaultMeetingTitle() : title,
-            useMultiChannel: false,
-            meetingDir: nil,
-            startedAt: Date()
-        )
+        // Create the meeting folder up front (the pipeline would otherwise derive
+        // one mid-run) so the import is marked + queued like any recording. The
+        // folder holds no audio until the pipeline saves, so it stays out of the
+        // list while working; the transient status line carries progress instead.
+        let dir = try? makeSessionDirectory()
+        if let dir { markProcessing(dir) }
+        let resolvedTitle = title.isEmpty ? defaultMeetingTitle() : title
+        enqueuePipelineJob { [weak self] in
+            await self?.runPipeline(
+                audioFile: url,
+                title: resolvedTitle,
+                useMultiChannel: false,
+                meetingDir: dir,
+                startedAt: Date()
+            )
+        }
     }
 
     // MARK: - Speaker renaming
@@ -647,7 +687,45 @@ public final class RecordingController: ObservableObject {
 
     // MARK: - Pipeline
 
-    private func process(
+    /// Appends a job to the strict FIFO pipeline queue (see `pipelineQueueTail`).
+    /// Jobs hop onto the main actor for state updates; the heavy lifting inside
+    /// (WhisperKit, uploads) suspends it rather than blocking.
+    private func enqueuePipelineJob(_ job: @escaping @MainActor @Sendable () async -> Void) {
+        let previous = pipelineQueueTail
+        pipelineQueueTail = Task { @MainActor in
+            await previous?.value
+            await job()
+        }
+    }
+
+    /// Whether this meeting folder is queued for or undergoing background
+    /// processing — gates per-meeting actions (re-transcribe etc.) and drives
+    /// the in-row spinner.
+    public func isProcessingMeeting(_ dir: URL) -> Bool {
+        processingPaths.contains(dir.standardizedFileURL.path)
+    }
+
+    /// Marks a folder as queued/processing and refreshes the list so its row
+    /// appears (with a spinner) immediately. Idempotent.
+    private func markProcessing(_ dir: URL) {
+        processingPaths.insert(dir.standardizedFileURL.path)
+        isProcessing = true
+        loadRecentMeetings()
+    }
+
+    /// Clears a folder's processing mark and refreshes the list, so a finished
+    /// run flips its row to the saved meeting and a failed one resurfaces the
+    /// audio as "Untranscribed".
+    private func unmarkProcessing(_ dir: URL) {
+        processingPaths.remove(dir.standardizedFileURL.path)
+        isProcessing = !processingPaths.isEmpty
+        loadRecentMeetings()
+    }
+
+    /// One background pipeline run (transcribe → optional summarize → save).
+    /// Runs strictly serialized via `enqueuePipelineJob`; never blocks the UI or
+    /// the record button.
+    private func runPipeline(
         audioFile: URL,
         title: String,
         useMultiChannel: Bool,
@@ -655,12 +733,7 @@ public final class RecordingController: ObservableObject {
         startedAt: Date,
         participants: [String] = []
     ) async {
-        isProcessing = true
-        // Hide this folder from the list while it's being processed (it has audio
-        // but no meta.json yet) and keep its still-writing audio out of the
-        // duration probe. Cleared before the list refresh at the end.
-        processingDir = meetingDir
-        statusMessage = "Transcribing…"
+        if let meetingDir { markProcessing(meetingDir) }  // idempotent re-mark
 
         let transport = URLSessionTransport()
 
@@ -715,8 +788,13 @@ public final class RecordingController: ObservableObject {
             transcriptTier: tier
         )
 
-        if canSummarize {
-            statusMessage = "Transcribing and summarizing…"
+        // Folder-backed runs surface progress on their in-list spinner row, so
+        // the transient status line stays quiet for them. An imported file has
+        // no visible row until it saves (its folder holds no audio yet), so the
+        // status line is its only progress surface.
+        let hasListRow = meetingDir.map { Self.meetingAudioURL(in: $0) != nil } ?? false
+        if !hasListRow {
+            statusMessage = canSummarize ? "Transcribing and summarizing…" : "Transcribing…"
         }
 
         do {
@@ -730,28 +808,22 @@ public final class RecordingController: ObservableObject {
 
             // Re-scan from disk so the saved meeting (with its real startedAt)
             // lands in the list in the right position — the disk is the source
-            // of truth now that one meeting is one folder. Clear processingDir
-            // first so the now-complete folder is included (with its final,
-            // fully-written audio probed for duration).
-            processingDir = nil
-            loadRecentMeetings()
+            // of truth now that one meeting is one folder. Unmark first so the
+            // now-complete folder shows as saved (with its final, fully-written
+            // audio probed for duration).
+            if let meetingDir { unmarkProcessing(meetingDir) } else { loadRecentMeetings() }
             contentRevision &+= 1
-            isProcessing = false
             if let summaryError = result.summaryError {
                 statusMessage = "Transcribed \"\(title)\" — summary skipped (\(summaryError))"
             } else {
                 statusMessage = "Saved \"\(title)\"."
             }
         } catch {
-            isProcessing = false
-            // The audio is safe on disk — only processing failed. Clear
-            // processingDir and re-scan so the recording reappears as an
-            // "Untranscribed" item that can be re-transcribed in place. Without
-            // this it silently drops off the list (the last refresh ran while it
-            // was still the active recording) and looks as though the whole
-            // meeting was lost.
-            processingDir = nil
-            loadRecentMeetings()
+            // The audio is safe on disk — only processing failed. Unmark and
+            // re-scan so the recording reappears as an "Untranscribed" item that
+            // can be re-transcribed in place. Without this it silently drops off
+            // the list and looks as though the whole meeting was lost.
+            if let meetingDir { unmarkProcessing(meetingDir) } else { loadRecentMeetings() }
             statusMessage = "Processing failed: \(error.localizedDescription) — audio saved; re-transcribe it from the list."
         }
     }
@@ -759,19 +831,35 @@ public final class RecordingController: ObservableObject {
     /// Re-transcribes an existing meeting with ElevenLabs Scribe (cloud, diarized)
     /// in place — the opt-in paid upgrade from the free on-device transcript. Reuses
     /// the meeting's folder, audio, and original metadata, keeps any speaker map,
-    /// and re-summarizes when an OpenRouter key is configured.
+    /// and re-summarizes when an OpenRouter key is configured. Queued behind any
+    /// in-flight pipeline work; the meeting's row spins while it waits and runs.
     public func fullyTranscribe(_ meeting: RecentMeeting) async {
         guard let elevenKey = credentials.elevenLabsKey, !elevenKey.isEmpty else {
             statusMessage = "Add an ElevenLabs API key in Settings to fully transcribe."
             return
         }
         let dir = meeting.directory
+        guard Self.meetingAudioURL(in: dir) != nil else {
+            statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
+            return
+        }
+        guard !isProcessingMeeting(dir) else { return }  // already queued or running
+
+        markProcessing(dir)
+        enqueuePipelineJob { [weak self] in
+            await self?.runFullTranscription(of: meeting, elevenKey: elevenKey)
+        }
+    }
+
+    /// The queued worker behind `fullyTranscribe` — does the actual Scribe pass.
+    private func runFullTranscription(of meeting: RecentMeeting, elevenKey: String) async {
+        let dir = meeting.directory
         guard let audio = Self.meetingAudioURL(in: dir) else {
+            unmarkProcessing(dir)
             statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
             return
         }
 
-        isProcessing = true
         // Start indeterminate ("preparing/mixing" has no measurable progress); the
         // determinate bar appears once the upload begins and reports bytes sent.
         transcriptionProgress = nil
@@ -844,9 +932,8 @@ public final class RecordingController: ObservableObject {
                 summarize: canSummarize,
                 meetingDir: dir
             )
-            loadRecentMeetings()
+            unmarkProcessing(dir)
             contentRevision &+= 1
-            isProcessing = false
             transcriptionProgress = nil
             if let summaryError = result.summaryError {
                 statusMessage = "Fully transcribed \"\(metadata.title)\" — summary skipped (\(summaryError))"
@@ -854,7 +941,7 @@ public final class RecordingController: ObservableObject {
                 statusMessage = "Fully transcribed \"\(metadata.title)\"."
             }
         } catch {
-            isProcessing = false
+            unmarkProcessing(dir)
             transcriptionProgress = nil
             statusMessage = "Full transcription failed: \(error.localizedDescription)"
         }
@@ -862,21 +949,28 @@ public final class RecordingController: ObservableObject {
 
     /// Transcribes a previously-recorded but unprocessed meeting (audio only, no
     /// transcript — e.g. a recording whose processing failed) in place, using the
-    /// free on-device engine.
+    /// free on-device engine. Queued: several untranscribed meetings can be
+    /// kicked off back-to-back and they run one at a time.
     public func transcribeSaved(_ meeting: RecentMeeting) async {
         let dir = meeting.directory
         guard let audio = Self.meetingAudioURL(in: dir) else {
             statusMessage = "No audio found for \"\(meeting.title)\"."
             return
         }
+        guard !isProcessingMeeting(dir) else { return }  // already queued or running
         let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
-        await process(
-            audioFile: audio,
-            title: meeting.title,
-            useMultiChannel: Self.isTwoChannelCapture(in: dir),
-            meetingDir: dir,
-            startedAt: started
-        )
+        let useMultiChannel = Self.isTwoChannelCapture(in: dir)
+
+        markProcessing(dir)
+        enqueuePipelineJob { [weak self] in
+            await self?.runPipeline(
+                audioFile: audio,
+                title: meeting.title,
+                useMultiChannel: useMultiChannel,
+                meetingDir: dir,
+                startedAt: started
+            )
+        }
     }
 
     /// Downloads the on-device transcription model in the background at launch,
@@ -921,6 +1015,8 @@ public final class RecordingController: ObservableObject {
             let modified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
             let metaURL = dir.appendingPathComponent("meta.json")
+            // Queued/in-flight background processing → the row spins.
+            let processing = processingPaths.contains(dir.standardizedFileURL.path)
 
             if fm.fileExists(atPath: metaURL.path) {
                 let metadata = loadMetadata(in: dir)
@@ -939,22 +1035,23 @@ public final class RecordingController: ObservableObject {
                     directory: dir,
                     durationSecs: realDur ?? metadata.cost?.audioDurationSecs,
                     transcriptTier: metadata.transcriptTier,
-                    isProcessed: true
+                    isProcessed: true,
+                    isTranscribing: processing
                 )
                 return (meeting, started ?? modified)
             }
 
-            // No meta.json but audio present: a recording whose processing didn't
-            // finish. Surface it (so the audio isn't invisible) as transcribable —
-            // but never the in-progress recording itself.
+            // No meta.json but audio present: either a meeting that's mid-pipeline
+            // right now (listed with a spinner — a just-stopped recording lands
+            // here the moment Stop is pressed) or one whose processing failed
+            // (surfaced as transcribable so the audio isn't invisible). Never the
+            // in-progress *recording* itself, whose files are still being written.
             if let active = activeRecordingDir,
                dir.standardizedFileURL == active.standardizedFileURL { return nil }
-            // Likewise skip a folder that's mid-pipeline: it has audio but no
-            // meta.json yet, and its 2-channel file may still be writing.
-            if let processing = processingDir,
-               dir.standardizedFileURL == processing.standardizedFileURL { return nil }
             guard Self.meetingAudioURL(in: dir) != nil else { return nil }
             let started = Self.folderDate(dir)
+            // No duration: this branch never probes audio (a processing folder's
+            // 2-channel file may still be combining), and there's no stored value.
             let meeting = RecentMeeting(
                 title: Self.recoveredTitle(for: dir, started: started),
                 date: Self.dayString(started ?? modified),
@@ -962,7 +1059,8 @@ public final class RecordingController: ObservableObject {
                 directory: dir,
                 durationSecs: nil,
                 transcriptTier: nil,
-                isProcessed: false
+                isProcessed: false,
+                isTranscribing: processing
             )
             return (meeting, started ?? modified)
         }
