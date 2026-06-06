@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-06-05. This file is living context for future sessions — keep it current._
+_Last updated: 2026-06-06. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -142,6 +142,53 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 `mic.m4a`, `system.m4a`, `meeting.m4a` (2-channel combined) · `transcript.json` (raw Scribe or
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
 (always). One meeting = one folder. Folder name encodes start time.
+
+## Current status (2026-06-06 — history management + publish-prep pass)
+- ✅ **History sidebar is Finder-like** (user asked: badge visible when selected; ⌘-multi-select +
+  delete; double-click rename — researched against Apple docs/HIG first via 3 parallel agents):
+  1. **Badges legible on selection:** `KleothPill` + `KleothTierBadge` read
+     `@Environment(\.backgroundProminence)` (macOS 14+) and flip to white-on-translucent-white at
+     `.increased` — i.e. exactly when the row draws the *focused* accent fill. The gray inactive
+     selection stays `.standard` **by design** (tint already legible there — do not "fix").
+  2. **Multi-select + delete:** `HistoryView.selection` is now `Set<RecentMeeting.ID>` (⌘/⇧-click
+     native). `contextMenu(forSelectionType:menu:primaryAction:)` + `.onDeleteCommand` sit ON the
+     List; the menu closure's `ids` set is authoritative (clicked-outside-selection ⇒ just that
+     row; empty set on blank-space right-click) — never read `selection` inside it. Context menu:
+     Rename (single, processed only) / Show in Finder / Move to Trash. Deletes go through
+     `RecordingController.deleteMeetings` → `FileManager.trashItem` (recoverable), **no
+     confirmation** per HIG ("avoid alerts for common, undoable actions") — Finder norm; the
+     detail view's single-delete keeps its existing dialog. Bulk delete skips processing/active
+     -recording dirs ("Skipped — still transcribing."), reloads once. Detail pane shows an
+     "N meetings selected" placeholder (combined duration + bulk trash button) when count > 1.
+  3. **Double-click inline rename:** `primaryAction` (fires on double-click AND Return — the
+     idiomatic List API; `.onTapGesture(count:2)` fights selection) → row's title swaps
+     Text→TextField (`.plain`), parent-owned `renamingID`/`renameDraft`, `@FocusState` keyed by
+     row id, focus deferred one runloop tick (same-tick focus no-ops), select-all comes free.
+     Enter commits (`onSubmit`), Esc cancels (`onExitCommand`), click-away commits (focus
+     observer; cancel clears `renamingID` BEFORE focus so the observer can't double-commit).
+     Rename allowed only for processed, non-transcribing rows (untranscribed folders have no
+     meta.json to hold a title). Core: `MeetingStore.loadMetadata(in:)` +
+     `renameMeeting(in:to:)` (rewrites meta.json; re-renders transcript.md/summary.md when a
+     transcript exists so the user-owned Markdown header matches; meta-only otherwise) — 3 new
+     tests. Controller `renameMeeting` trims/guards + `contentRevision` bump (open detail
+     updates live); user titles are durable (`isPlaceholderTitle` gate on summarize).
+- ✅ **Publish prep (parallel agent, worktree, merged):** **secret scan of FULL git history =
+  CLEAN** (.env/config.json never committed; only masked variable *names* in README/tests — safe
+  to make public, no filter-repo needed). Rewrote stale `README.md` (old one described
+  Scribe-as-primary/GPT-4.1-mini), added `CHANGELOG.md` (0.1.0, Keep-a-Changelog),
+  `docs/RELEASING.md` (documents make-app/make-dmg actual behavior + [Developer Program]-gated
+  notarized tier), `packaging/homebrew/kleoth.rb` (draft cask, OWNER/REPO + sha256 placeholders),
+  `.gitignore` += `app/.build/`, `*.dmg`; `app/bundle/Info.plist` += `LSApplicationCategoryType`
+  (productivity) + `NSHumanReadableCopyright`.
+- ⏳ **User decisions pending for publish:** (1) LICENSE — not created; agent recommends
+  **Apache-2.0** (old README said "intended Apache-2.0"; Raycast extension declares MIT — align);
+  (2) GitHub repo name/owner (`gh` authed as `ofcRS`, **no git remote configured yet**) → then
+  fill OWNER/REPO in the cask; (3) stale `BUILD-APP.md` (references `KleothApp` binary; now
+  `Kleoth`) — update or fold into docs/RELEASING.md; (4) three `<!-- TODO: screenshot -->`
+  placeholders in README.
+- ✅ Both packages build; **100 core tests green** (was 97); release app reinstalled; DMG rebuilt.
+- ⚠️ Not runtime-verified: the new History interactions visually (multi-select, inline-rename
+  focus/commit behavior, badge treatment on selection) — all compile-checked + research-backed.
 
 ## Current status (2026-06-05 — background processing pass)
 - ✅ **All prior work merged to `main`** (fast-forward from `fix/scribe-attribution-and-summary-language`
@@ -338,7 +385,8 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   `KLEOTH_SIGN_IDENTITY` (Developer ID → hardened runtime + timestamp re-sign) +
   `KLEOTH_NOTARY_PROFILE` (notarytool submit --wait + staple). **Still needed for true public
   release:** Apple Developer Program membership ($99/yr) for the Developer ID cert + notarization;
-  repo LICENSE/README; Sparkle auto-update later. PKG rejected (enterprise/MDM only).
+  LICENSE (decision pending — README/CHANGELOG/RELEASING done 2026-06-06); Sparkle auto-update
+  later. PKG rejected (enterprise/MDM only).
 - **Branding:** macOS 26 layered `.icon` via Icon Composer → compile with `actool` inside
   `make-app.sh` (no Xcode project) → set `CFBundleIconName` (Tahoe) + `CFBundleIconFile`
   (legacy). AI for concept, finalize as vector. Theme: Greek *kleos* "that which is heard".

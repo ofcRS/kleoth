@@ -5,10 +5,12 @@ config.json
 
 # Build artifacts
 .build/
+app/.build/
 /out/
 /samples/
 /meetings/
 app/dist/
+*.dmg
 
 # Xcode / SwiftPM
 *.xcuserstate

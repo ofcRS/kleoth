@@ -16,6 +16,12 @@
     <string>Kleoth</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- Finder/Launchpad category (a menu-bar productivity utility). -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <!-- Shown in the Get Info panel / About box. -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Kleoth is open source. See the project repository for license terms.</string>
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
