@@ -2,7 +2,7 @@
 
 [![Platform: macOS 14.4+](https://img.shields.io/badge/platform-macOS%2014.4%2B-black)](https://www.apple.com/macos/)
 [![Swift 6](https://img.shields.io/badge/swift-6-orange)](https://www.swift.org/)
-[![License: TBD](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 **A local-first, bot-free meeting recorder for macOS.** Kleoth captures your microphone and the
 other participants' system audio directly on your Mac, transcribes it **on-device** with Whisper,
@@ -195,8 +195,9 @@ and `KleothCapture` (Core Audio process-tap for system audio, AVAudioEngine for 
 
 ## License
 
-**TBD.** A `LICENSE` file will be added before the first public release. See the maintainer's notes
-for the current candidates (MIT / Apache-2.0 / AGPL-3.0).
+[Apache License 2.0](LICENSE), except the Raycast extension
+(`integrations/raycast-extension/`), which is MIT-licensed — the Raycast Store requires MIT for
+published extensions.
 
 ## Acknowledgments
 
