@@ -1,5 +1,11 @@
 # Kleoth
 
+<p align="center">
+  <img src="docs/assets/hero.png" alt="Kleoth — local-first, bot-free meeting recorder for macOS" width="830">
+</p>
+
+[![Release](https://img.shields.io/github/v/release/ofcRS/kleoth)](https://github.com/ofcRS/kleoth/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/ofcRS/kleoth/total)](https://github.com/ofcRS/kleoth/releases)
 [![Platform: macOS 14.4+](https://img.shields.io/badge/platform-macOS%2014.4%2B-black)](https://www.apple.com/macos/)
 [![Swift 6](https://img.shields.io/badge/swift-6-orange)](https://www.swift.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -43,8 +49,12 @@ and keeps the transcript and summary as files in `~/Kleoth`.
 
 ## Install
 
-Download the latest `Kleoth-x.y.z.dmg` from the [Releases](../../releases) page, open it, and drag
-**Kleoth.app** onto the **Applications** folder. Kleoth lives in the menu bar (the lyre icon).
+**[⬇ Download Kleoth-0.1.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.1.0/Kleoth-0.1.0.dmg)**
+(7.8 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.1.0/Kleoth-0.1.0.dmg.sha256))
+— or browse all [Releases](../../releases).
+
+Open the DMG and drag **Kleoth.app** onto the **Applications** folder. Kleoth lives in the menu bar
+(the lyre icon).
 
 ### First launch (current builds are self-signed)
 

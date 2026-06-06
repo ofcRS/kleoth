@@ -185,11 +185,30 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   and **repo created + pushed**: `https://github.com/ofcRS/kleoth` (public, `origin` wired,
   topics set, cask placeholders filled with `ofcRS/kleoth`). The repo is LIVE — anything
   committed to main is now world-readable; keep the no-keys discipline absolute.
-- ⏳ **Publish leftovers:** (1) cut the first release — `git tag v0.1.0` + `gh release create`
-  with the DMG + SHA-256 (see docs/RELEASING.md; NOT done, user hasn't asked); (2) three
-  `<!-- TODO: screenshot -->` placeholders in README (needs the user — no Screen Recording
-  permission here); (3) stale `BUILD-APP.md` (references `KleothApp` binary; now `Kleoth`) —
-  update or fold into docs/RELEASING.md; (4) Developer Program → notarized tier + Homebrew tap.
+- ✅ **v0.1.0 RELEASED (2026-06-07, user-requested parallel workflow — 6 agents, every leg
+  adversarially verified):** https://github.com/ofcRS/kleoth/releases/tag/v0.1.0 — DMG +
+  `.sha256` assets live (curl 200; GitHub's server-side digest matches `6028cafb…`). The stale
+  local v0.1.0 tag (was at 7df4d21) was re-created annotated at origin/main and pushed. README
+  now opens with a generated hero banner, release/downloads badges, and a direct-download link;
+  cask `sha256` filled with the real digest.
+- ✅ **Brand images generated headlessly** (`app/branding-src/readme-images/generate.swift` —
+  AppKit offscreen render @2x → sips downscale): `docs/assets/hero.png` (1600×420, wired into
+  README) + `docs/assets/social-preview.png` (1280×640). ⚠️ Gotcha: the iconset PNG has NO
+  alpha — white-baked corner gaps + ~2.64% white padding on the 1024 canvas — so the script
+  clips the icon to an inset rounded tile (inset 2.84%, radius 26% — measured by pixel probe)
+  and draws the shadow from an opaque rounded base first (a shadow set inside the clip gets
+  clipped away with the corners). First render had a white halo; fixed + visually re-verified.
+- ✅ **Demo meetings staged for screenshots:** `~/Kleoth/meeting-2026-06-07-{091200,103000,
+  130000,154500}` — invented EN business content, mixed Cloud/On-device tiers, durations via
+  `cost.audio_duration_secs`, deliberately NO `.m4a` (detail view gates its player on audio
+  presence, so nothing breaks; list duration falls back to the stored value). All four pass
+  `kleoth render`. Remove after screenshots: ⌘-select all four in History → Move to Trash.
+- ⏳ **Publish leftovers:** (1) three `<!-- TODO: screenshot -->` placeholders in README — needs
+  the user (Screen Recording is denied for the agent shell; demo data is staged and waiting);
+  (2) upload `docs/assets/social-preview.png` manually: GitHub repo Settings → Social preview
+  (no API/CLI exists for it); (3) stale `BUILD-APP.md` (references `KleothApp` binary; now
+  `Kleoth`) — update or fold into docs/RELEASING.md; (4) Developer Program → notarized tier +
+  Homebrew tap (cask draft ready at packaging/homebrew/kleoth.rb).
 - ✅ Both packages build; **100 core tests green** (was 97); release app reinstalled; DMG rebuilt.
 - ⚠️ Not runtime-verified: the new History interactions visually (multi-select, inline-rename
   focus/commit behavior, badge treatment on selection) — all compile-checked + research-backed.

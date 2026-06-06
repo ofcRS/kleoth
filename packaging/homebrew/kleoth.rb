@@ -1,15 +1,13 @@
 # Homebrew cask for Kleoth — local-first, bot-free macOS meeting recorder.
 #
-# This is a DRAFT. Before publishing:
-#   1. After cutting a release, set :sha256 to the DMG's SHA-256 (printed by
-#      app/make-dmg.sh, also in the GitHub release notes).
-#   2. Once builds are notarized, delete the `caveats` block.
+# This is a DRAFT until the tap repo exists. Before publishing:
+#   1. Once builds are notarized, delete the `caveats` block.
 #
 # Typical home: a tap repo named "homebrew-kleoth", installed via
 #   brew install --cask ofcRS/kleoth/kleoth
 cask "kleoth" do
   version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000" # TODO: real DMG SHA-256
+  sha256 "6028cafbbdddccadc337eb6e482b2c5ddfb0bfea9fc16c7ffed3304ceaa81641"
 
   url "https://github.com/ofcRS/kleoth/releases/download/v#{version}/Kleoth-#{version}.dmg",
       verified: "github.com/ofcRS/kleoth/"
