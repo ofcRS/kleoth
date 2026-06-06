@@ -180,12 +180,16 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   notarized tier), `packaging/homebrew/kleoth.rb` (draft cask, OWNER/REPO + sha256 placeholders),
   `.gitignore` += `app/.build/`, `*.dmg`; `app/bundle/Info.plist` += `LSApplicationCategoryType`
   (productivity) + `NSHumanReadableCopyright`.
-- ⏳ **User decisions pending for publish:** (1) LICENSE — not created; agent recommends
-  **Apache-2.0** (old README said "intended Apache-2.0"; Raycast extension declares MIT — align);
-  (2) GitHub repo name/owner (`gh` authed as `ofcRS`, **no git remote configured yet**) → then
-  fill OWNER/REPO in the cask; (3) stale `BUILD-APP.md` (references `KleothApp` binary; now
-  `Kleoth`) — update or fold into docs/RELEASING.md; (4) three `<!-- TODO: screenshot -->`
-  placeholders in README.
+- ✅ **PUBLIC (2026-06-07):** user chose **Apache-2.0** (LICENSE at root; the Raycast extension
+  deliberately stays **MIT** — the Raycast Store requires MIT — carve-out documented in README)
+  and **repo created + pushed**: `https://github.com/ofcRS/kleoth` (public, `origin` wired,
+  topics set, cask placeholders filled with `ofcRS/kleoth`). The repo is LIVE — anything
+  committed to main is now world-readable; keep the no-keys discipline absolute.
+- ⏳ **Publish leftovers:** (1) cut the first release — `git tag v0.1.0` + `gh release create`
+  with the DMG + SHA-256 (see docs/RELEASING.md; NOT done, user hasn't asked); (2) three
+  `<!-- TODO: screenshot -->` placeholders in README (needs the user — no Screen Recording
+  permission here); (3) stale `BUILD-APP.md` (references `KleothApp` binary; now `Kleoth`) —
+  update or fold into docs/RELEASING.md; (4) Developer Program → notarized tier + Homebrew tap.
 - ✅ Both packages build; **100 core tests green** (was 97); release app reinstalled; DMG rebuilt.
 - ⚠️ Not runtime-verified: the new History interactions visually (multi-select, inline-rename
   focus/commit behavior, badge treatment on selection) — all compile-checked + research-backed.
@@ -383,10 +387,10 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   DMG itself signed; `hdiutil verify` + SHA-256 printed). Two tiers: default self-signed (installs
   on this Mac; elsewhere right-click → Open), and a wired-but-unused public tier —
   `KLEOTH_SIGN_IDENTITY` (Developer ID → hardened runtime + timestamp re-sign) +
-  `KLEOTH_NOTARY_PROFILE` (notarytool submit --wait + staple). **Still needed for true public
-  release:** Apple Developer Program membership ($99/yr) for the Developer ID cert + notarization;
-  LICENSE (decision pending — README/CHANGELOG/RELEASING done 2026-06-06); Sparkle auto-update
-  later. PKG rejected (enterprise/MDM only).
+  `KLEOTH_NOTARY_PROFILE` (notarytool submit --wait + staple). **Still needed for the
+  Gatekeeper-clean tier:** Apple Developer Program membership ($99/yr) for the Developer ID cert
+  + notarization; Sparkle auto-update later. (LICENSE/README/CHANGELOG/RELEASING done 2026-06-06/07;
+  repo public at github.com/ofcRS/kleoth.) PKG rejected (enterprise/MDM only).
 - **Branding:** macOS 26 layered `.icon` via Icon Composer → compile with `actool` inside
   `make-app.sh` (no Xcode project) → set `CFBundleIconName` (Tahoe) + `CFBundleIconFile`
   (legacy). AI for concept, finalize as vector. Theme: Greek *kleos* "that which is heard".
