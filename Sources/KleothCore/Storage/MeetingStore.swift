@@ -117,6 +117,47 @@ public struct MeetingStore {
         return try Self.makeDecoder().decode(MeetingSummary.self, from: data)
     }
 
+    /// Loads the metadata stored in `dir/meta.json`.
+    public func loadMetadata(in dir: URL) throws -> MeetingMetadata {
+        let data = try Data(contentsOf: dir.appendingPathComponent("meta.json"))
+        return try Self.makeDecoder().decode(MeetingMetadata.self, from: data)
+    }
+
+    /// Renames a meeting in place: rewrites `meta.json` with the new title and,
+    /// when the meeting has a transcript, re-renders the Markdown artifacts
+    /// (whose headers carry the title) so the user-owned files match. Every
+    /// other artifact — raw transcript, summary JSON, speaker map — is untouched.
+    /// The title is the caller's responsibility to validate (trim / non-empty).
+    @discardableResult
+    public func renameMeeting(in dir: URL, to title: String) throws -> MeetingMetadata {
+        var metadata = try loadMetadata(in: dir)
+        metadata.title = title
+
+        if let transcript = try? loadTranscript(in: dir) {
+            let summary = (try? loadSummary(in: dir)) ?? nil
+            let markdown = MarkdownRenderer.render(
+                summary: summary,
+                transcript: transcript,
+                metadata: metadata,
+                includeTranscript: true
+            )
+            try save(
+                in: dir,
+                raw: nil,
+                transcript: transcript,
+                summary: summary,
+                summaryMarkdown: markdown,
+                speakerMap: nil,
+                metadata: metadata
+            )
+        } else {
+            // No transcript yet (e.g. processing failed): persist just the title.
+            let data = try Self.makeEncoder().encode(metadata)
+            try data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+        }
+        return metadata
+    }
+
     // MARK: - Helpers
 
     /// A unique, sortable meeting directory under `baseDir`, named

@@ -181,6 +181,13 @@ struct KleothPill: View {
     private let systemImage: String?
     private let tint: Color
 
+    /// `.increased` when this pill sits on a vivid background — i.e. its List row
+    /// is selected *and focused*, drawing the accent fill. The tinted treatment
+    /// would be illegible there (accent-on-accent), so it swaps to white on a
+    /// translucent white wash. The gray *inactive* selection stays `.standard`,
+    /// where the tint already reads fine — don't "fix" that case.
+    @Environment(\.backgroundProminence) private var backgroundProminence
+
     init(_ text: String, systemImage: String? = nil, tint: Color = .secondary) {
         self.text = text
         self.systemImage = systemImage
@@ -188,6 +195,7 @@ struct KleothPill: View {
     }
 
     var body: some View {
+        let prominent = (backgroundProminence == .increased)
         HStack(spacing: KleothMetrics.spacingXS) {
             if let systemImage {
                 Image(systemName: systemImage)
@@ -196,10 +204,13 @@ struct KleothPill: View {
             Text(text)
         }
         .font(.caption)
-        .foregroundStyle(tint)
+        .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(tint))
         .padding(.horizontal, KleothMetrics.spacingS)
         .padding(.vertical, KleothMetrics.spacingXS)
-        .background(tint.opacity(0.14), in: Capsule())
+        .background(
+            prominent ? AnyShapeStyle(.white.opacity(0.22)) : AnyShapeStyle(tint.opacity(0.14)),
+            in: Capsule()
+        )
     }
 }
 
@@ -214,14 +225,22 @@ struct KleothPill: View {
 struct KleothTierBadge: View {
     let isSOTA: Bool
 
+    /// See `KleothPill` — flips to a white treatment over the focused accent
+    /// selection so "Cloud"/"On-device" never disappears into a selected row.
+    @Environment(\.backgroundProminence) private var backgroundProminence
+
     var body: some View {
         let tint: Color = isSOTA ? .accentColor : .green
+        let prominent = (backgroundProminence == .increased)
         Text(TranscriptTier.label(isSOTA ? TranscriptTier.sotaScribe : TranscriptTier.local))
             .font(.caption2.bold())
-            .foregroundStyle(tint)
+            .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(tint))
             .padding(.horizontal, KleothMetrics.spacingS)
             .padding(.vertical, 2)
-            .background(tint.opacity(0.15), in: Capsule())
+            .background(
+                prominent ? AnyShapeStyle(.white.opacity(0.22)) : AnyShapeStyle(tint.opacity(0.15)),
+                in: Capsule()
+            )
     }
 }
 

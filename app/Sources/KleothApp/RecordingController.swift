@@ -673,15 +673,74 @@ public final class RecordingController: ObservableObject {
     /// Moves a meeting folder to the Trash and refreshes the list.
     @discardableResult
     public func deleteMeeting(_ meeting: RecentMeeting) -> Bool {
+        deleteMeetings([meeting]) == 1
+    }
+
+    /// Moves several meeting folders to the Trash (recoverable in Finder),
+    /// skipping any that are recording or mid-pipeline, and reloads the list
+    /// once. Returns how many were actually trashed. Per the HIG, a recoverable
+    /// Trash move needs no confirmation dialog — Finder doesn't ask either.
+    @discardableResult
+    public func deleteMeetings(_ meetings: [RecentMeeting]) -> Int {
+        var trashedTitles: [String] = []
+        var busyTitles: [String] = []
+        var failure: String?
+
+        for meeting in meetings {
+            let dir = meeting.directory
+            // Never pull a folder out from under the recorder or the pipeline.
+            let isActiveRecording = activeRecordingDir.map {
+                $0.standardizedFileURL == dir.standardizedFileURL
+            } ?? false
+            if isProcessingMeeting(dir) || isActiveRecording {
+                busyTitles.append(meeting.title)
+                continue
+            }
+            do {
+                try FileManager.default.trashItem(at: dir, resultingItemURL: nil)
+                if selectedMeetingID == meeting.id { selectedMeetingID = nil }
+                trashedTitles.append(meeting.title)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+
+        if !trashedTitles.isEmpty { loadRecentMeetings() }
+
+        if let failure {
+            statusMessage = "Could not delete: \(failure)"
+        } else if !busyTitles.isEmpty {
+            statusMessage = busyTitles.count == 1
+                ? "Skipped \"\(busyTitles[0])\" — still transcribing."
+                : "Skipped \(busyTitles.count) meetings — still transcribing."
+        } else if trashedTitles.count == 1 {
+            statusMessage = "Moved \"\(trashedTitles[0])\" to Trash."
+        } else if trashedTitles.count > 1 {
+            statusMessage = "Moved \(trashedTitles.count) meetings to Trash."
+        }
+        return trashedTitles.count
+    }
+
+    /// Renames a meeting's display title in place — `meta.json` is rewritten and
+    /// the Markdown artifacts re-rendered (via `MeetingStore.renameMeeting`).
+    /// A user-chosen title is durable: summarization only ever overwrites
+    /// placeholder titles (`MeetingMetadata.isPlaceholderTitle`).
+    public func renameMeeting(_ meeting: RecentMeeting, to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != meeting.title else { return }
+        let dir = meeting.directory
+        guard !isProcessingMeeting(dir) else {
+            statusMessage = "\"\(meeting.title)\" is still transcribing — rename it when it finishes."
+            return
+        }
         do {
-            try FileManager.default.trashItem(at: meeting.directory, resultingItemURL: nil)
-            if selectedMeetingID == meeting.id { selectedMeetingID = nil }
+            let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+            try store.renameMeeting(in: dir, to: trimmed)
             loadRecentMeetings()
-            statusMessage = "Moved \"\(meeting.title)\" to Trash."
-            return true
+            contentRevision &+= 1
+            statusMessage = "Renamed to \"\(trimmed)\"."
         } catch {
-            statusMessage = "Could not delete: \(error.localizedDescription)"
-            return false
+            statusMessage = "Could not rename: \(error.localizedDescription)"
         }
     }
 
