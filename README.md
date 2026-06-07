@@ -43,9 +43,17 @@ and keeps the transcript and summary as files in `~/Kleoth`.
 
 ## Screenshots
 
-<!-- TODO: screenshot — menu-bar popover (recording state) -->
-<!-- TODO: screenshot — meeting detail view (transcript + summary) -->
-<!-- TODO: screenshot — first-run onboarding -->
+<p align="center">
+  <img src="docs/assets/screenshot-detail.png" alt="The History window: a day-grouped meeting list beside a full transcript and AI summary" width="900"><br>
+  <em>The History window — searchable, day-grouped meetings with a TL;DR, summary, action items, and per-speaker highlights.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-popover.png" alt="The Kleoth menu-bar popover with a Start Recording button and recent meetings" width="330"><br>
+  <em>The menu-bar popover — start a recording and reach recent meetings.</em>
+</p>
+
+<!-- TODO: screenshot — first-run onboarding (Settings → Show Welcome Window) -->
 
 ## Install
 

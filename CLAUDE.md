@@ -203,12 +203,19 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
   `cost.audio_duration_secs`, deliberately NO `.m4a` (detail view gates its player on audio
   presence, so nothing breaks; list duration falls back to the stored value). All four pass
   `kleoth render`. Remove after screenshots: ⌘-select all four in History → Move to Trash.
-- ⏳ **Publish leftovers:** (1) three `<!-- TODO: screenshot -->` placeholders in README — needs
-  the user (Screen Recording is denied for the agent shell; demo data is staged and waiting);
+- ✅ **README screenshots (2 of 3, 2026-06-08):** user captured the popover + History-detail
+  windows (on the staged demo data — the detail shot also confirms the selected-row Cloud badge
+  fix renders white, live). Framed both on the hero gradient via
+  `app/branding-src/readme-images/frame-shot.swift` (transparent-surround window shots →
+  `docs/assets/screenshot-{detail,popover}.png`) and wired into the Screenshots section. Minor:
+  the popover capture has faint terminal bleed-through in its translucent header (macOS vibrancy;
+  acceptable — recapture against a clean desktop only if it bugs anyone).
+- ⏳ **Publish leftovers:** (1) onboarding screenshot still TODO (Settings → Show Welcome Window);
   (2) upload `docs/assets/social-preview.png` manually: GitHub repo Settings → Social preview
-  (no API/CLI exists for it); (3) stale `BUILD-APP.md` (references `KleothApp` binary; now
-  `Kleoth`) — update or fold into docs/RELEASING.md; (4) Developer Program → notarized tier +
-  Homebrew tap (cask draft ready at packaging/homebrew/kleoth.rb).
+  (no API/CLI exists for it); (3) demo meetings still in `~/Kleoth` — delete the four
+  `meeting-2026-06-07-*` folders when done shooting; (4) stale `BUILD-APP.md` (references
+  `KleothApp` binary; now `Kleoth`) — update or fold into docs/RELEASING.md; (5) Developer
+  Program → notarized tier + Homebrew tap (cask draft ready at packaging/homebrew/kleoth.rb).
 - ✅ Both packages build; **100 core tests green** (was 97); release app reinstalled; DMG rebuilt.
 - ⚠️ Not runtime-verified: the new History interactions visually (multi-select, inline-rename
   focus/commit behavior, badge treatment on selection) — all compile-checked + research-backed.
