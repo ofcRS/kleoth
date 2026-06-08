@@ -12,6 +12,18 @@ public enum SummarizerError: Error, Sendable {
     case invalidJSON(snippet: String)
 }
 
+extension SummarizerError: LocalizedError {
+    // Readable messages for the user-facing `summaryError` line.
+    public var errorDescription: String? {
+        switch self {
+        case let .transcriptTooLong(approxTokens):
+            return "Transcript is too long to summarize in one pass (~\(approxTokens) tokens)."
+        case let .invalidJSON(snippet):
+            return "The model did not return a complete summary. Got: \(snippet)"
+        }
+    }
+}
+
 /// Produces a structured `MeetingSummary` from a normalized transcript,
 /// using an `OpenRouterClient`.
 public struct Summarizer {
@@ -129,33 +141,55 @@ public struct Summarizer {
             maxTokens: Self.maxOutputTokens
         )
 
-        if let summary = Self.decodeSummary(from: first.content) {
+        // A `"length"` finish means the output was truncated — even if it happens
+        // to decode leniently (e.g. cut off right after `tldr`), accepting it
+        // would silently ship a gutted summary. Treat it as a failure to repair.
+        let firstTruncated = Self.isTruncated(first.finishReason)
+        if !firstTruncated, let summary = Self.decodeSummary(from: first.content) {
             return (summary, first.usage?.cost ?? 0)
         }
 
-        // One repair retry: feed back the bad content and ask for clean JSON.
-        let repairMessages = baseMessages + [
-            ChatMessage(role: "assistant", content: first.content),
-            ChatMessage(
-                role: "user",
-                content: "Your previous response was not valid JSON. Return ONLY the JSON object — no prose, no markdown fences."
-            ),
-        ]
+        // One repair retry. For a truncation, replaying the (incomplete) content
+        // only burns more budget at the same cap, so re-ask with a larger cap and
+        // no bad turn; for malformed-but-complete output, feed it back so the
+        // model can fix the shape.
+        let retryMaxTokens = firstTruncated ? Self.maxOutputTokens * 2 : Self.maxOutputTokens
+        let repairMessages: [ChatMessage]
+        if firstTruncated {
+            repairMessages = baseMessages
+        } else {
+            repairMessages = baseMessages + [
+                ChatMessage(role: "assistant", content: first.content),
+                ChatMessage(
+                    role: "user",
+                    content: "Your previous response was not valid JSON. Return ONLY the JSON object — no prose, no markdown fences."
+                ),
+            ]
+        }
 
         let retry = try await client.complete(
             messages: repairMessages,
             model: model,
             responseFormat: responseFormat,
-            maxTokens: Self.maxOutputTokens
+            maxTokens: retryMaxTokens
         )
 
         let costUSD = (first.usage?.cost ?? 0) + (retry.usage?.cost ?? 0)
 
-        guard let summary = Self.decodeSummary(from: retry.content) else {
+        // Reject a still-truncated retry rather than accept a partial summary —
+        // the pipeline records this as `summaryError` and keeps the transcript.
+        guard !Self.isTruncated(retry.finishReason),
+              let summary = Self.decodeSummary(from: retry.content) else {
             throw SummarizerError.invalidJSON(snippet: Self.snippet(retry.content))
         }
 
         return (summary, costUSD)
+    }
+
+    /// Whether a completion's `finish_reason` indicates a truncated (incomplete)
+    /// response — i.e. it hit the output token cap.
+    static func isTruncated(_ finishReason: String?) -> Bool {
+        finishReason?.lowercased() == "length"
     }
 
     // MARK: - Prompt construction

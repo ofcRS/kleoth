@@ -58,8 +58,10 @@ public struct MeetingPipeline {
             } catch {
                 // Best-effort: a summary failure (e.g. a provider/data-policy
                 // error) must never discard a good transcript. Record the reason
-                // and persist the transcript anyway.
-                summaryError = "\(error)"
+                // and persist the transcript anyway. `localizedDescription` is
+                // meaningful now that the summarizer/OpenRouter errors conform to
+                // LocalizedError (vs. the old raw `\(error)` enum dump).
+                summaryError = error.localizedDescription
             }
         }
 

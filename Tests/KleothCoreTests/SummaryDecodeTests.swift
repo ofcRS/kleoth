@@ -22,10 +22,11 @@ import Foundation
 
     /// Wraps `content` as the OpenRouter chat-completions response envelope,
     /// embedding it as the assistant message content (JSON-escaped).
-    static func completionEnvelope(content: String, cost: Double? = nil) -> String {
+    static func completionEnvelope(content: String, cost: Double? = nil, finishReason: String? = nil) -> String {
         let escaped = escapeForJSONString(content)
+        let finish = finishReason.map { ", \"finish_reason\": \"\($0)\"" } ?? ""
         let usage = cost.map { ", \"usage\": { \"cost\": \($0) }" } ?? ""
-        return "{ \"choices\": [ { \"message\": { \"role\": \"assistant\", \"content\": \"\(escaped)\" } } ]\(usage) }"
+        return "{ \"choices\": [ { \"message\": { \"role\": \"assistant\", \"content\": \"\(escaped)\" }\(finish) } ]\(usage) }"
     }
 
     static func escapeForJSONString(_ raw: String) -> String {
@@ -265,6 +266,71 @@ import Foundation
         #expect(Summarizer.languageName(for: "eng") == "English")
         #expect(Summarizer.languageName(for: nil) == nil)
         #expect(Summarizer.languageName(for: "") == nil)
+    }
+
+    // MARK: - Truncation handling (finish_reason == "length")
+
+    /// A first response truncated at the output cap (`finish_reason == "length"`)
+    /// must be retried even though it would decode leniently (a summary cut off
+    /// after `tldr` is silently gutted, not "complete"). The retry's complete
+    /// response is what's returned.
+    @Test func summarizeRetriesOnTruncatedFirstResponse() async throws {
+        let truncated = Self.completionEnvelope(
+            content: "{ \"tldr\": \"Only the tldr made it before the cap.\" }",
+            cost: 0.01,
+            finishReason: "length"
+        )
+        let complete = Self.completionEnvelope(content: Self.summaryJSON, cost: 0.02, finishReason: "stop")
+        let transport = MockTransport(jsonSequence: [truncated, complete])
+        let summarizer = makeSummarizer(transport)
+
+        let (summary, costUSD) = try await summarizer.summarize(
+            transcript: transcript(),
+            metadata: metadata()
+        )
+
+        // The complete retry — not the truncated first — is returned.
+        #expect(summary.overview?.contains("June 10") == true)
+        #expect(summary.actionItems.count == 2)
+        #expect(abs(costUSD - 0.03) < 1e-9)
+        #expect(transport.callCount == 2)
+    }
+
+    /// If the retry is also truncated, fail loudly (so the pipeline records a
+    /// `summaryError` and keeps the transcript) rather than shipping a partial
+    /// summary as if it were complete.
+    @Test func summarizeThrowsWhenTruncationPersists() async {
+        let truncated = Self.completionEnvelope(
+            content: "{ \"tldr\": \"partial\" }",
+            finishReason: "length"
+        )
+        let transport = MockTransport(jsonSequence: [truncated, truncated])
+        let summarizer = makeSummarizer(transport)
+
+        do {
+            _ = try await summarizer.summarize(transcript: transcript(), metadata: metadata())
+            Issue.record("Expected SummarizerError.invalidJSON on persistent truncation")
+        } catch let error as SummarizerError {
+            guard case .invalidJSON = error else {
+                Issue.record("Expected .invalidJSON, got \(error)")
+                return
+            }
+            #expect(transport.callCount == 2)
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    /// A complete short answer (`finish_reason == "stop"`) is accepted on the
+    /// first try — the truncation guard must not over-reject valid output.
+    @Test func summarizeAcceptsCompleteResponseOnFirstTry() async throws {
+        let transport = MockTransport(
+            json: Self.completionEnvelope(content: Self.summaryJSON, cost: 0.01, finishReason: "stop")
+        )
+        let summarizer = makeSummarizer(transport)
+        let (summary, _) = try await summarizer.summarize(transcript: transcript(), metadata: metadata())
+        #expect(summary.tldr == "Shipped the beta; agreed on a launch date.")
+        #expect(transport.callCount == 1)
     }
 
     @Test func summarizeThrowsWhenRepairAlsoFails() async {

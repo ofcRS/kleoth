@@ -450,6 +450,15 @@ struct OnboardingView: View {
                 .buttonStyle(.plain)
 
                 Button("Start your first recording") {
+                    // "Skip setup" jumps here without ever acknowledging consent;
+                    // start() hard-guards on consent and would silently no-op
+                    // after the window is dismissed. Route the user to the
+                    // permissions step instead so the headline CTA always does
+                    // something visible.
+                    guard controller.consentAcknowledged else {
+                        goTo(.permissions)
+                        return
+                    }
                     finalize()
                     Task { await controller.start() }
                     dismiss()

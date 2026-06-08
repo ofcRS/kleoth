@@ -120,8 +120,14 @@ public enum ChannelAttribution {
         var mapping: [String: String] = [:]
         if clusters.count >= 2 {
             // Most mic-leaning cluster → You; most system-leaning → Them; force
-            // them distinct so bleed can't merge both onto one speaker.
-            let ranked = clusters.sorted { affinity($0) > affinity($1) }
+            // them distinct so bleed can't merge both onto one speaker. The sort
+            // is a *total* order (affinity desc, then cluster id asc) so equal-
+            // affinity clusters — e.g. two near-silent ones — can't flip You/Them
+            // between launches via randomized Set iteration order.
+            let ranked = clusters.sorted { a, b in
+                let fa = affinity(a), fb = affinity(b)
+                return fa != fb ? fa > fb : a < b
+            }
             mapping[ranked.first!] = speaker0Id
             mapping[ranked.last!] = speaker1Id
             for cluster in ranked.dropFirst().dropLast() {

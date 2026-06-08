@@ -63,6 +63,27 @@ import Testing
         #expect(md.contains("# Launch Planning"))
     }
 
+    /// A title with embedded newlines (LLM- or rename-sourced) is collapsed to a
+    /// single line so it can't split or escalate the Markdown H1.
+    @Test func markdownTitleIsCollapsedToOneLine() {
+        let metadata = MeetingMetadata(
+            title: "Line one\nLine two\n# sneaky",
+            date: "2026-05-30",
+            participants: [],
+            consentAcknowledged: true
+        )
+        let md = MarkdownRenderer.render(
+            summary: nil,
+            transcript: sampleTranscript(),
+            metadata: metadata,
+            includeTranscript: false
+        )
+        #expect(md.hasPrefix("# Line one Line two # sneaky\n"))
+        // The embedded newlines were collapsed — no stray heading lines.
+        #expect(!md.contains("\nLine two"))
+        #expect(!md.contains("\n# sneaky"))
+    }
+
     /// Legacy summaries (no overview) skip the Summary section instead of
     /// rendering an empty one.
     @Test func markdownOmitsSummarySectionWithoutOverview() {
@@ -169,5 +190,33 @@ import Testing
     @Test func slackActionItemsUseBulletAndOwner() {
         let slack = SlackRenderer.render(summary: sampleSummary(), metadata: sampleMetadata())
         #expect(slack.contains("• @alice"), "Missing Slack bullet action item in:\n\(slack)")
+    }
+
+    /// LLM-generated free text is escaped for Slack mrkdwn (`&`/`<`/`>`), so a
+    /// summary can't inject `<url|label>` links / `<!channel>` commands, and an
+    /// owner named "channel"/"here"/"everyone" can't become a broadcast ping.
+    @Test func slackEscapesMrkdwnControlCharsAndNeutralizesBroadcasts() {
+        let summary = MeetingSummary(
+            tldr: "Ship <fast> & stay <bold>",
+            actionItems: [ActionItem(owner: "channel", task: "Ping <everyone> & go", due: nil)]
+        )
+        let metadata = MeetingMetadata(
+            title: "Plan & <Launch>",
+            date: "2026-05-30",
+            participants: [],
+            consentAcknowledged: true
+        )
+        let slack = SlackRenderer.render(summary: summary, metadata: metadata)
+
+        // Control characters are escaped, not passed through raw.
+        #expect(slack.contains("&amp;"))
+        #expect(slack.contains("&lt;fast&gt;"))
+        #expect(slack.contains("&lt;Launch&gt;"))
+        #expect(slack.contains("&lt;everyone&gt;"))
+        #expect(!slack.contains("<fast>"))
+        #expect(!slack.contains("<Launch>"))
+        #expect(!slack.contains("<everyone>"))
+        // The broadcast owner is rendered inert (zero-width space after @).
+        #expect(slack.contains("@\u{200B}channel"))
     }
 }

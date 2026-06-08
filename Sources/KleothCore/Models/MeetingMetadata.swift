@@ -83,6 +83,17 @@ public enum TranscriptTier {
         tier?.hasPrefix("sota") ?? false
     }
 
+    /// ElevenLabs Scribe batch price: USD per hour of audio. The single source
+    /// of truth (also surfaced via `ScribeClient.usdPerHour`).
+    public static let scribeUSDPerHour = 0.22
+
+    /// USD billed per hour for a tier — `scribeUSDPerHour` for a Cloud/Scribe
+    /// transcript, `0` for a free on-device one. Used to (re)compute meeting
+    /// cost without hardcoding the price at each call site.
+    public static func usdPerHour(_ tier: String?) -> Double {
+        isSOTA(tier) ? scribeUSDPerHour : 0.0
+    }
+
     /// A short, human-facing label for a tier value (for badges). Worded by
     /// where the audio went — "On-device" (never left the Mac) vs "Cloud"
     /// (ElevenLabs Scribe) — rather than the old "Local"/"SOTA" jargon.

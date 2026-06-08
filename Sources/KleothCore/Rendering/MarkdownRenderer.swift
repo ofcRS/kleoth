@@ -11,8 +11,10 @@ public enum MarkdownRenderer {
     ) -> String {
         var out = ""
 
-        // Header: title, date, participants.
-        out += "# \(metadata.title)\n\n"
+        // Header: title, date, participants. The title is sanitized to one line
+        // so an LLM- or rename-sourced newline (or leading `#`) can't split or
+        // hijack the H1.
+        out += "# \(singleLine(metadata.title))\n\n"
         let participants = metadata.participants.isEmpty
             ? "_None_"
             : metadata.participants.joined(separator: ", ")
@@ -79,6 +81,19 @@ public enum MarkdownRenderer {
     /// Returns the trimmed text, or `_None_` if it is empty/whitespace.
     private static func textOrNone(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "_None_" : text
+    }
+
+    /// Collapses internal newlines/tabs to single spaces and trims, so a value
+    /// rendered on a single Markdown line (e.g. the H1 title) can't break out of
+    /// it. A leading `#` is stripped so a title can't escalate the heading.
+    private static func singleLine(_ text: String) -> String {
+        let collapsed = text
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+        return collapsed.drop(while: { $0 == "#" || $0 == " " }).trimmingCharacters(in: .whitespaces)
     }
 
     /// Formats a start time in seconds as `m:ss`. A nil time renders as `--`.

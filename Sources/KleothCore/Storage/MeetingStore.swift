@@ -146,7 +146,10 @@ public struct MeetingStore {
                 raw: nil,
                 transcript: transcript,
                 summary: summary,
-                summaryMarkdown: markdown,
+                // Mirror the pipeline guard: never write a summary.md for a
+                // transcript-only meeting (summarization failed / no key), or
+                // other readers would treat the empty file as a real summary.
+                summaryMarkdown: summary == nil ? nil : markdown,
                 speakerMap: nil,
                 metadata: metadata
             )
@@ -182,27 +185,6 @@ public struct MeetingStore {
             suffix += 1
         }
         return candidate
-    }
-
-    /// Converts a meeting name into a filesystem-friendly slug: lowercased,
-    /// every run of non-alphanumeric characters collapsed to a single "-",
-    /// with leading/trailing dashes trimmed.
-    static func slug(_ name: String) -> String {
-        let allowed = CharacterSet.alphanumerics
-        var result = ""
-        var pendingDash = false
-        for scalar in name.lowercased().unicodeScalars {
-            if allowed.contains(scalar) {
-                if pendingDash, !result.isEmpty {
-                    result.append("-")
-                }
-                pendingDash = false
-                result.unicodeScalars.append(scalar)
-            } else {
-                pendingDash = true
-            }
-        }
-        return result.isEmpty ? "meeting" : result
     }
 
     /// Renders transcript utterances as "Name: text" lines (one per line),

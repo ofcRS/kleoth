@@ -66,7 +66,7 @@ public final class RecordingController: ObservableObject {
     /// The single app-lifetime controller, so out-of-view entry points
     /// (App Intents, the `kleoth://` URL scheme, the global hotkey) can drive
     /// recording without a view. Set in `init`.
-    public static var shared: RecordingController?
+    public private(set) static var shared: RecordingController?
 
     // MARK: - Published state
 
@@ -594,7 +594,6 @@ public final class RecordingController: ObservableObject {
             await self?.runPipeline(
                 audioFile: audioFileURL,
                 title: title,
-                useMultiChannel: true,
                 meetingDir: dir,
                 startedAt: startedAt,
                 participants: participants
@@ -618,7 +617,6 @@ public final class RecordingController: ObservableObject {
             await self?.runPipeline(
                 audioFile: url,
                 title: resolvedTitle,
-                useMultiChannel: false,
                 meetingDir: dir,
                 startedAt: Date()
             )
@@ -787,7 +785,6 @@ public final class RecordingController: ObservableObject {
     private func runPipeline(
         audioFile: URL,
         title: String,
-        useMultiChannel: Bool,
         meetingDir: URL?,
         startedAt: Date,
         participants: [String] = []
@@ -1018,14 +1015,12 @@ public final class RecordingController: ObservableObject {
         }
         guard !isProcessingMeeting(dir) else { return }  // already queued or running
         let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
-        let useMultiChannel = Self.isTwoChannelCapture(in: dir)
 
         markProcessing(dir)
         enqueuePipelineJob { [weak self] in
             await self?.runPipeline(
                 audioFile: audio,
                 title: meeting.title,
-                useMultiChannel: useMultiChannel,
                 meetingDir: dir,
                 startedAt: started
             )

@@ -39,6 +39,19 @@ public enum OpenRouterError: Error, Sendable {
     case noContent
 }
 
+extension OpenRouterError: LocalizedError {
+    // A readable message for the user-facing `summaryError` line — the default
+    // `localizedDescription` of a bare enum is an opaque "error 1" string.
+    public var errorDescription: String? {
+        switch self {
+        case let .httpError(status, bodySnippet):
+            return "OpenRouter returned HTTP \(status): \(bodySnippet)"
+        case .noContent:
+            return "OpenRouter returned an empty response."
+        }
+    }
+}
+
 /// How OpenRouter should constrain the response shape.
 public enum OpenRouterResponseFormat: Sendable {
     /// No `response_format` constraint.
@@ -82,6 +95,12 @@ public struct OpenRouterClient {
                 let content: String?
             }
             let message: Message?
+            /// Why generation stopped — `"stop"` (complete), `"length"`
+            /// (truncated: hit the output cap, often after a reasoning model
+            /// spent the budget thinking), `"content_filter"`, etc. Decoded so
+            /// the summarizer can distinguish a complete short answer from a
+            /// silently truncated one. (`convertFromSnakeCase` maps `finish_reason`.)
+            let finishReason: String?
         }
         let choices: [Choice]?
         let usage: OpenRouterUsage?
@@ -103,7 +122,7 @@ public struct OpenRouterClient {
         model: String,
         responseFormat: OpenRouterResponseFormat,
         maxTokens: Int
-    ) async throws -> (content: String, usage: OpenRouterUsage?) {
+    ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
         do {
             return try await send(
                 messages: messages,
@@ -130,7 +149,7 @@ public struct OpenRouterClient {
         model: String,
         responseFormat: OpenRouterResponseFormat,
         maxTokens: Int
-    ) async throws -> (content: String, usage: OpenRouterUsage?) {
+    ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -157,11 +176,16 @@ public struct OpenRouterClient {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let decoded = try decoder.decode(ResponseBody.self, from: data)
 
-        guard let content = decoded.choices?.first?.message?.content else {
+        // A 2xx with no choices at all is a genuine empty response. But a choice
+        // whose content is empty/nil (e.g. a reasoning model that spent the whole
+        // output budget thinking → `finish_reason == "length"`) is NOT thrown
+        // here: it's returned with its finish reason so the summarizer can route
+        // it into the repair/retry path instead of failing outright.
+        guard let choice = decoded.choices?.first else {
             throw OpenRouterError.noContent
         }
 
-        return (content, decoded.usage)
+        return (choice.message?.content ?? "", decoded.usage, choice.finishReason)
     }
 
     /// Builds the JSON request body. Uses `JSONSerialization` (rather than a

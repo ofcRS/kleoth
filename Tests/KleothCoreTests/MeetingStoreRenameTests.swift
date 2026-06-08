@@ -34,7 +34,9 @@ import Foundation
             raw: raw,
             transcript: transcript,
             summary: summary,
-            summaryMarkdown: markdown,
+            // Mirror the pipeline/rename guard: a meeting with no summary has no
+            // summary.md (otherwise this scaffolding would fabricate one).
+            summaryMarkdown: summary == nil ? nil : markdown,
             speakerMap: nil,
             metadata: metadata
         )
@@ -48,7 +50,11 @@ import Foundation
             .appendingPathComponent("kleoth-rename-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: baseDir) }
 
-        let (store, dir) = try makeMeeting(in: baseDir, title: "Meeting 2026-06-05")
+        let (store, dir) = try makeMeeting(
+            in: baseDir,
+            title: "Meeting 2026-06-05",
+            summary: MeetingSummary(tldr: "A quick sync.", overview: "We synced on the plan.")
+        )
         let updated = try store.renameMeeting(in: dir, to: "Quarterly Planning")
 
         #expect(updated.title == "Quarterly Planning")
@@ -67,6 +73,25 @@ import Foundation
         // The transcript artifacts survive the rename untouched.
         let transcript = try store.loadTranscript(in: dir)
         #expect(transcript.utterances.first?.text == "Hello")
+    }
+
+    /// Renaming a transcript-only meeting (summarization failed / no key) must
+    /// NOT fabricate a `summary.md` — only `meta.json` (+ transcript.md) update.
+    @Test func renameTranscriptOnlyMeetingDoesNotFabricateSummary() throws {
+        let baseDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kleoth-rename-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let (store, dir) = try makeMeeting(in: baseDir, title: "Recording 2026-06-05") // no summary
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("summary.md").path))
+
+        try store.renameMeeting(in: dir, to: "Sprint Retro")
+
+        #expect(try store.loadMetadata(in: dir).title == "Sprint Retro")
+        // Still no summary.md — the rename didn't invent one.
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("summary.md").path))
+        // The transcript was re-rendered and is intact.
+        #expect(try store.loadTranscript(in: dir).utterances.first?.text == "Hello")
     }
 
     /// Consecutive renames keep working (each starts from the saved state).

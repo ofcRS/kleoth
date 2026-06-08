@@ -163,8 +163,9 @@ public struct ScribeClient {
 }
 
 extension ScribeClient: Transcriber {
-    /// ElevenLabs Scribe batch pricing: USD 0.22 per hour of audio.
-    public var usdPerHour: Double { 0.22 }
+    /// ElevenLabs Scribe batch pricing: USD per hour of audio. Single source of
+    /// truth lives in `TranscriptTier.scribeUSDPerHour`.
+    public var usdPerHour: Double { TranscriptTier.scribeUSDPerHour }
     // `transcribe(fileURL:options:)` already satisfies the protocol requirement.
 }
 

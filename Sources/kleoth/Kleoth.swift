@@ -272,7 +272,7 @@ struct Summarize: AsyncParsableCommand {
         // billed. Duration comes from the actual audio file when present
         // (Scribe's multichannel response over-reports it), falling back to the
         // transcript's reported duration.
-        let usdPerHour = TranscriptTier.isSOTA(metadata.transcriptTier) ? 0.22 : 0.0
+        let usdPerHour = TranscriptTier.usdPerHour(metadata.transcriptTier)
         let durationSecs = audioDurationSeconds(in: dir) ?? transcript.durationSecs
         let transcriptionUSD = usdPerHour * (durationSecs ?? 0) / 3600
         let cost = CostBreakdown(

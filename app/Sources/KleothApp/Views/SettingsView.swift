@@ -394,9 +394,9 @@ struct SettingsView: View {
         return error.localizedDescription
     }
 
-    /// "$12.34" — provider balances are plain USD with cent precision.
+    /// "$12.34" — provider balances in USD, formatted for the user's locale.
     private static func money(_ value: Double) -> String {
-        String(format: "$%.2f", value)
+        value.formatted(.currency(code: "USD"))
     }
 
     /// "Jun 12, 2026"
@@ -409,7 +409,9 @@ struct SettingsView: View {
 
     private var slackSection: some View {
         Section {
-            TextField("Incoming webhook URL", text: $slackWebhook)
+            // A webhook URL is a bearer-equivalent secret — mask it like the API
+            // keys above rather than showing it in cleartext.
+            SecureField("Incoming webhook URL", text: $slackWebhook)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { controller.updateSlackWebhook(slackWebhook) }
         } header: {
