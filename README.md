@@ -114,8 +114,6 @@ Open **Settings** from the menu bar. Everything here is optional:
 - **OpenRouter API key** — enables AI summaries. Note: if your OpenRouter account blocks providers
   that may train on your data, choose a no-train model (e.g. `google/*`, `deepseek/*`,
   `meta-llama/*`); the default `google/gemini-3-flash-preview` works out of the box.
-- **Slack webhook** — post a meeting summary to Slack (also configurable via
-  `~/.config/kleoth/config.json` → `slack_webhook`).
 - **Summary model** — any OpenRouter model slug. Default: `google/gemini-3-flash-preview`.
 - **Transcription language** — *Auto* (detect per meeting) or pin a specific language.
 
@@ -124,14 +122,13 @@ Keys are stored in the macOS Keychain and are **never** printed or committed.
 ## CLI
 
 The repo also ships a `kleoth` command-line tool for the same pipeline (audio file → transcript →
-summary → Markdown/Slack), independent of the app:
+summary → Markdown), independent of the app:
 
 ```sh
 swift run kleoth transcribe meeting.m4a   # ElevenLabs Scribe; diarized; saves the meeting
 swift run kleoth summarize  <dir|file>    # transcribe (if needed) + AI summary  (--model <slug>)
 swift run kleoth rename     <dir>         # assign real names to speaker_0 / speaker_1 …
 swift run kleoth render     <dir>         # re-render summary.md from summary.json (no API calls)
-swift run kleoth slack      <dir>         # render a summary for Slack; post to a webhook
 ```
 
 Run `swift run kleoth <subcommand> --help` for flags. The CLI resolves keys from environment
@@ -151,7 +148,7 @@ variables (`ELEVEN_API_KEY`, `OPENROUTER_API_KEY`), a local `.env`, or
   `app/Sources/KleothApp`). Note: SwiftPM builds don't run Apple's App Intents metadata extractor, so
   intents may not auto-surface in Spotlight; the URL scheme and hotkey work regardless.
 - **`kleoth://` URL scheme** — `kleoth://record`, `kleoth://stop`, `kleoth://toggle`,
-  `kleoth://summarize-latest`, `kleoth://slack-latest`. Callable from `open`, scripts, Raycast, etc.
+  `kleoth://summarize-latest`. Callable from `open`, scripts, Raycast, etc.
 - **Global hotkey** — bind a system-wide shortcut for toggle-recording in Settings.
 
 ## Data & privacy

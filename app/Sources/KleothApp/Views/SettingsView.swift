@@ -5,7 +5,7 @@ import KleothCapture
 import KeyboardShortcuts
 
 /// Settings screen: API keys (persisted to the Keychain), output directory,
-/// default summarization model, and Slack webhook.
+/// and the default summarization model.
 ///
 /// Refined-native macOS 26 styling: a grouped `Form` whose sections open with a
 /// `KleothSectionHeader` (accent SF Symbol + headline) for a consistent rhythm,
@@ -19,7 +19,6 @@ struct SettingsView: View {
     // Local editable copies; committed to the controller (and Keychain) on change.
     @State private var elevenLabsKey: String = ""
     @State private var openRouterKey: String = ""
-    @State private var slackWebhook: String = ""
     @State private var outputDirPath: String = ""
     @State private var selectedModel: String = ""
 
@@ -85,7 +84,6 @@ struct SettingsView: View {
             localModelSection
             summarizationSection
             usageSection
-            slackSection
             shortcutsSection
             calendarSection
             onboardingSection
@@ -407,20 +405,6 @@ struct SettingsView: View {
         return formatter.string(from: date)
     }
 
-    private var slackSection: some View {
-        Section {
-            // A webhook URL is a bearer-equivalent secret — mask it like the API
-            // keys above rather than showing it in cleartext.
-            SecureField("Incoming webhook URL", text: $slackWebhook)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { controller.updateSlackWebhook(slackWebhook) }
-        } header: {
-            KleothSectionHeader("Slack", systemImage: "paperplane.fill")
-        } footer: {
-            captionFooter("Optional. Post a meeting's summary to a channel via an incoming webhook.")
-        }
-    }
-
     private var shortcutsSection: some View {
         Section {
             KeyboardShortcuts.Recorder("Start / stop recording:", name: .toggleRecording)
@@ -552,7 +536,6 @@ struct SettingsView: View {
     private func loadFromController() {
         elevenLabsKey = controller.credentials.elevenLabsKey ?? ""
         openRouterKey = controller.credentials.openRouterKey ?? ""
-        slackWebhook = controller.settings.slackWebhook ?? ""
         outputDirPath = controller.settings.outputDir.path
         selectedModel = controller.settings.defaultModel
         transcriptionLanguage = controller.settings.transcriptionLanguage ?? "auto"
@@ -578,7 +561,6 @@ struct SettingsView: View {
     private func commitAll() {
         controller.updateElevenLabsKey(elevenLabsKey)
         controller.updateOpenRouterKey(openRouterKey)
-        controller.updateSlackWebhook(slackWebhook)
         controller.updateOutputDir(outputDirPath)
         controller.updateDefaultModel(selectedModel)
     }

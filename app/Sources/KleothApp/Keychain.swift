@@ -34,7 +34,6 @@ public enum Keychain {
     public enum Account {
         public static let elevenLabsKey = "elevenlabs_api_key"
         public static let openRouterKey = "openrouter_api_key"
-        public static let slackWebhook = "slack_webhook"
         public static let outputDir = "output_dir"
         public static let defaultModel = "default_model"
         public static let transcriptionLanguage = "transcription_language"
@@ -51,7 +50,6 @@ public enum Keychain {
     private static let legacyAccounts: [String] = [
         Account.elevenLabsKey,
         Account.openRouterKey,
-        Account.slackWebhook,
         Account.outputDir,
         Account.defaultModel,
         Account.transcriptionLanguage,

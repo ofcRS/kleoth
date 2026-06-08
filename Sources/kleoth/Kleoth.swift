@@ -18,7 +18,6 @@ struct Kleoth: AsyncParsableCommand {
             Summarize.self,
             Rename.self,
             Render.self,
-            Slack.self,
         ]
     )
 }
@@ -521,73 +520,3 @@ struct Render: AsyncParsableCommand {
     }
 }
 
-// MARK: - slack
-
-struct Slack: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Render a meeting summary for Slack and optionally post it."
-    )
-
-    @Argument(help: "Path to an existing meeting directory.")
-    var meetingDir: String
-
-    @Option(name: .long, help: "Incoming webhook URL (defaults to settings).")
-    var webhook: String?
-
-    func run() async throws {
-        let dir = URL(fileURLWithPath: meetingDir)
-        guard isDirectory(dir) else {
-            throw fail("Meeting directory not found: \(meetingDir)")
-        }
-
-        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
-        guard let summary = try store.loadSummary(in: dir) else {
-            throw fail("No summary found in \(meetingDir). Run `kleoth summarize` first.")
-        }
-
-        let metadata = loadMetadata(in: dir, fallbackTitle: dir.lastPathComponent)
-        let message = SlackRenderer.render(summary: summary, metadata: metadata)
-
-        let webhookURL = webhook ?? Settings.load().slackWebhook
-        guard let webhookURL, !webhookURL.isEmpty else {
-            // No destination: just print the rendered message.
-            print(message)
-            return
-        }
-
-        guard let url = URL(string: webhookURL) else {
-            throw fail("Invalid webhook URL: \(webhookURL)")
-        }
-
-        try await post(message: message, to: url)
-        print("Posted summary to Slack.")
-    }
-
-    private func post(message: String, to url: URL) async throws {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["text": message])
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        guard (200..<300).contains(status) else {
-            let snippet = String(decoding: data.prefix(500), as: UTF8.self)
-            throw fail("Slack webhook returned HTTP \(status): \(snippet)")
-        }
-    }
-
-    private func loadMetadata(in dir: URL, fallbackTitle: String) -> MeetingMetadata {
-        let url = dir.appendingPathComponent("meta.json")
-        if let data = try? Data(contentsOf: url) {
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            if let metadata = try? decoder.decode(MeetingMetadata.self, from: data) {
-                return metadata
-            }
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
-        return MeetingMetadata(title: fallbackTitle, date: formatter.string(from: Date()))
-    }
-}

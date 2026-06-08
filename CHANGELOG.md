@@ -4,6 +4,24 @@ All notable changes to Kleoth are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **Slack integration.** The Slack webhook export is gone — the `kleoth slack`
+  CLI subcommand, the Settings webhook field, the "Post to Slack" Shortcut /
+  App Intent, the `kleoth://slack-latest` URL verb, and the detail view's "Copy
+  for Slack" action (replaced by a Slack-free **Copy Summary** that copies the
+  rendered Markdown).
+
+### Fixed
+
+- Summaries are no longer silently truncated: completions cut off at the output
+  cap (`finish_reason == "length"`) are retried with a larger budget and a
+  truncated result is surfaced as a failure rather than shipped half-empty.
+- The onboarding "Start your first recording" button no longer no-ops after
+  "Skip setup" — it routes to the permissions step so consent is acknowledged.
+
 ## [0.1.0] — 2026-06-06
 
 First public release. A local-first, bot-free macOS meeting recorder.

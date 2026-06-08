@@ -4,7 +4,7 @@ import KleothCore
 
 /// Detail pane for a single meeting: a metadata + cost header card, the rendered
 /// summary + transcript, and toolbar actions (play audio, reveal in Finder, copy
-/// for Slack, rename speakers, delete).
+/// the summary or file paths, rename speakers, delete).
 struct MeetingDetailView: View {
     @EnvironmentObject private var controller: RecordingController
 
@@ -249,10 +249,10 @@ struct MeetingDetailView: View {
                 Label("Reveal in Finder", systemImage: "folder")
             }
             .help("Show the meeting folder in Finder")
-            // Copy actions: the Slack-formatted summary, or the on-disk file
+            // Copy actions: the rendered summary as Markdown, or the on-disk file
             // paths (handy for piping a meeting into other tools).
             Menu {
-                Button("Copy for Slack") { copyForSlack() }
+                Button("Copy Summary") { copySummary() }
                     .disabled(summary == nil)
                 Divider()
                 Button("Copy Transcript Path") { copyPath("transcript.md") }
@@ -262,7 +262,7 @@ struct MeetingDetailView: View {
             } label: {
                 Label(copied ? "Copied!" : "Copy", systemImage: copied ? "checkmark" : "doc.on.clipboard")
             }
-            .help("Copy the Slack-formatted summary, or the transcript/summary file path")
+            .help("Copy the summary as Markdown, or the transcript/summary file path")
             Button { showRename = true } label: {
                 Label("Rename speakers", systemImage: "person.2")
             }
@@ -358,9 +358,16 @@ struct MeetingDetailView: View {
 
     // MARK: - Copy actions
 
-    private func copyForSlack() {
+    private func copySummary() {
         guard let summary, let metadata else { return }
-        let text = SlackRenderer.render(summary: summary, metadata: metadata)
+        // The rendered summary as Markdown (TL;DR → Summary → Action Items →
+        // Per-Speaker Highlights), without the full transcript.
+        let text = MarkdownRenderer.render(
+            summary: summary,
+            transcript: transcript ?? Transcript(utterances: [], languageCode: nil, durationSecs: nil),
+            metadata: metadata,
+            includeTranscript: false
+        )
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

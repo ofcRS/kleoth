@@ -17,7 +17,7 @@ _Last updated: 2026-06-06. This file is living context for future sessions — k
   TranscriptNormalizer, **Transcriber protocol**), Summarization (OpenRouterClient, Summarizer),
   Rendering, SpeakerMapping, Storage (MeetingStore), Config (Credentials, Settings), Pipeline
   (MeetingPipeline).
-- `kleoth` (exe): subcommands `transcribe`, `summarize`, `rename`, `render`, `slack`.
+- `kleoth` (exe): subcommands `transcribe`, `summarize`, `rename`, `render`. (Slack removed 2026-06-08.)
 - `KleothCoreTests` (51 tests, all green).
 
 **Package 2 (`app/`)** — `platforms: [.macOS("14.4")]`, deps: `..` (KleothCore),
@@ -102,7 +102,7 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
   removed as slop at the user's request; legacy summary.json files still decode (extra keys
   ignored, `overview` nil → section omitted, arrays lenient-default to `[]`). Reading order
   everywhere (app view, summary.md): TL;DR → Summary → Action Items → Per-Speaker Highlights →
-  Transcript. `maxOutputTokens` 8192. Slack render = title + TL;DR + top-3 action items.
+  Transcript. `maxOutputTokens` 8192.
 
 ### ⚠️ OpenRouter data-policy constraint (important, account-specific)
 This account's privacy setting blocks providers that may train on data. Combined with
@@ -142,6 +142,32 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 `mic.m4a`, `system.m4a`, `meeting.m4a` (2-channel combined) · `transcript.json` (raw Scribe or
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
 (always). One meeting = one folder. Folder name encodes start time.
+
+## Current status (2026-06-08 — code review + Slack removal)
+- ✅ **Whole-project code review** (user-run multi-agent workflow, 72 agents, every finding
+  adversarially verified): **verdict = do NOT rewrite** — clean seams (`Transcriber`/`HTTPTransport`),
+  correct Swift 6 concurrency, tested core; debt is decomposition + duplication, not rot. 54 findings
+  confirmed (2 high, 16 medium, 36 low), 5 refuted. Full report in **`docs/CODE-REVIEW.md`** — kept
+  **LOCAL/uncommitted** at the user's request (lists not-yet-fixed items); commit it (or a trimmed
+  version) once the rest is addressed.
+- ✅ **Applied Tier 1 + both HIGH fixes** (commit `122005b`): summary truncation now retried/surfaced
+  (`finish_reason` plumbed through `OpenRouterClient`/`Summarizer`); onboarding "Start" no longer
+  dead-ends after Skip; Markdown H1 title sanitized; deterministic diarized You/Them; `LocalizedError`
+  for summary errors; single Scribe-price source (`TranscriptTier.usdPerHour`); `renameMeeting` no
+  longer fabricates `summary.md`; removed dead `slug` + vestigial `runPipeline(useMultiChannel:)`;
+  `shared` is `private(set)`; locale currency. (Slack escaping/SecureField from this commit were then
+  superseded by the removal below.)
+- ✅ **Slack integration REMOVED entirely** (user: "i don't want slack integration"). Deleted
+  `SlackRenderer.swift`, the `kleoth slack` CLI subcommand, `RecordingController.postLatestToSlack` +
+  `updateSlackWebhook` + `Command.slackLatest` + `kleoth://slack-latest`, `PostLatestToSlackIntent` +
+  its AppShortcut, the Settings Slack section + `Settings.slackWebhook` + `Keychain.Account.slackWebhook`
+  + the `SLACK_WEBHOOK`/`slack_webhook` config plumbing, and `integrations/raycast/kleoth-slack-latest.sh`.
+  The detail view's "Copy for Slack" became **Copy Summary** (renders the summary as Markdown via
+  `MarkdownRenderer`, no transcript). Docs updated (README/CHANGELOG[Unreleased]/Raycast README).
+  103 core tests green (3 Slack tests removed); both packages build; release app reinstalled.
+- ⚠️ Tier 2/3 from the review still open (app test target, audio resample M4, lazy/off-main detail,
+  pipeline-job timeout, Keychain hardening, capture-silence warning, unified re-summarize op,
+  decompose `RecordingController`). Not started.
 
 ## Current status (2026-06-06 — history management + publish-prep pass)
 - ✅ **History sidebar is Finder-like** (user asked: badge visible when selected; ⌘-multi-select +

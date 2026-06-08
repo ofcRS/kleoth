@@ -64,21 +64,6 @@ struct SummarizeLatestIntent: AppIntent {
     }
 }
 
-struct PostLatestToSlackIntent: AppIntent {
-    static let title: LocalizedStringResource = "Post Latest Kleoth Meeting to Slack"
-    static let description = IntentDescription("Post the most recent meeting's summary to the configured Slack webhook.")
-    static let openAppWhenRun: Bool = true
-
-    @MainActor
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let controller = RecordingController.shared else {
-            return .result(dialog: "Kleoth isn't ready yet.")
-        }
-        await controller.postLatestToSlack()
-        return .result(dialog: IntentDialog(stringLiteral: controller.statusMessage))
-    }
-}
-
 struct LatestTranscriptIntent: AppIntent {
     static let title: LocalizedStringResource = "Get Latest Kleoth Transcript"
     static let description = IntentDescription("Return the transcript of the most recent meeting.")
@@ -113,12 +98,6 @@ struct KleothAppShortcuts: AppShortcutsProvider {
             phrases: ["Summarize the latest \(.applicationName) meeting", "\(.applicationName) summarize latest"],
             shortTitle: "Summarize Latest",
             systemImageName: "text.append"
-        )
-        AppShortcut(
-            intent: PostLatestToSlackIntent(),
-            phrases: ["Post the latest \(.applicationName) meeting to Slack", "\(.applicationName) post to Slack"],
-            shortTitle: "Post Latest to Slack",
-            systemImageName: "paperplane"
         )
         AppShortcut(
             intent: LatestTranscriptIntent(),

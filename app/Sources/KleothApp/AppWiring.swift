@@ -62,8 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Routes `kleoth://record`, `kleoth://stop`, `kleoth://toggle`,
-    /// `kleoth://summarize-latest`, `kleoth://slack-latest`.
+    /// Routes `kleoth://record`, `kleoth://stop`, `kleoth://toggle`, and
+    /// `kleoth://summarize-latest`.
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls where url.scheme == "kleoth" {
             let verb = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))

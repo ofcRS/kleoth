@@ -232,7 +232,6 @@ public final class RecordingController: ObservableObject {
         case stop
         case toggle
         case summarizeLatest = "summarize-latest"
-        case slackLatest = "slack-latest"
     }
 
     /// Single dispatch point shared by every external surface, so they all run
@@ -247,8 +246,6 @@ public final class RecordingController: ObservableObject {
             Task { if isRecording { await stop() } else { await start() } }
         case .summarizeLatest:
             Task { await summarizeLatestMeeting() }
-        case .slackLatest:
-            Task { await postLatestToSlack() }
         }
     }
 
@@ -314,42 +311,6 @@ public final class RecordingController: ObservableObject {
             statusMessage = "Summarize failed: \(error.localizedDescription)"
         }
         unmarkProcessing(dir)
-    }
-
-    /// Posts the most recent meeting's summary to the configured Slack webhook,
-    /// or copies it to the clipboard if no webhook is set.
-    public func postLatestToSlack() async {
-        guard let latest = recentMeetings.first else {
-            statusMessage = "No meeting to post yet."
-            return
-        }
-        let dir = latest.directory
-        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
-        guard let summary = (try? store.loadSummary(in: dir)).flatMap({ $0 }) else {
-            statusMessage = "Latest meeting has no summary to post."
-            return
-        }
-        let message = SlackRenderer.render(summary: summary, metadata: loadMetadata(in: dir))
-
-        guard let webhook = settings.slackWebhook, let url = URL(string: webhook), !webhook.isEmpty else {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(message, forType: .string)
-            statusMessage = "No Slack webhook set — copied the summary to the clipboard."
-            return
-        }
-        do {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: ["text": message])
-            let (_, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            statusMessage = (200..<300).contains(status)
-                ? "Posted the latest meeting to Slack."
-                : "Slack returned HTTP \(status)."
-        } catch {
-            statusMessage = "Slack post failed: \(error.localizedDescription)"
-        }
     }
 
     /// The most recent meeting's rendered transcript text, for `GetLatestTranscript`.
@@ -433,12 +394,6 @@ public final class RecordingController: ObservableObject {
     public func updateOpenRouterKey(_ key: String) {
         Keychain.set(key, Keychain.Account.openRouterKey)
         credentials.openRouterKey = key.isEmpty ? nil : key
-    }
-
-    /// Persists the Slack webhook and updates the in-memory settings.
-    public func updateSlackWebhook(_ webhook: String) {
-        Keychain.set(webhook, Keychain.Account.slackWebhook)
-        settings.slackWebhook = webhook.isEmpty ? nil : webhook
     }
 
     /// Persists the default model and updates the in-memory settings.
@@ -1198,9 +1153,6 @@ public final class RecordingController: ObservableObject {
 
     private static func mergeSettingsFromKeychain(_ base: KleothCore.Settings) -> KleothCore.Settings {
         var merged = base
-        if let webhook = Keychain.get(Keychain.Account.slackWebhook), !webhook.isEmpty {
-            merged.slackWebhook = webhook
-        }
         if let model = Keychain.get(Keychain.Account.defaultModel), !model.isEmpty {
             merged.defaultModel = model
         }

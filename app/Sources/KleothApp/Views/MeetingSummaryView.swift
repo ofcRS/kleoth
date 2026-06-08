@@ -11,7 +11,7 @@ import KleothCore
 /// rounded card with a hairline border — material, not glass) opened by a
 /// `KleothSectionHeader` with an SF Symbol affordance, so the body reads with a
 /// consistent rhythm. The on-disk `summary.md` / `transcript.md` are still
-/// written by the pipeline for export and Copy-for-Slack; this view is the
+/// written by the pipeline for export and the Copy actions; this view is the
 /// in-app display surface.
 struct MeetingSummaryView: View {
     let summary: MeetingSummary?
