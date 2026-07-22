@@ -9,27 +9,37 @@ public struct Settings: Sendable {
     /// the bulletproof path when auto-detection would otherwise misfire (e.g.
     /// short or noisy openings being read as English).
     public var transcriptionLanguage: String?
+    /// Whether a finished recording is transcribed automatically. Off by
+    /// default: recordings wait in the list as "Untranscribed" until the user
+    /// picks an engine (free on-device or paid cloud).
+    public var autoTranscribe: Bool
 
     public init(
         outputDir: URL,
         defaultModel: String,
-        transcriptionLanguage: String? = nil
+        transcriptionLanguage: String? = nil,
+        autoTranscribe: Bool = false
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
         self.transcriptionLanguage = transcriptionLanguage
+        self.autoTranscribe = autoTranscribe
     }
 
     /// Loads settings, applying defaults:
     /// - `outputDir`: `~/Kleoth` (callers create it lazily).
     /// - `defaultModel`: `google/gemini-3-flash-preview`.
     public static func load() -> Settings {
+        load(config: loadConfigJSON())
+    }
+
+    /// `load()` with the config dictionary injected, so parsing is testable
+    /// without touching the real `~/.config/kleoth/config.json`.
+    static func load(config: [String: String]) -> Settings {
         let outputDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Kleoth", isDirectory: true)
 
         let defaultModel = "google/gemini-3-flash-preview"
-
-        let config = loadConfigJSON()
 
         // Normalize to the struct's contract (nil == auto): an empty value or the
         // literal "auto" both mean automatic detection, so they decode to nil
@@ -40,10 +50,15 @@ public struct Settings: Sendable {
             transcriptionLanguage = lang
         }
 
+        // Strict opt-in: only the literal "true" enables it; absent or any
+        // other value (malformed "1"/"yes") stays off.
+        let autoTranscribe = (config["auto_transcribe"] == "true")
+
         return Settings(
             outputDir: outputDir,
             defaultModel: defaultModel,
-            transcriptionLanguage: transcriptionLanguage
+            transcriptionLanguage: transcriptionLanguage,
+            autoTranscribe: autoTranscribe
         )
     }
 

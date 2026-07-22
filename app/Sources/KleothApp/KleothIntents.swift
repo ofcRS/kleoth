@@ -34,7 +34,7 @@ struct StartRecordingIntent: AppIntent {
 
 struct StopRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Kleoth Recording"
-    static let description = IntentDescription("Stop the current recording and transcribe it.")
+    static let description = IntentDescription("Stop the current recording and save it.")
     static let openAppWhenRun: Bool = true
 
     @MainActor
@@ -90,7 +90,7 @@ struct KleothAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: StopRecordingIntent(),
             phrases: ["Stop recording with \(.applicationName)", "\(.applicationName) stop recording"],
-            shortTitle: "Stop & Transcribe",
+            shortTitle: "Stop Recording",
             systemImageName: "stop.fill"
         )
         AppShortcut(

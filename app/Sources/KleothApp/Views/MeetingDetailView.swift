@@ -21,10 +21,17 @@ struct MeetingDetailView: View {
     @State private var showRename = false
     @State private var confirmDelete = false
     @State private var copied = false
+    /// Reverts the copy button's "Copied!" checkmark; cancelled and restarted on
+    /// every copy so the checkmark stays visible a full beat from the last one.
+    @State private var copiedResetTask: Task<Void, Never>?
     /// Whether this meeting has no transcript on disk yet (audio-only). Decided in
     /// `reload()` from the disk, not the (possibly stale) `meeting.isProcessed`
     /// flag, so an in-place transcribe surfaces the result without a relaunch.
     @State private var isUnprocessed = false
+    /// Every transcript tier on disk for this meeting — the active one plus any
+    /// archived `variants/<tier>/` sets. More than one turns the tier badge into
+    /// a switcher menu; refreshed by `reload()` (i.e. with `contentRevision`).
+    @State private var availableTiers: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
@@ -82,6 +89,7 @@ struct MeetingDetailView: View {
         // rename changes no `RecentMeeting` field — without this reactive signal
         // the new names would surface only after the app is relaunched.
         .onChange(of: controller.contentRevision) { _, _ in reload() }
+        .onDisappear { copiedResetTask?.cancel() }
         .sheet(isPresented: $showRename) {
             if let transcript {
                 SpeakerRenameView(
@@ -132,16 +140,49 @@ struct MeetingDetailView: View {
             if let duration = MeetingFormat.duration(meeting.durationSecs ?? metadata?.cost?.audioDurationSecs) {
                 KleothPill(duration, systemImage: "clock")
             }
+            if let size = MeetingFormat.fileSize(meeting.sizeBytes) {
+                KleothPill(size, systemImage: "internaldrive")
+            }
             if let model = metadata?.model, !model.isEmpty {
                 KleothPill(model, systemImage: "sparkles")
             }
             if let tier = metadata?.transcriptTier {
-                KleothTierBadge(isSOTA: TranscriptTier.isSOTA(tier))
+                if availableTiers.count > 1 {
+                    tierSwitcher(activeTier: tier)
+                } else {
+                    KleothTierBadge(isSOTA: TranscriptTier.isSOTA(tier))
+                }
             }
             if summary == nil {
                 KleothPill("No summary yet", systemImage: "doc.text", tint: KleothPalette.pendingTint)
             }
         }
+    }
+
+    /// The tier badge as a menu when more than one transcript variant exists on
+    /// disk — picking a tier swaps the active transcript/summary set in place.
+    private func tierSwitcher(activeTier: String) -> some View {
+        Menu {
+            ForEach(availableTiers, id: \.self) { tier in
+                Button {
+                    controller.switchVariant(meeting, to: tier)
+                } label: {
+                    if tier == activeTier {
+                        Label(TranscriptTier.label(tier), systemImage: "checkmark")
+                    } else {
+                        Text(TranscriptTier.label(tier))
+                    }
+                }
+                .disabled(tier == activeTier)
+            }
+        } label: {
+            KleothTierBadge(isSOTA: TranscriptTier.isSOTA(activeTier))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .disabled(controller.isProcessingMeeting(meeting.directory))
+        .help("Switch between this meeting's transcripts (one per engine)")
     }
 
     /// "May 31, 2026 · 5:26 PM" (or just the date when the start time is unknown).
@@ -218,7 +259,7 @@ struct MeetingDetailView: View {
                 }
                 Text("Not transcribed yet")
                     .font(.headline)
-                Text("The audio for this recording is saved, but transcription didn't finish. Transcribe it now — free and on-device.")
+                Text("This recording is saved. Transcribe it on-device for free, or in the cloud with ElevenLabs Scribe.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -226,11 +267,39 @@ struct MeetingDetailView: View {
                 Button {
                     Task { await controller.transcribeSaved(meeting) }
                 } label: {
-                    Label("Transcribe (free, on-device)", systemImage: "sparkles")
+                    Label("Transcribe", systemImage: "sparkles")
                         .padding(.horizontal, KleothMetrics.spacingS)
                 }
                 .kleothProminentButton()
                 .controlSize(.large)
+                Button {
+                    Task { await controller.fullyTranscribe(meeting) }
+                } label: {
+                    Label("Transcribe in cloud", systemImage: "cloud")
+                        .padding(.horizontal, KleothMetrics.spacingS)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(!controller.hasElevenLabsKey)
+                .help(controller.hasElevenLabsKey
+                      ? "Transcribe in the cloud with ElevenLabs Scribe — higher accuracy, diarized."
+                      : "Add an ElevenLabs API key in Settings to enable.")
+                // Crash-mid-switch recovery: the root transcript is gone but an
+                // archived variant survived on disk — offer to restore it
+                // instead of paying for a re-transcription.
+                ForEach(availableTiers, id: \.self) { tier in
+                    Button {
+                        controller.switchVariant(meeting, to: tier)
+                    } label: {
+                        Label(
+                            "Restore \(TranscriptTier.label(tier)) transcript",
+                            systemImage: "arrow.uturn.backward"
+                        )
+                        .padding(.horizontal, KleothMetrics.spacingS)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
@@ -268,7 +337,10 @@ struct MeetingDetailView: View {
             }
             .disabled(transcript == nil || (transcript?.utterances.isEmpty ?? true))
             .help("Assign names to the detected speakers")
-            if !TranscriptTier.isSOTA(metadata?.transcriptTier) {
+            // Each engine's action shows only while NO variant from that engine
+            // exists anywhere (active or archived) — once both exist, the tier
+            // badge's switcher menu is the way to move between them.
+            if !availableTiers.contains(TranscriptTier.sotaScribe) {
                 Button { Task { await controller.fullyTranscribe(meeting) } } label: {
                     Label("Fully transcribe", systemImage: "sparkles")
                 }
@@ -279,6 +351,18 @@ struct MeetingDetailView: View {
                       ? "Re-transcribe in the cloud with ElevenLabs Scribe — higher accuracy, diarized."
                       : "Add an ElevenLabs API key in Settings to enable.")
             }
+            if transcript != nil, !availableTiers.contains(TranscriptTier.local) {
+                Button { Task { await controller.transcribeOnDevice(meeting) } } label: {
+                    Label("Transcribe on device", systemImage: "desktopcomputer")
+                }
+                .disabled(controller.isProcessingMeeting(meeting.directory))
+                .help("Re-transcribe with the free on-device engine — the current transcript is kept as a variant.")
+            }
+            Button { controller.removeTranscriptions([meeting]) } label: {
+                Label("Remove transcription", systemImage: "text.badge.minus")
+            }
+            .disabled(isUnprocessed || controller.isProcessingMeeting(meeting.directory))
+            .help("Revert to the saved audio — the transcript and summary move to the Trash; the title and recording stay.")
             Button(role: .destructive) { confirmDelete = true } label: {
                 Label("Delete", systemImage: "trash")
             }
@@ -299,9 +383,14 @@ struct MeetingDetailView: View {
     // MARK: - Loading
 
     private func reload() {
+        copiedResetTask?.cancel()
         copied = false
         metadata = loadMetadata()
         let store = MeetingStore(baseDir: meeting.directory.deletingLastPathComponent())
+        // Computed before the unprocessed early-return: after a crashed variant
+        // switch the root has no transcript but archived variants survive, and
+        // the unprocessed state offers to restore them.
+        availableTiers = store.availableVariantTiers(in: meeting.directory)
 
         // Decide from the disk, not the handed-in `meeting.isProcessed` flag:
         // transcribing an audio-only meeting in place writes transcript.json, and
@@ -371,7 +460,7 @@ struct MeetingDetailView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-        copied = true
+        flashCopied()
     }
 
     /// Copies the absolute path of a file in the meeting folder (e.g.
@@ -380,7 +469,20 @@ struct MeetingDetailView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(meeting.directory.appendingPathComponent(filename).path, forType: .string)
+        flashCopied()
+    }
+
+    /// Shows the "Copied!" checkmark, then reverts it after a short beat. Rapid
+    /// repeated copies cancel-and-restart the reset so the checkmark stays a
+    /// full 1.5 s from the most recent copy.
+    private func flashCopied() {
+        copiedResetTask?.cancel()
         copied = true
+        copiedResetTask = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            copied = false
+        }
     }
 
     /// Whether `filename` exists in this meeting's folder.

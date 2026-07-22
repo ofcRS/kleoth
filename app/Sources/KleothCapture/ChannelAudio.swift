@@ -156,13 +156,16 @@ public enum ChannelAudio {
     static func normalizeLoudness(
         _ buffer: AVAudioPCMBuffer?,
         targetRMS: Float = 0.12,
-        maxGain: Float = 8,
+        maxGain: Float = 16,
         noiseFloor: Float = 0.0008
     ) {
         guard let buffer, let data = buffer.floatChannelData else { return }
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
 
+        // `sqrt(vDSP_measqv)` IS the RMS: `vDSP_measqv` returns the MEAN of
+        // squares (`vDSP_svesq` is the sum-of-squares variant), so no divide-by-N
+        // is missing here — a known reviewer false positive; do not "fix".
         var meanSquare: Float = 0
         vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(count))
         let rms = meanSquare > 0 ? sqrt(meanSquare) : 0
@@ -171,6 +174,15 @@ public enum ChannelAudio {
         var gain = min(targetRMS / rms, maxGain)
         guard gain.isFinite, gain > 0, gain != 1 else { return }
         vDSP_vsmul(data[0], 1, &gain, data[0], 1, vDSP_Length(count))
+
+        // Hard ceiling after the gain stage: an RMS-derived gain says nothing
+        // about peaks, and a quiet-but-spiky mic can be pushed well past full
+        // scale (a live probe showed peaks at 6.1× full scale hard-clipping at
+        // the DAC). Clamping momentarily distorts gained transients (keyboard
+        // thumps) — accepted; a real limiter is out of scope.
+        var lo: Float = -0.97
+        var hi: Float = 0.97
+        vDSP_vclip(data[0], 1, &lo, &hi, data[0], 1, vDSP_Length(count))
     }
 
     /// Adds `source`'s mono samples into `destination` (sized `frames`), updating

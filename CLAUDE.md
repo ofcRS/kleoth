@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-06-06. This file is living context for future sessions — keep it current._
+_Last updated: 2026-07-22. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -141,7 +141,65 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 ## Meeting folder layout (`~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`)
 `mic.m4a`, `system.m4a`, `meeting.m4a` (2-channel combined) · `transcript.json` (raw Scribe or
 synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
-(always). One meeting = one folder. Folder name encodes start time.
+(always). One meeting = one folder. Folder name encodes start time. Since 2026-07-22 a meeting can
+also hold `variants/<tier>/` (archived transcript set of the non-active tier + `variant.json`
+sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
+source of truth for which tiers exist (no new meta key).
+
+## Current status (2026-07-22 — transcription-on-demand + 5-item UX pass)
+User-requested workflow run (3 workflows: understand/design → implement → fix; 36 agents total,
+every review finding adversarially verified). Committed + pushed to main (single commit — the five
+features all overlap in RecordingController.swift). 120 core tests green (was 118 → new
+Settings/variant/remove tests); both packages build; release app installed to /Applications
+(running instance NOT killed — relaunch to pick up). docs/CODE-REVIEW.md stays local/uncommitted.
+1. **Auto-transcribe is now OPT-IN (default off, incl. existing installs — CHANGELOG'd):**
+   `Settings.autoTranscribe` ← Keychain `auto_transcribe` ("true" strict; absent/other → false);
+   Settings → On-device transcription toggle "Transcribe automatically after recording". With auto
+   off, `stop()` still does the off-main combine to `meeting.m4a`, then unmarks processing → row
+   shows "Untranscribed", status "Recording saved.", NO meta.json written. Untranscribed detail pane
+   has prominent **Transcribe** (on-device, `transcribeSaved`) + bordered **Transcribe in cloud**
+   (`fullyTranscribe`, disabled w/o ElevenLabs key, no spend dialog — consistent w/ 2026-06-04
+   removal). Calendar naming recovered at transcribe time via `recoveredCalendarNaming` (re-queries
+   EventKit; only for placeholder titles). StopRecordingIntent/onboarding copy updated.
+2. **Playback fix:** `meeting.m4a` is hard-panned stereo (L=mic, R=system) with a historically
+   quiet/clipped mic channel — user heard "system only". `AudioPlayerModel` rewritten AVAudioPlayer
+   → AVAudioEngine + AVAudioPlayerNode + intermediate mixer with a **1-channel connection = live
+   mono downmix** (file untouched — its L/R layout is load-bearing for localtranscribe multichannel
+   recovery). Handles `.AVAudioEngineConfigurationChange` (device switch → rebuild graph, reschedule,
+   resume), seek clamps to duration−0.05 and never kills playback (EOF is tick()'s job). Also
+   `ChannelAudio.normalizeLoudness` gained a ±0.97 vDSP_vclip after the gain stage + maxGain 8→16
+   (live probe had shown mic peaks 6.1× full scale hard-clipping) — future recordings get a sane mic
+   level; legacy files stay quiet-but-audible via the downmix.
+3. **Copy checkmark** reverts after 1.5s (`flashCopied()`, cancel-and-restart task, cancelled on
+   reload/disappear).
+4. **Per-tier transcript variants:** `MeetingStore.archiveActiveVariant` / `availableVariantTiers` /
+   `activateVariant` (pre-validates ALL throwing reads before mutating; promote deletes stale root
+   summary when the variant lacks one; re-renders root .md from promoted JSON + current title +
+   speakers.json — rename-staleness closed). Detail: tier badge becomes a Menu switcher when >1 tier
+   exists; toolbar offers "Fully transcribe"/"Transcribe on device" only when that tier exists
+   NOWHERE (active or archived); crash-mid-switch recovery = "Restore <tier> transcript" button on
+   the unprocessed pane. Reruns: archive failure ABORTS the run (protects existing transcript);
+   stale same-tier archive deleted only AFTER pipeline success; failed rerun auto-restores the
+   just-archived variant (no more demote-to-Untranscribed on a network blip).
+   `runFullTranscription` now writes the default speakers.json for 2-channel (was a HIGH finding —
+   raw speaker_0/1 labels on the new record→cloud path). speakers.json + meta.json stay at root,
+   shared across tiers. Known gap: CLI summarize/rename + localtranscribe bypass archiving.
+5. **Folder sizes + Remove Transcription:** `RecentMeeting.sizeBytes` via one detached
+   enumerator walk, `sizeCache` + `sizingPaths` + `sizeEpoch` generation guard (invalidated in
+   delete/remove/unmark/rename/switchVariant); surfaces: History row "5:26 PM · 12m 03s · 214 MB",
+   multi-select placeholder "<total> on disk", detail pill, Settings Output footer.
+   `MeetingStore.removeTranscription(in:trash:)` trashes the 4 root artifacts + `variants/`, KEEPS
+   audio + speakers.json + meta.json (stripped of tier/model/language/cost; title/date/participants
+   survive) → row reverts to Untranscribed with real title. History context menu + detail toolbar
+   "Remove Transcription" (multi-select, skips processing, no confirmation — trash-recoverable).
+   `RecentMeeting.hasMetadata` added; rename gates moved isProcessed→hasMetadata; `isProcessed` now
+   keys on transcript.json existence (not meta.json).
+- ⚠️ Not runtime-verified (compile-checked + adversarially reviewed only): a live stop with auto
+  off, the downmix player by ear (incl. device-switch mid-play), a variant round-trip in the UI,
+  sizes on a big ~/Kleoth, Remove Transcription end-to-end. Worth one manual pass.
+- Accepted v1 losses (documented in plan/code): participants/consent reset when re-transcribing via
+  `transcribeSaved`; untranscribed rows show no duration; single-file Scribe fallback's speaker ids
+  keep raw diarization semantics.
 
 ## Current status (2026-06-08 — code review + Slack removal)
 - ✅ **Whole-project code review** (user-run multi-agent workflow, 72 agents, every finding

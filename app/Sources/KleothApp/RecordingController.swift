@@ -22,11 +22,20 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
     public var directory: URL
     /// Audio length in seconds, when known (from the cost breakdown).
     public var durationSecs: Double?
+    /// The meeting folder's total size on disk, when already computed. Sizes are
+    /// enumerated off the main actor and patched in after the list paints, so
+    /// this is `nil` on first display and fills in as the cache warms.
+    public var sizeBytes: Int64?
     /// Transcription quality tier (see `TranscriptTier`); `nil` for legacy meetings.
     public var transcriptTier: String?
-    /// False for folders that hold only raw audio (no `meta.json`/transcript yet)
-    /// — e.g. a recording whose processing failed. These can be transcribed in place.
+    /// False for folders without a transcript yet — raw-audio-only recordings
+    /// (processing failed or auto-transcribe is off) and reverted meetings alike.
+    /// These can be transcribed in place.
     public var isProcessed: Bool
+    /// Whether the folder has a `meta.json` to hold a custom title — true even
+    /// for a reverted (untranscribed) meeting, which keeps its identity. Gates
+    /// rename, which needs somewhere durable to write the title.
+    public var hasMetadata: Bool
     /// True while this meeting is queued for or undergoing background processing
     /// (transcribe/summarize) — rows show a progress spinner instead of status chips.
     public var isTranscribing: Bool
@@ -37,8 +46,10 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         startedAt: Date? = nil,
         directory: URL,
         durationSecs: Double? = nil,
+        sizeBytes: Int64? = nil,
         transcriptTier: String? = nil,
         isProcessed: Bool = true,
+        hasMetadata: Bool = true,
         isTranscribing: Bool = false
     ) {
         self.title = title
@@ -46,8 +57,10 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         self.startedAt = startedAt
         self.directory = directory
         self.durationSecs = durationSecs
+        self.sizeBytes = sizeBytes
         self.transcriptTier = transcriptTier
         self.isProcessed = isProcessed
+        self.hasMetadata = hasMetadata
         self.isTranscribing = isTranscribing
     }
 }
@@ -153,6 +166,22 @@ public final class RecordingController: ObservableObject {
     /// never goes stale.
     private var durationCache: [String: Double] = [:]
 
+    /// Caches each meeting folder's total on-disk size by standardized path.
+    /// Unlike audio durations, a folder's size *does* change (transcription
+    /// writes artifacts, variants come and go), so mutation sites call
+    /// `invalidateFolderSize` rather than keeping entries forever.
+    private var sizeCache: [String: Int64] = [:]
+
+    /// Per-folder invalidation generation. A `folderSizeBytes` walk captures
+    /// the epoch when it starts; `applyFolderSizes` drops its result if the
+    /// folder was invalidated meanwhile, so a walk that raced a mutation can
+    /// never re-cache the stale pre-mutation size.
+    private var sizeEpoch: [String: Int] = [:]
+
+    /// Folders whose size enumeration is currently in flight, so bursts of list
+    /// reloads never spawn duplicate walks over the same directory.
+    private var sizingPaths: Set<String> = []
+
     /// Serializes background pipeline runs in submission order. Each on-device
     /// run loads its own ~600 MB WhisperKit model, so two at once would double
     /// memory and contend for the ANE; a strict FIFO keeps exactly one engine
@@ -221,6 +250,22 @@ public final class RecordingController: ObservableObject {
         guard let event = chosen, let title = event.title, !title.isEmpty else { return nil }
         let participants = (event.attendees ?? []).compactMap { $0.name }
         return (title, participants)
+    }
+
+    /// Calendar naming for a deferred transcription: an untranscribed folder
+    /// never got the stop-time calendar lookup (with auto-transcribe off,
+    /// `stop()` writes no meta.json), so re-query the event overlapping the
+    /// start time now. A deleted event simply keeps the placeholder title; a
+    /// real (non-placeholder) title is never overwritten.
+    private func recoveredCalendarNaming(
+        title: String,
+        startedAt: Date
+    ) -> (title: String, participants: [String]) {
+        guard MeetingMetadata.isPlaceholderTitle(title),
+              let calendar = calendarMeetingInfo(at: startedAt) else {
+            return (title, [])
+        }
+        return (calendar.title, calendar.participants)
     }
 
     // MARK: - External commands (App Intents / URL scheme / global hotkey)
@@ -412,6 +457,14 @@ public final class RecordingController: ObservableObject {
         settings.transcriptionLanguage = normalized
     }
 
+    /// Persists whether a finished recording is transcribed automatically and
+    /// updates the in-memory settings. Off by default: stopped recordings wait
+    /// as "Untranscribed" until the user picks an engine.
+    public func updateAutoTranscribe(_ enabled: Bool) {
+        Keychain.set(enabled ? "true" : "false", Keychain.Account.autoTranscribe)
+        settings.autoTranscribe = enabled
+    }
+
     /// Normalizes a stored/selected language value into a Whisper code or `nil`
     /// (automatic): trims, lowercases, and maps empty / `"auto"` to `nil`.
     static func normalizedTranscriptionLanguage(_ value: String?) -> String? {
@@ -534,6 +587,19 @@ public final class RecordingController: ObservableObject {
             return statusMessage
         }
 
+        // Auto-transcribe is opt-in: with it off, the audio (including the
+        // combined meeting.m4a built above, needed for playback) is saved and
+        // the row flips to "Untranscribed" until the user picks an engine. No
+        // meta.json is written here — `loadRecentMeetings` keys "processed" on
+        // its existence — so the calendar title is recovered by re-querying
+        // EventKit at transcribe time instead (see `transcribeSaved`).
+        guard settings.autoTranscribe else {
+            unmarkProcessing(dir)
+            // Only claim the status line if a newer recording doesn't own it.
+            if statusMessage == "Finalizing recording…" { statusMessage = "Recording saved." }
+            return "Recording saved."
+        }
+
         // Name the meeting from the overlapping calendar event when available.
         let calendar = calendarMeetingInfo(at: startedAt)
         let title = calendar?.title ?? defaultMeetingTitle()
@@ -652,6 +718,7 @@ public final class RecordingController: ObservableObject {
             do {
                 try FileManager.default.trashItem(at: dir, resultingItemURL: nil)
                 if selectedMeetingID == meeting.id { selectedMeetingID = nil }
+                invalidateFolderSize(dir)
                 trashedTitles.append(meeting.title)
             } catch {
                 failure = error.localizedDescription
@@ -674,6 +741,59 @@ public final class RecordingController: ObservableObject {
         return trashedTitles.count
     }
 
+    /// Reverts meetings to "Untranscribed": the transcript/summary artifacts and
+    /// any archived variants move to the Trash (recoverable, so no confirmation —
+    /// same HIG rationale as row deletes) while the audio, `speakers.json`, and
+    /// `meta.json` identity (title/date/participants) stay, ready for a fresh
+    /// transcription. Skips anything recording or mid-pipeline and reloads the
+    /// list once. Returns how many were actually reverted. Note: re-transcribing
+    /// later via `transcribeSaved` rebuilds metadata fresh, so participants/
+    /// consent are reset then — accepted v1 fidelity loss.
+    @discardableResult
+    public func removeTranscriptions(_ meetings: [RecentMeeting]) -> Int {
+        var revertedTitles: [String] = []
+        var busyTitles: [String] = []
+        var failure: String?
+
+        for meeting in meetings {
+            let dir = meeting.directory
+            // Never rip artifacts out from under the recorder or the pipeline.
+            let isActiveRecording = activeRecordingDir.map {
+                $0.standardizedFileURL == dir.standardizedFileURL
+            } ?? false
+            if isProcessingMeeting(dir) || isActiveRecording {
+                busyTitles.append(meeting.title)
+                continue
+            }
+            do {
+                let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+                try store.removeTranscription(in: dir)
+                invalidateFolderSize(dir)
+                revertedTitles.append(meeting.title)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+
+        if !revertedTitles.isEmpty {
+            loadRecentMeetings()
+            contentRevision &+= 1
+        }
+
+        if let failure {
+            statusMessage = "Could not remove transcription: \(failure)"
+        } else if !busyTitles.isEmpty {
+            statusMessage = busyTitles.count == 1
+                ? "Skipped \"\(busyTitles[0])\" — still transcribing."
+                : "Skipped \(busyTitles.count) meetings — still transcribing."
+        } else if revertedTitles.count == 1 {
+            statusMessage = "Removed transcription for \"\(revertedTitles[0])\"."
+        } else if revertedTitles.count > 1 {
+            statusMessage = "Removed transcriptions for \(revertedTitles.count) meetings."
+        }
+        return revertedTitles.count
+    }
+
     /// Renames a meeting's display title in place — `meta.json` is rewritten and
     /// the Markdown artifacts re-rendered (via `MeetingStore.renameMeeting`).
     /// A user-chosen title is durable: summarization only ever overwrites
@@ -689,6 +809,7 @@ public final class RecordingController: ObservableObject {
         do {
             let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
             try store.renameMeeting(in: dir, to: trimmed)
+            invalidateFolderSize(dir)
             loadRecentMeetings()
             contentRevision &+= 1
             statusMessage = "Renamed to \"\(trimmed)\"."
@@ -731,6 +852,9 @@ public final class RecordingController: ObservableObject {
     private func unmarkProcessing(_ dir: URL) {
         processingPaths.remove(dir.standardizedFileURL.path)
         isProcessing = !processingPaths.isEmpty
+        // A pipeline run writes new artifacts into the folder — its cached size
+        // is stale now; the next list reload re-enumerates it in the background.
+        invalidateFolderSize(dir)
         loadRecentMeetings()
     }
 
@@ -892,6 +1016,10 @@ public final class RecordingController: ObservableObject {
                 micURL: mic,
                 systemURL: system
             )
+            writeDefaultSpeakerMapIfNeeded(
+                ["speaker_0": userName.isEmpty ? "You" : userName, "speaker_1": "Them"],
+                in: dir
+            )
         } else {
             transcriber = ScribeClient(apiKey: elevenKey, transport: transport)
         }
@@ -909,8 +1037,43 @@ public final class RecordingController: ObservableObject {
         let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
 
         // Preserve the meeting's original metadata; only the tier, model, and
-        // cost change. The pipeline re-applies any existing speakers.json.
-        var metadata = loadMetadata(in: dir)
+        // cost change. The pipeline re-applies any existing speakers.json. An
+        // untranscribed folder has no meta.json yet, and `loadMetadata`'s
+        // fallback would fabricate a dir-name title dated today — build a real
+        // record instead (correct start time, calendar title when one matches,
+        // else the recovered placeholder so the summary's title can adopt).
+        var metadata: MeetingMetadata
+        if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
+            metadata = loadMetadata(in: dir)
+        } else {
+            let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
+            let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
+            metadata = MeetingMetadata(
+                title: naming.title,
+                date: Self.dayString(started),
+                startedAt: Self.isoDateTime(started),
+                participants: naming.participants,
+                consentAcknowledged: consentAcknowledged
+            )
+        }
+        // Archive the current on-device transcript set as a variant before the
+        // cloud rerun overwrites the root files, so the switcher can restore it.
+        // Rerunning cloud-on-cloud archives nothing (the root set is about to be
+        // replaced in place — archiving it would just duplicate a stale copy) and
+        // a cloud rerun replaces its own archived variant (max one copy per tier).
+        var archivedTier: String?
+        if !TranscriptTier.isSOTA(metadata.transcriptTier),
+           fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
+            do {
+                try store.archiveActiveVariant(in: dir)
+                archivedTier = metadata.transcriptTier ?? TranscriptTier.local
+            } catch {
+                unmarkProcessing(dir)
+                statusMessage = "Couldn't archive the existing transcript (\(error.localizedDescription)) — cloud transcription cancelled to protect it."
+                return
+            }
+        }
+
         metadata.transcriptTier = TranscriptTier.sotaScribe
         if canSummarize { metadata.model = settings.defaultModel }
 
@@ -943,6 +1106,15 @@ public final class RecordingController: ObservableObject {
                 summarize: canSummarize,
                 meetingDir: dir
             )
+            // Only now that the rerun succeeded is a stale cloud archive truly
+            // superseded (deleting it up front would destroy the sole copy of a
+            // paid transcript if the rerun then failed).
+            let staleCloudArchive = dir
+                .appendingPathComponent("variants", isDirectory: true)
+                .appendingPathComponent(TranscriptTier.sotaScribe, isDirectory: true)
+            if fm.fileExists(atPath: staleCloudArchive.path) {
+                try? fm.removeItem(at: staleCloudArchive)
+            }
             unmarkProcessing(dir)
             contentRevision &+= 1
             transcriptionProgress = nil
@@ -952,9 +1124,189 @@ public final class RecordingController: ObservableObject {
                 statusMessage = "Fully transcribed \"\(metadata.title)\"."
             }
         } catch {
+            // A failed rerun after the old set was archived would otherwise
+            // demote the meeting to "Untranscribed" — restore the archive.
+            var restoredPrevious = false
+            if let archivedTier,
+               !fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path),
+               fm.fileExists(
+                   atPath: dir
+                       .appendingPathComponent("variants", isDirectory: true)
+                       .appendingPathComponent(archivedTier, isDirectory: true)
+                       .appendingPathComponent("transcript.json").path
+               ) {
+                restoredPrevious = (try? store.activateVariant(archivedTier, in: dir)) != nil
+            }
             unmarkProcessing(dir)
             transcriptionProgress = nil
-            statusMessage = "Full transcription failed: \(error.localizedDescription)"
+            statusMessage = restoredPrevious
+                ? "Full transcription failed: \(error.localizedDescription) — the previous transcript was restored."
+                : "Full transcription failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Re-transcribes an already-transcribed meeting with the free on-device
+    /// engine — the downgrade twin of `fullyTranscribe`, used to add an
+    /// on-device variant next to an existing cloud transcript. The current
+    /// (cloud) set is archived as a variant first, so nothing is destroyed.
+    /// Queued behind any in-flight pipeline work.
+    public func transcribeOnDevice(_ meeting: RecentMeeting) async {
+        let dir = meeting.directory
+        guard Self.meetingAudioURL(in: dir) != nil else {
+            statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
+            return
+        }
+        guard !isProcessingMeeting(dir) else { return }  // already queued or running
+
+        markProcessing(dir)
+        enqueuePipelineJob { [weak self] in
+            await self?.runOnDeviceTranscription(of: meeting)
+        }
+    }
+
+    /// The queued worker behind `transcribeOnDevice` — runs the local engine
+    /// over an already-transcribed meeting. Deliberately does NOT reuse
+    /// `runPipeline`, which fabricates fresh metadata and would drop the
+    /// meeting's participants/consent and title durability.
+    private func runOnDeviceTranscription(of meeting: RecentMeeting) async {
+        let dir = meeting.directory
+        guard let audio = Self.meetingAudioURL(in: dir) else {
+            unmarkProcessing(dir)
+            statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
+            return
+        }
+
+        let fm = FileManager.default
+        let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+
+        // Preserve the meeting's existing metadata; only tier/model/cost change
+        // (mirrors `runFullTranscription`, including the recovered record for a
+        // meta-less folder — shouldn't happen here, but degrade identically).
+        var metadata: MeetingMetadata
+        if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
+            metadata = loadMetadata(in: dir)
+        } else {
+            let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
+            let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
+            metadata = MeetingMetadata(
+                title: naming.title,
+                date: Self.dayString(started),
+                startedAt: Self.isoDateTime(started),
+                participants: naming.participants,
+                consentAcknowledged: consentAcknowledged
+            )
+        }
+
+        // Archive the current cloud set as a variant before the local rerun
+        // overwrites the root files; local-on-local archives nothing (the root
+        // set is replaced in place) and a local rerun replaces its own archive.
+        var archivedTier: String?
+        if TranscriptTier.isSOTA(metadata.transcriptTier),
+           fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
+            do {
+                try store.archiveActiveVariant(in: dir)
+                archivedTier = metadata.transcriptTier ?? TranscriptTier.local
+            } catch {
+                unmarkProcessing(dir)
+                statusMessage = "Couldn't archive the existing transcript (\(error.localizedDescription)) — on-device transcription cancelled to protect it."
+                return
+            }
+        }
+
+        metadata.transcriptTier = TranscriptTier.local
+
+        // Per-channel files give free You/Them attribution, exactly like a live
+        // run. With them gone, LocalTranscriber falls back to the combined file —
+        // single-channel, so speaker ids may not mean mic/system (same accepted
+        // caveat as the single-file Scribe fallback). speakers.json is shared
+        // across tiers by design: both engines emit speaker_0=mic /
+        // speaker_1=system for 2-channel captures.
+        let mic = dir.appendingPathComponent("mic.m4a")
+        let system = dir.appendingPathComponent("system.m4a")
+        let channelFiles = [mic, system].filter { fm.fileExists(atPath: $0.path) }
+        let transcriber: any Transcriber = LocalTranscriber(
+            channelFiles: channelFiles,
+            language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage)
+        )
+        if channelFiles.count == 2 {
+            writeDefaultSpeakerMapIfNeeded(
+                ["speaker_0": userName.isEmpty ? "You" : userName, "speaker_1": "Them"],
+                in: dir
+            )
+        }
+
+        var summarizer: Summarizer?
+        if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
+            summarizer = Summarizer(
+                client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
+                model: settings.defaultModel
+            )
+        }
+        let canSummarize = (summarizer != nil)
+        if canSummarize { metadata.model = settings.defaultModel }
+
+        let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
+
+        do {
+            let result = try await pipeline.run(
+                audioFile: audio,
+                metadata: metadata,
+                options: ScribeOptions(),
+                summarize: canSummarize,
+                meetingDir: dir
+            )
+            // Only now that the rerun succeeded is a stale local archive truly
+            // superseded (deleting it up front would destroy the only other
+            // copy of the transcript if the rerun then failed).
+            let staleLocalArchive = dir
+                .appendingPathComponent("variants", isDirectory: true)
+                .appendingPathComponent(TranscriptTier.local, isDirectory: true)
+            if fm.fileExists(atPath: staleLocalArchive.path) {
+                try? fm.removeItem(at: staleLocalArchive)
+            }
+            unmarkProcessing(dir)
+            contentRevision &+= 1
+            if let summaryError = result.summaryError {
+                statusMessage = "Transcribed \"\(metadata.title)\" on-device — summary skipped (\(summaryError))"
+            } else {
+                statusMessage = "Transcribed \"\(metadata.title)\" on-device."
+            }
+        } catch {
+            // A failed rerun after the old set was archived would otherwise
+            // demote the meeting to "Untranscribed" — restore the archive.
+            var restoredPrevious = false
+            if let archivedTier,
+               !fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path),
+               fm.fileExists(
+                   atPath: dir
+                       .appendingPathComponent("variants", isDirectory: true)
+                       .appendingPathComponent(archivedTier, isDirectory: true)
+                       .appendingPathComponent("transcript.json").path
+               ) {
+                restoredPrevious = (try? store.activateVariant(archivedTier, in: dir)) != nil
+            }
+            unmarkProcessing(dir)
+            statusMessage = restoredPrevious
+                ? "On-device transcription failed: \(error.localizedDescription) — the previous transcript was restored."
+                : "On-device transcription failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Makes an archived transcript variant the active one (see
+    /// `MeetingStore.activateVariant`): the current set is archived, the target
+    /// promoted, Markdown re-rendered, and the meta tier/model/cost swapped.
+    public func switchVariant(_ meeting: RecentMeeting, to tier: String) {
+        let dir = meeting.directory
+        guard !isProcessingMeeting(dir) else { return }
+        do {
+            let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+            try store.activateVariant(tier, in: dir)
+            invalidateFolderSize(dir)
+            loadRecentMeetings()  // the row badge reads metadata.transcriptTier
+            contentRevision &+= 1
+            statusMessage = "Switched \"\(meeting.title)\" to the \(TranscriptTier.label(tier)) transcript."
+        } catch {
+            statusMessage = "Could not switch transcript: \(error.localizedDescription)"
         }
     }
 
@@ -970,14 +1322,16 @@ public final class RecordingController: ObservableObject {
         }
         guard !isProcessingMeeting(dir) else { return }  // already queued or running
         let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
+        let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
 
         markProcessing(dir)
         enqueuePipelineJob { [weak self] in
             await self?.runPipeline(
                 audioFile: audio,
-                title: meeting.title,
+                title: naming.title,
                 meetingDir: dir,
-                startedAt: started
+                startedAt: started,
+                participants: naming.participants
             )
         }
     }
@@ -1037,14 +1391,22 @@ public final class RecordingController: ObservableObject {
                 // stored cost value can overstate length. Falls back to the stored
                 // value when the audio can't be probed.
                 let realDur = Self.meetingAudioURL(in: dir).flatMap { cachedDuration(of: $0) }
+                // meta.json alone no longer implies a transcript: a reverted
+                // meeting ("Remove Transcription") keeps its metadata identity
+                // but lists as Untranscribed until re-transcribed.
+                let hasTranscript = fm.fileExists(
+                    atPath: dir.appendingPathComponent("transcript.json").path
+                )
                 let meeting = RecentMeeting(
                     title: metadata.title,
                     date: metadata.date,
                     startedAt: started,
                     directory: dir,
                     durationSecs: realDur ?? metadata.cost?.audioDurationSecs,
-                    transcriptTier: metadata.transcriptTier,
-                    isProcessed: true,
+                    sizeBytes: sizeCache[dir.standardizedFileURL.path],
+                    transcriptTier: hasTranscript ? metadata.transcriptTier : nil,
+                    isProcessed: hasTranscript,
+                    hasMetadata: true,
                     isTranscribing: processing
                 )
                 return (meeting, started ?? modified)
@@ -1067,8 +1429,10 @@ public final class RecordingController: ObservableObject {
                 startedAt: started,
                 directory: dir,
                 durationSecs: nil,
+                sizeBytes: sizeCache[dir.standardizedFileURL.path],
                 transcriptTier: nil,
                 isProcessed: false,
+                hasMetadata: false,
                 isTranscribing: processing
             )
             return (meeting, started ?? modified)
@@ -1078,6 +1442,83 @@ public final class RecordingController: ObservableObject {
             .sorted { $0.1 > $1.1 }
             .map(\.0)
         log.notice("loadRecentMeetings: outputDir=\(self.settings.outputDir.path, privacy: .public) entries=\(entries.count, privacy: .public) meetings=\(self.recentMeetings.count, privacy: .public)")
+        refreshFolderSizes()
+    }
+
+    /// Enumerates any listed folders whose size isn't cached yet — off the main
+    /// actor, in one batch — then patches the visible rows in place. Deliberately
+    /// does NOT re-call `loadRecentMeetings` on completion: that would re-scan
+    /// the directory (and race the watcher's own reloads); merging by path into
+    /// whatever rows exist now is idempotent under those races.
+    private func refreshFolderSizes() {
+        let missing = recentMeetings.map(\.directory).filter { dir in
+            let key = dir.standardizedFileURL.path
+            return sizeCache[key] == nil && !sizingPaths.contains(key)
+        }
+        guard !missing.isEmpty else { return }
+        let jobs = missing.map { dir -> (dir: URL, path: String, epoch: Int) in
+            let key = dir.standardizedFileURL.path
+            sizingPaths.insert(key)
+            return (dir, key, sizeEpoch[key, default: 0])
+        }
+        Task.detached(priority: .utility) { [weak self] in
+            let sized = jobs.map { job in
+                (path: job.path, epoch: job.epoch, bytes: Self.folderSizeBytes(of: job.dir))
+            }
+            await self?.applyFolderSizes(sized)
+        }
+    }
+
+    private func applyFolderSizes(_ sized: [(path: String, epoch: Int, bytes: Int64)]) {
+        var droppedStale = false
+        for (path, epoch, bytes) in sized {
+            sizingPaths.remove(path)
+            if sizeEpoch[path, default: 0] == epoch {
+                sizeCache[path] = bytes
+            } else {
+                droppedStale = true
+            }
+        }
+        for index in recentMeetings.indices {
+            let key = recentMeetings[index].directory.standardizedFileURL.path
+            if let bytes = sizeCache[key], recentMeetings[index].sizeBytes != bytes {
+                recentMeetings[index].sizeBytes = bytes
+            }
+        }
+        // A dropped result means the folder mutated mid-walk; the reload that
+        // mutation triggered ran while this walk still held the sizingPaths
+        // slot, so kick off a fresh walk now that the slot is free.
+        if droppedStale { refreshFolderSizes() }
+    }
+
+    /// Invalidates a folder's cached size and bumps its epoch so any size walk
+    /// already in flight for it is discarded instead of re-caching the stale
+    /// pre-mutation size.
+    private func invalidateFolderSize(_ dir: URL) {
+        let key = dir.standardizedFileURL.path
+        sizeCache.removeValue(forKey: key)
+        sizeEpoch[key, default: 0] += 1
+    }
+
+    /// Total allocated size of everything inside a meeting folder, recursively —
+    /// audio, artifacts, and any archived `variants/` sets (deliberate: it's the
+    /// folder's real footprint on disk). Runs off the main actor; see
+    /// `refreshFolderSizes`.
+    nonisolated static func folderSizeBytes(of dir: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: dir,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            if let bytes = values.totalFileAllocatedSize ?? values.fileAllocatedSize {
+                total += Int64(bytes)
+            }
+        }
+        return total
     }
 
     // MARK: - Helpers
@@ -1158,6 +1599,9 @@ public final class RecordingController: ObservableObject {
         }
         if let lang = Keychain.get(Keychain.Account.transcriptionLanguage), !lang.isEmpty {
             merged.transcriptionLanguage = lang
+        }
+        if let auto = Keychain.get(Keychain.Account.autoTranscribe), !auto.isEmpty {
+            merged.autoTranscribe = (auto == "true")
         }
         if let path = Keychain.get(Keychain.Account.outputDir), !path.isEmpty {
             merged.outputDir = URL(fileURLWithPath: path, isDirectory: true)

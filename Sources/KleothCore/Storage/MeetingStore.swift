@@ -161,6 +161,221 @@ public struct MeetingStore {
         return metadata
     }
 
+    // MARK: - Transcript variants
+
+    /// The root artifacts that belong to one transcript variant. Everything else
+    /// in a meeting folder — audio, `speakers.json`, `meta.json` — is shared
+    /// across tiers and never moves.
+    private static let variantArtifacts = [
+        "transcript.json", "transcript.md", "summary.json", "summary.md",
+    ]
+
+    private func variantsDir(in dir: URL) -> URL {
+        dir.appendingPathComponent("variants", isDirectory: true)
+    }
+
+    private func variantDir(for tier: String, in dir: URL) -> URL {
+        variantsDir(in: dir).appendingPathComponent(tier, isDirectory: true)
+    }
+
+    /// Moves the active (root) transcript set into `variants/<tier>/`, where
+    /// `<tier>` is the tier recorded in `meta.json` (`nil` → local). A no-op when
+    /// there is no root `transcript.json`. Re-archiving a tier replaces its
+    /// previous archive, so there is at most one copy per tier. The files are
+    /// *moved*, not copied — which also removes today's stale-summary hazard
+    /// (`save` never deletes an old `summary.json` when a rerun's summary fails).
+    public func archiveActiveVariant(in dir: URL) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) else {
+            return
+        }
+        let metadata = try? loadMetadata(in: dir)
+        let tier = metadata?.transcriptTier ?? TranscriptTier.local
+        let target = variantDir(for: tier, in: dir)
+        if fm.fileExists(atPath: target.path) {
+            try fm.removeItem(at: target)
+        }
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        for name in Self.variantArtifacts {
+            let source = dir.appendingPathComponent(name)
+            guard fm.fileExists(atPath: source.path) else { continue }
+            try fm.moveItem(at: source, to: target.appendingPathComponent(name))
+        }
+        let info = TranscriptVariantInfo(
+            transcriptTier: tier,
+            model: metadata?.model,
+            languageCode: metadata?.languageCode,
+            cost: metadata?.cost
+        )
+        let data = try Self.makeEncoder().encode(info)
+        try data.write(to: target.appendingPathComponent("variant.json"), options: .atomic)
+    }
+
+    /// Every transcript tier available for this meeting: the active (root) one
+    /// plus each archived `variants/<tier>/` holding a `transcript.json`. The
+    /// filesystem is the source of truth — no meta.json key tracks variants.
+    /// The active tier (when any) comes first.
+    public func availableVariantTiers(in dir: URL) -> [String] {
+        let fm = FileManager.default
+        var tiers: [String] = []
+        if fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
+            tiers.append((try? loadMetadata(in: dir))?.transcriptTier ?? TranscriptTier.local)
+        }
+        if let subdirs = try? fm.contentsOfDirectory(
+            at: variantsDir(in: dir),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            for subdir in subdirs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let tier = subdir.lastPathComponent
+                guard !tiers.contains(tier),
+                      fm.fileExists(atPath: subdir.appendingPathComponent("transcript.json").path)
+                else { continue }
+                tiers.append(tier)
+            }
+        }
+        return tiers
+    }
+
+    /// Promotes an archived transcript variant to be the active (root) set,
+    /// archiving the current root set under its own tier first. The root
+    /// Markdown is re-rendered from the promoted JSON + the *current* meta title
+    /// + `speakers.json` (never trusted from the archive, whose `.md` may carry
+    /// a title from before a rename), and the transcript-derived meta fields
+    /// (tier/model/language/cost) are swapped in from the variant's sidecar.
+    /// Activating the already-active tier is a no-op. Everything that can
+    /// ordinarily fail (decoding meta and the variant's transcript) is
+    /// pre-validated BEFORE any file moves, so a corrupt variant can never
+    /// strand the root mid-swap; the remaining failure window is a crash or
+    /// disk-full during the moves/save themselves, ordered so a crash leaves a
+    /// re-runnable state: archive → promote → render + meta.
+    public func activateVariant(_ tier: String, in dir: URL) throws {
+        let fm = FileManager.default
+        let source = variantDir(for: tier, in: dir)
+        let hasActive = fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path)
+        if hasActive,
+           ((try? loadMetadata(in: dir))?.transcriptTier ?? TranscriptTier.local) == tier {
+            return
+        }
+        guard fm.fileExists(atPath: source.appendingPathComponent("transcript.json").path) else {
+            throw MeetingStoreError.variantNotFound(tier: tier)
+        }
+        guard fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) else {
+            throw MeetingStoreError.metadataMissing
+        }
+
+        // 1. Pre-validate: decode the current meta, the variant's transcript,
+        //    and its sidecar up front, before anything on disk is touched.
+        var metadata = try loadMetadata(in: dir)
+        let rawData = try Data(contentsOf: source.appendingPathComponent("transcript.json"))
+        let raw = try Self.makeDecoder().decode(ScribeResponse.self, from: rawData)
+        let info: TranscriptVariantInfo
+        if let data = try? Data(contentsOf: source.appendingPathComponent("variant.json")),
+           let decoded = try? Self.makeDecoder().decode(TranscriptVariantInfo.self, from: data) {
+            info = decoded
+        } else {
+            info = TranscriptVariantInfo(transcriptTier: tier)
+        }
+        let variantHasSummary = fm.fileExists(atPath: source.appendingPathComponent("summary.json").path)
+
+        // 2. Archive the current root set under its own tier (no-op when the
+        //    root is already empty, e.g. recovering from a crashed switch).
+        try archiveActiveVariant(in: dir)
+
+        // 3. Promote the variant's JSON to root. The archived `.md` files are
+        //    deliberately left behind (and removed with the emptied dir below):
+        //    they are re-rendered fresh in step 4.
+        for name in ["transcript.json", "summary.json"] {
+            let promoted = source.appendingPathComponent(name)
+            guard fm.fileExists(atPath: promoted.path) else { continue }
+            let destination = dir.appendingPathComponent(name)
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try fm.moveItem(at: promoted, to: destination)
+        }
+        // A summaryless variant must not inherit another tier's leftover
+        // summary (possible when a crashed switch left the root without a
+        // transcript, so the archive above no-oped): drop the stale artifacts.
+        if !variantHasSummary {
+            for name in ["summary.json", "summary.md"] {
+                let stale = dir.appendingPathComponent(name)
+                if fm.fileExists(atPath: stale.path) {
+                    try fm.removeItem(at: stale)
+                }
+            }
+        }
+
+        // 4. Swap the transcript-derived meta fields from the variant's sidecar
+        //    and re-render the root Markdown; one `save` writes transcript.md,
+        //    summary.md (only when a summary exists), and meta.json atomically.
+        metadata.transcriptTier = info.transcriptTier ?? tier
+        metadata.model = info.model
+        metadata.languageCode = info.languageCode
+        metadata.cost = info.cost
+
+        var transcript = TranscriptNormalizer.normalize(raw)
+        if let map = loadSpeakerMap(in: dir) {
+            transcript = SpeakerMapper.apply(map, to: transcript)
+        }
+        let summary = (try? loadSummary(in: dir)) ?? nil
+        let markdown = MarkdownRenderer.render(
+            summary: summary,
+            transcript: transcript,
+            metadata: metadata,
+            includeTranscript: true
+        )
+        try save(
+            in: dir,
+            raw: nil,
+            transcript: transcript,
+            summary: summary,
+            summaryMarkdown: summary == nil ? nil : markdown,
+            speakerMap: nil,
+            metadata: metadata
+        )
+
+        // 5. Drop the emptied variant dir (and `variants/` itself when empty).
+        try? fm.removeItem(at: source)
+        if let remaining = try? fm.contentsOfDirectory(atPath: variantsDir(in: dir).path),
+           remaining.isEmpty {
+            try? fm.removeItem(at: variantsDir(in: dir))
+        }
+    }
+
+    /// Reverts a meeting to "Untranscribed": removes the four root transcript
+    /// artifacts and the entire `variants/` archive, keeping the audio files and
+    /// `speakers.json` (so a rename like You→Anna survives re-transcription —
+    /// the pipeline re-applies the map and `writeDefaultSpeakerMapIfNeeded`
+    /// never clobbers an existing one). `meta.json` is KEPT, with its
+    /// transcript-derived fields (tier/model/language/cost) stripped while the
+    /// identity fields (title/date/startedAt/participants/consent) survive, so
+    /// the title outlives a re-transcription. Removals go to the Trash by
+    /// default (recoverable, matching row deletes); pass `trash: false` to
+    /// delete outright. Idempotent — a second call is a clean no-op.
+    public func removeTranscription(in dir: URL, trash: Bool = true) throws {
+        let fm = FileManager.default
+        var doomed = Self.variantArtifacts.map { dir.appendingPathComponent($0) }
+        doomed.append(variantsDir(in: dir))
+        for url in doomed where fm.fileExists(atPath: url.path) {
+            if trash {
+                try fm.trashItem(at: url, resultingItemURL: nil)
+            } else {
+                try fm.removeItem(at: url)
+            }
+        }
+
+        let metaURL = dir.appendingPathComponent("meta.json")
+        guard fm.fileExists(atPath: metaURL.path) else { return }
+        var metadata = try loadMetadata(in: dir)
+        metadata.transcriptTier = nil
+        metadata.model = nil
+        metadata.languageCode = nil
+        metadata.cost = nil
+        let data = try Self.makeEncoder().encode(metadata)
+        try data.write(to: metaURL, options: .atomic)
+    }
+
     // MARK: - Helpers
 
     /// A unique, sortable meeting directory under `baseDir`, named
@@ -208,5 +423,45 @@ public struct MeetingStore {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return decoder
+    }
+}
+
+/// Sidecar (`variants/<tier>/variant.json`) carrying the transcript-derived
+/// `meta.json` fields that swap when a variant is (de)activated. Keys are
+/// acronym-free so they round-trip under the snake_case strategies; `cost`
+/// reuses `CostBreakdown`'s explicit CodingKeys.
+public struct TranscriptVariantInfo: Codable, Sendable {
+    public var transcriptTier: String?
+    public var model: String?
+    public var languageCode: String?
+    public var cost: CostBreakdown?
+
+    public init(
+        transcriptTier: String?,
+        model: String? = nil,
+        languageCode: String? = nil,
+        cost: CostBreakdown? = nil
+    ) {
+        self.transcriptTier = transcriptTier
+        self.model = model
+        self.languageCode = languageCode
+        self.cost = cost
+    }
+}
+
+/// Errors thrown by `MeetingStore`'s variant operations.
+public enum MeetingStoreError: Error, LocalizedError, Equatable {
+    /// `activateVariant` was asked for a tier with no archived transcript.
+    case variantNotFound(tier: String)
+    /// The meeting has no `meta.json` to carry the swapped variant fields.
+    case metadataMissing
+
+    public var errorDescription: String? {
+        switch self {
+        case .variantNotFound(let tier):
+            return "No saved \(TranscriptTier.label(tier)) transcript exists for this meeting."
+        case .metadataMissing:
+            return "The meeting has no metadata file to update."
+        }
     }
 }

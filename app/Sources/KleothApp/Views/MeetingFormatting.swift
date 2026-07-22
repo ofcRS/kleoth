@@ -38,6 +38,12 @@ enum MeetingFormat {
         return minutes > 0 ? "\(minutes)m \(String(format: "%02d", seconds))s" : "\(seconds)s"
     }
 
+    /// "214 MB" (file-style byte count), or nil when unknown/zero.
+    static func fileSize(_ bytes: Int64?) -> String? {
+        guard let bytes, bytes > 0 else { return nil }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
     /// A short clock time ("5:26 PM") when the start instant is known.
     static func time(_ meeting: RecentMeeting) -> String? {
         guard let date = meeting.startedAt else { return nil }

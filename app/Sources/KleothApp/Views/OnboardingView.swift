@@ -149,7 +149,7 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
                     .modifier(RisingReveal(visible: welcomeAppeared, reduceMotion: reduceMotion, delay: 0.12))
 
-                Text("Records your meetings and transcribes them right on your Mac — nothing leaves your machine.")
+                Text("Records your meetings and can transcribe them right on your Mac — nothing leaves your machine.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -376,7 +376,7 @@ struct OnboardingView: View {
                     .font(.largeTitle.weight(.semibold))
                     .multilineTextAlignment(.center)
 
-                Text("Kleoth lives up in your menu bar — click the lyre anytime to start or stop. Every meeting is saved to ~/Kleoth as audio, transcript, and summary — files you own.")
+                Text("Kleoth lives up in your menu bar — click the lyre anytime to start or stop. Every meeting is saved to ~/Kleoth as audio you own — transcribe it on-device or in the cloud whenever you choose.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

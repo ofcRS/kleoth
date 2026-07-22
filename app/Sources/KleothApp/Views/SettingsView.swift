@@ -42,6 +42,10 @@ struct SettingsView: View {
     /// a quiet/short opening as English.
     @State private var transcriptionLanguage: String = "auto"
 
+    /// Whether a finished recording is transcribed automatically (opt-in; off
+    /// means recordings wait in the list as "Untranscribed").
+    @State private var autoTranscribe: Bool = false
+
     /// Provider-reported account usage — the ONLY place money appears in the
     /// app. Both numbers come live from the providers (ElevenLabs subscription
     /// credits, OpenRouter credit balance); Kleoth keeps no tally of its own.
@@ -140,8 +144,20 @@ struct SettingsView: View {
         } header: {
             KleothSectionHeader("Output", systemImage: "folder.fill")
         } footer: {
-            captionFooter("Each meeting is written to its own folder here — audio, transcript, summary, and metadata you own.")
+            captionFooter(outputFooterText)
         }
+    }
+
+    /// The output footer, with a live "N meetings · X on disk" tally appended
+    /// once folder sizes have resolved (they're computed in the background, so
+    /// the plain caption shows until at least one size is known).
+    private var outputFooterText: String {
+        let base = "Each meeting is written to its own folder here — audio, transcript, summary, and metadata you own."
+        let meetings = controller.recentMeetings
+        let bytes = meetings.compactMap(\.sizeBytes).reduce(0, +)
+        guard let size = MeetingFormat.fileSize(bytes) else { return base }
+        let count = meetings.count == 1 ? "1 meeting" : "\(meetings.count) meetings"
+        return "\(base) \(count) · \(size) on disk."
     }
 
     /// On-device transcription engine status: model name, ready/downloading/missing
@@ -180,10 +196,15 @@ struct SettingsView: View {
             .onChange(of: transcriptionLanguage) { _, newValue in
                 controller.updateTranscriptionLanguage(newValue)
             }
+
+            Toggle("Transcribe automatically after recording", isOn: $autoTranscribe)
+                .onChange(of: autoTranscribe) { _, newValue in
+                    controller.updateAutoTranscribe(newValue)
+                }
         } header: {
             KleothSectionHeader("On-device transcription", systemImage: "cpu")
         } footer: {
-            captionFooter("Kleoth transcribes locally on the Apple Neural Engine — free, private, offline, and multilingual. The model downloads once (~626 MB) and is cached on this Mac. Leave Language on Auto-detect, or pin one if detection ever guesses wrong.")
+            captionFooter("Kleoth transcribes locally on the Apple Neural Engine — free, private, offline, and multilingual. The model downloads once (~626 MB) and is cached on this Mac. Leave Language on Auto-detect, or pin one if detection ever guesses wrong. With automatic transcription off, finished recordings wait in the list as Untranscribed until you choose an engine.")
         }
     }
 
@@ -539,6 +560,7 @@ struct SettingsView: View {
         outputDirPath = controller.settings.outputDir.path
         selectedModel = controller.settings.defaultModel
         transcriptionLanguage = controller.settings.transcriptionLanguage ?? "auto"
+        autoTranscribe = controller.settings.autoTranscribe
 
         // Migrate a stored model whose provider 404s under this account's
         // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") to the

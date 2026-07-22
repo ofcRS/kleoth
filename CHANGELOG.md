@@ -6,6 +6,41 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Choose the engine per meeting.** An untranscribed recording's detail pane now offers
+  both **Transcribe** (free, on-device) and **Transcribe in cloud** (ElevenLabs Scribe, your
+  key) side by side.
+- **Per-tier transcript variants.** Re-transcribing a meeting with the other engine keeps the
+  previous transcript + summary as a variant instead of overwriting it — switch between the
+  On-device and Cloud versions from the tier badge in the meeting detail view.
+- **Folder sizes.** Meeting rows, the detail view, and multi-selection now show each meeting's
+  size on disk, and Settings totals your `~/Kleoth` footprint.
+- **Remove Transcription.** Revert a meeting to its saved audio — the transcript, summary, and
+  any variants move to the Trash (recoverable) while the recording, title, and speaker names
+  stay, ready to re-transcribe. Available from the History context menu (multi-select works)
+  and the detail toolbar.
+
+### Changed
+
+- **Transcription after recording is now opt-in.** Stopping a recording saves the audio and
+  lists it as *Untranscribed*; transcription starts only when you choose an engine on the
+  meeting (or turn on "Transcribe automatically after recording" in Settings). This applies to
+  existing installs too — flip the new toggle to restore the old always-transcribe behavior.
+
+### Fixed
+
+- **Playback now plays both sides in both ears.** The built-in player live-downmixes the
+  2-channel meeting file (your mic on the left, the other side on the right), so you no longer
+  hear yourself only in the left ear. The file on disk keeps its channel layout.
+- Over-amplified microphone peaks are now clamped during loudness normalization, preventing
+  hard clipping in future recordings' combined audio.
+- Summaries are no longer silently truncated: completions cut off at the output
+  cap (`finish_reason == "length"`) are retried with a larger budget and a
+  truncated result is surfaced as a failure rather than shipped half-empty.
+- The onboarding "Start your first recording" button no longer no-ops after
+  "Skip setup" — it routes to the permissions step so consent is acknowledged.
+
 ### Removed
 
 - **Slack integration.** The Slack webhook export is gone — the `kleoth slack`
@@ -13,14 +48,6 @@ All notable changes to Kleoth are documented here. The format is based on
   App Intent, the `kleoth://slack-latest` URL verb, and the detail view's "Copy
   for Slack" action (replaced by a Slack-free **Copy Summary** that copies the
   rendered Markdown).
-
-### Fixed
-
-- Summaries are no longer silently truncated: completions cut off at the output
-  cap (`finish_reason == "length"`) are retried with a larger budget and a
-  truncated result is surfaced as a failure rather than shipped half-empty.
-- The onboarding "Start your first recording" button no longer no-ops after
-  "Skip setup" — it routes to the permissions step so consent is acknowledged.
 
 ## [0.1.0] — 2026-06-06
 

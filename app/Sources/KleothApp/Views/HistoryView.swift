@@ -124,18 +124,27 @@ struct HistoryView: View {
     }
 
     /// Context-menu body for a right-clicked set of rows. Rename only offers
-    /// itself for a single, fully processed meeting (an untranscribed folder has
-    /// no `meta.json` to hold a custom title yet).
+    /// itself for a single meeting with a `meta.json` to hold the title (a
+    /// never-transcribed folder has none yet; a reverted one keeps its).
     @ViewBuilder
     private func contextMenuItems(for ids: Set<RecentMeeting.ID>) -> some View {
         if !ids.isEmpty {
             if ids.count == 1, let id = ids.first, let meeting = meeting(for: id),
-               meeting.isProcessed, !meeting.isTranscribing {
+               meeting.hasMetadata, !meeting.isTranscribing {
                 Button("Rename") { beginRename(meeting) }
             }
             Button("Show in Finder") {
                 let urls = ids.compactMap { meeting(for: $0)?.directory }
                 NSWorkspace.shared.activateFileViewerSelecting(urls)
+            }
+            // Revert to audio-only (artifacts go to the Trash; title/audio stay).
+            // `ids` is authoritative here — never read `selection` in this closure.
+            let revertible = ids.compactMap { meeting(for: $0) }
+                .filter { $0.isProcessed && !$0.isTranscribing }
+            if !revertible.isEmpty {
+                Button("Remove Transcription") {
+                    controller.removeTranscriptions(revertible)
+                }
             }
             Divider()
             Button(role: .destructive) {
@@ -194,15 +203,22 @@ struct HistoryView: View {
         .padding()
     }
 
-    /// "Combined length: 42m 10s." when any durations are known, plus the
-    /// recoverability note for the bulk delete.
+    /// "Combined length: 42m 10s · 214 MB on disk." when durations/sizes are
+    /// known, plus the recoverability note for the bulk delete. Sizes resolve in
+    /// the background, so the disk total covers whichever rows have one so far.
     private func multiSelectionSubtitle(_ meetings: [RecentMeeting]) -> String {
         let total = meetings.compactMap(\.durationSecs).reduce(0, +)
+        let bytes = meetings.compactMap(\.sizeBytes).reduce(0, +)
         let recoverable = "Deleting moves the meeting folders to the Trash."
+        var parts: [String] = []
         if total > 0, let formatted = MeetingFormat.duration(total) {
-            return "Combined length: \(formatted). \(recoverable)"
+            parts.append("Combined length: \(formatted)")
         }
-        return recoverable
+        if let size = MeetingFormat.fileSize(bytes) {
+            parts.append("\(size) on disk")
+        }
+        guard !parts.isEmpty else { return recoverable }
+        return "\(parts.joined(separator: " · ")). \(recoverable)"
     }
 
     // MARK: - Actions
@@ -221,8 +237,9 @@ struct HistoryView: View {
     // MARK: - Inline rename
 
     private func beginRename(_ meeting: RecentMeeting) {
-        // Untranscribed / in-flight rows have no meta.json to hold a title yet.
-        guard meeting.isProcessed, !meeting.isTranscribing else { return }
+        // In-flight rows and folders without a meta.json (never transcribed)
+        // can't hold a title yet; a reverted meeting keeps its meta and renames.
+        guard meeting.hasMetadata, !meeting.isTranscribing else { return }
         renameDraft = meeting.title
         renamingID = meeting.id
         selection = [meeting.id]
@@ -324,10 +341,13 @@ private struct MeetingSidebarRow: View {
         .padding(.vertical, KleothMetrics.spacingXS)
     }
 
-    /// "5:26 PM · 12m 03s", dropping whichever piece is unknown.
+    /// "5:26 PM · 12m 03s · 214 MB", dropping whichever pieces are unknown.
     private var timeAndDuration: String? {
-        let parts = [MeetingFormat.time(meeting), MeetingFormat.duration(meeting.durationSecs)]
-            .compactMap { $0 }
+        let parts = [
+            MeetingFormat.time(meeting),
+            MeetingFormat.duration(meeting.durationSecs),
+            MeetingFormat.fileSize(meeting.sizeBytes),
+        ].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
