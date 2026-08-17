@@ -72,6 +72,7 @@ struct HistoryView: View {
                     ForEach(group.meetings) { meeting in
                         MeetingSidebarRow(
                             meeting: meeting,
+                            errorMessage: controller.meetingError(for: meeting.directory),
                             isRenaming: renamingID == meeting.id,
                             renameDraft: $renameDraft,
                             renameFocus: $renameFocus,
@@ -301,6 +302,9 @@ struct HistoryView: View {
 /// No costs here — provider usage lives in Settings → Usage only.
 private struct MeetingSidebarRow: View {
     let meeting: RecentMeeting
+    /// The last failed run's error for this meeting, if any — shows a "Failed"
+    /// chip so a reverted row explains itself (full text in the detail pane).
+    let errorMessage: String?
     let isRenaming: Bool
     @Binding var renameDraft: String
     var renameFocus: FocusState<RecentMeeting.ID?>.Binding
@@ -361,10 +365,18 @@ private struct MeetingSidebarRow: View {
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
             }
-        } else if meeting.isProcessed {
-            KleothTierBadge(isSOTA: TranscriptTier.isSOTA(meeting.transcriptTier))
         } else {
-            KleothPill("Untranscribed", systemImage: "waveform.badge.exclamationmark", tint: KleothPalette.pendingTint)
+            HStack(spacing: KleothMetrics.spacingXS) {
+                if meeting.isProcessed {
+                    KleothTierBadge(isSOTA: TranscriptTier.isSOTA(meeting.transcriptTier))
+                } else {
+                    KleothPill("Untranscribed", systemImage: "waveform.badge.exclamationmark", tint: KleothPalette.pendingTint)
+                }
+                if let errorMessage {
+                    KleothPill("Failed", systemImage: "exclamationmark.triangle", tint: KleothPalette.failureTint)
+                        .help(errorMessage)
+                }
+            }
         }
     }
 }

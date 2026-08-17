@@ -113,6 +113,16 @@ public final class RecordingController: ObservableObject {
     /// folder simply resurfaces as "Untranscribed" on next launch.
     @Published public private(set) var processingPaths: Set<String> = []
 
+    /// The most recent processing failure per meeting folder, keyed by
+    /// standardized path. `statusMessage` lives only in the popover header, so
+    /// without this a failed background run just flips its row back to
+    /// "Untranscribed" with no visible explanation anywhere the user is
+    /// actually looking (History window / detail pane). Written by every
+    /// transcription/summarization failure path via `reportMeetingError`;
+    /// cleared when a new attempt on that folder starts, on explicit dismiss,
+    /// and when the folder is trashed. In-memory only, like `processingPaths`.
+    @Published public private(set) var meetingErrors: [String: String] = [:]
+
     /// Whether Kleoth has full calendar access, enabling meetings to be named
     /// from the overlapping calendar event. Opt-in (see `requestCalendarAccess`).
     @Published public var calendarAuthorized: Bool = false
@@ -353,7 +363,7 @@ public final class RecordingController: ObservableObject {
             contentRevision &+= 1
             statusMessage = "Summarized \"\(meta.title)\"."
         } catch {
-            statusMessage = "Summarize failed: \(error.localizedDescription)"
+            reportMeetingError("Summarize failed: \(error.localizedDescription)", in: dir)
         }
         unmarkProcessing(dir)
     }
@@ -581,7 +591,7 @@ public final class RecordingController: ObservableObject {
                 )) ?? mic
             }.value
         } catch {
-            statusMessage = "Recording stopped with errors: \(error.localizedDescription)"
+            reportMeetingError("Recording stopped with errors: \(error.localizedDescription)", in: dir)
             // Resurfaces the saved audio as an "Untranscribed" row.
             unmarkProcessing(dir)
             return statusMessage
@@ -719,6 +729,7 @@ public final class RecordingController: ObservableObject {
                 try FileManager.default.trashItem(at: dir, resultingItemURL: nil)
                 if selectedMeetingID == meeting.id { selectedMeetingID = nil }
                 invalidateFolderSize(dir)
+                clearMeetingError(for: dir)
                 trashedTitles.append(meeting.title)
             } catch {
                 failure = error.localizedDescription
@@ -769,6 +780,7 @@ public final class RecordingController: ObservableObject {
                 let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
                 try store.removeTranscription(in: dir)
                 invalidateFolderSize(dir)
+                clearMeetingError(for: dir)
                 revertedTitles.append(meeting.title)
             } catch {
                 failure = error.localizedDescription
@@ -838,10 +850,33 @@ public final class RecordingController: ObservableObject {
         processingPaths.contains(dir.standardizedFileURL.path)
     }
 
+    /// The last failure reported for this meeting folder, if any — drives the
+    /// detail view's error card and the History row's "Failed" chip.
+    public func meetingError(for dir: URL) -> String? {
+        meetingErrors[dir.standardizedFileURL.path]
+    }
+
+    /// Clears a meeting's stored failure (the error card's dismiss button).
+    public func clearMeetingError(for dir: URL) {
+        meetingErrors.removeValue(forKey: dir.standardizedFileURL.path)
+    }
+
+    /// Reports a failure both globally (the popover status line) and against
+    /// the meeting folder it belongs to, so the error stays visible on that
+    /// meeting's row and detail pane — not just in the popover the user may
+    /// never open. Pass `nil` when the failure has no folder to pin it to.
+    private func reportMeetingError(_ message: String, in dir: URL?) {
+        statusMessage = message
+        if let dir { meetingErrors[dir.standardizedFileURL.path] = message }
+    }
+
     /// Marks a folder as queued/processing and refreshes the list so its row
-    /// appears (with a spinner) immediately. Idempotent.
+    /// appears (with a spinner) immediately. Idempotent. A fresh attempt also
+    /// clears the folder's previous failure — the error card describes the
+    /// *last* run, and that run is now superseded.
     private func markProcessing(_ dir: URL) {
         processingPaths.insert(dir.standardizedFileURL.path)
+        meetingErrors.removeValue(forKey: dir.standardizedFileURL.path)
         isProcessing = true
         loadRecentMeetings()
     }
@@ -959,7 +994,10 @@ public final class RecordingController: ObservableObject {
             // can be re-transcribed in place. Without this it silently drops off
             // the list and looks as though the whole meeting was lost.
             if let meetingDir { unmarkProcessing(meetingDir) } else { loadRecentMeetings() }
-            statusMessage = "Processing failed: \(error.localizedDescription) — audio saved; re-transcribe it from the list."
+            reportMeetingError(
+                "Processing failed: \(error.localizedDescription) — audio saved; re-transcribe it from the list.",
+                in: meetingDir
+            )
         }
     }
 
@@ -1069,7 +1107,10 @@ public final class RecordingController: ObservableObject {
                 archivedTier = metadata.transcriptTier ?? TranscriptTier.local
             } catch {
                 unmarkProcessing(dir)
-                statusMessage = "Couldn't archive the existing transcript (\(error.localizedDescription)) — cloud transcription cancelled to protect it."
+                reportMeetingError(
+                    "Couldn't archive the existing transcript (\(error.localizedDescription)) — cloud transcription cancelled to protect it.",
+                    in: dir
+                )
                 return
             }
         }
@@ -1139,9 +1180,12 @@ public final class RecordingController: ObservableObject {
             }
             unmarkProcessing(dir)
             transcriptionProgress = nil
-            statusMessage = restoredPrevious
-                ? "Full transcription failed: \(error.localizedDescription) — the previous transcript was restored."
-                : "Full transcription failed: \(error.localizedDescription)"
+            reportMeetingError(
+                restoredPrevious
+                    ? "Full transcription failed: \(error.localizedDescription) — the previous transcript was restored."
+                    : "Full transcription failed: \(error.localizedDescription)",
+                in: dir
+            )
         }
     }
 
@@ -1208,7 +1252,10 @@ public final class RecordingController: ObservableObject {
                 archivedTier = metadata.transcriptTier ?? TranscriptTier.local
             } catch {
                 unmarkProcessing(dir)
-                statusMessage = "Couldn't archive the existing transcript (\(error.localizedDescription)) — on-device transcription cancelled to protect it."
+                reportMeetingError(
+                    "Couldn't archive the existing transcript (\(error.localizedDescription)) — on-device transcription cancelled to protect it.",
+                    in: dir
+                )
                 return
             }
         }
@@ -1286,9 +1333,12 @@ public final class RecordingController: ObservableObject {
                 restoredPrevious = (try? store.activateVariant(archivedTier, in: dir)) != nil
             }
             unmarkProcessing(dir)
-            statusMessage = restoredPrevious
-                ? "On-device transcription failed: \(error.localizedDescription) — the previous transcript was restored."
-                : "On-device transcription failed: \(error.localizedDescription)"
+            reportMeetingError(
+                restoredPrevious
+                    ? "On-device transcription failed: \(error.localizedDescription) — the previous transcript was restored."
+                    : "On-device transcription failed: \(error.localizedDescription)",
+                in: dir
+            )
         }
     }
 
@@ -1306,7 +1356,7 @@ public final class RecordingController: ObservableObject {
             contentRevision &+= 1
             statusMessage = "Switched \"\(meeting.title)\" to the \(TranscriptTier.label(tier)) transcript."
         } catch {
-            statusMessage = "Could not switch transcript: \(error.localizedDescription)"
+            reportMeetingError("Could not switch transcript: \(error.localizedDescription)", in: dir)
         }
     }
 

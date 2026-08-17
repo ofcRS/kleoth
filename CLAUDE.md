@@ -146,6 +146,23 @@ also hold `variants/<tier>/` (archived transcript set of the non-active tier + `
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
 
+## Current status (2026-08-17 — per-meeting failure surfacing)
+- Root-caused "Transcribe in cloud silently reverts": ElevenLabs returned **401 `payment_issue`**
+  (failed/incomplete subscription payment on the user's account — fix at elevenlabs.io billing;
+  verified with a tiny live Scribe probe). Not an app bug, but the error was invisible: it went
+  only to `statusMessage` (popover header), and the detail banner is gated on
+  `isProcessingMeeting`, which the failure path clears first.
+- ✅ **Per-meeting error surfacing shipped:** `RecordingController.meetingErrors`
+  (`[path: message]`, in-memory like `processingPaths`) + `meetingError(for:)` /
+  `clearMeetingError(for:)` / private `reportMeetingError(_:in:)` (sets statusMessage AND pins
+  the message to the folder). All failure paths wired: stop, runPipeline, both archive-failure
+  aborts, runFullTranscription, runOnDeviceTranscription, summarizeLatestMeeting, switchVariant.
+  Cleared by `markProcessing` (retry), dismiss, trash, and Remove Transcription. UI: dismissible
+  red error card in MeetingDetailView (both processed + unprocessed states, hidden while
+  processing) + red "Failed" `KleothPill` on the History row (`.help` = full message);
+  `KleothPalette.failureTint` added. 120 tests green; release app reinstalled (relaunch to pick
+  up). Not runtime-verified visually.
+
 ## Current status (2026-07-22 — transcription-on-demand + 5-item UX pass)
 User-requested workflow run (3 workflows: understand/design → implement → fix; 36 agents total,
 every review finding adversarially verified). Committed + pushed to main (single commit — the five

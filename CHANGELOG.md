@@ -20,6 +20,12 @@ All notable changes to Kleoth are documented here. The format is based on
   any variants move to the Trash (recoverable) while the recording, title, and speaker names
   stay, ready to re-transcribe. Available from the History context menu (multi-select works)
   and the detail toolbar.
+- **Failed runs now explain themselves where you're looking.** When a transcription or
+  summarization fails (e.g. an ElevenLabs payment/quota issue), the meeting keeps a visible
+  record of it: a dismissible error card in the meeting detail view and a red "Failed" chip on
+  its History row (hover for the message). Previously the error appeared only in the menu-bar
+  popover's status line, so from the History window a failed cloud transcription just silently
+  reverted to *Untranscribed*. Retrying, dismissing, or trashing the meeting clears it.
 
 ### Changed
 

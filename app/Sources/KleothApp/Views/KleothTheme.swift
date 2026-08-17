@@ -79,6 +79,9 @@ enum KleothPalette {
     static let pendingTint: Color = .orange
     /// Success / granted — e.g. calendar access enabled.
     static let successTint: Color = .green
+    /// Failure — a transcription/summarization run that did not finish. Drives
+    /// the detail view's error card and the History row's "Failed" chip.
+    static let failureTint: Color = .red
 
     /// A stable, tasteful color for a speaker.
     ///

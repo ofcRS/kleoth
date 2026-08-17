@@ -50,6 +50,14 @@ struct MeetingDetailView: View {
                 transcriptionProgressBanner
             }
 
+            // The last failed run's error, pinned to THIS meeting — visible from
+            // the History window, where the popover's status line never is.
+            // Hidden while a retry is queued/running (starting one clears it).
+            if !controller.isProcessingMeeting(meeting.directory),
+               let failure = controller.meetingError(for: meeting.directory) {
+                meetingErrorCard(failure)
+            }
+
             if isUnprocessed {
                 unprocessedState
             } else if let loadError {
@@ -226,6 +234,49 @@ struct MeetingDetailView: View {
     private var bannerText: String {
         let trimmed = controller.statusMessage.trimmingCharacters(in: .whitespaces)
         return trimmed.lowercased() == "idle" ? "Transcribing…" : trimmed
+    }
+
+    // MARK: - Last-failure card
+
+    /// A prominent, dismissible card describing why the last transcription/
+    /// summarization run for this meeting failed (e.g. an ElevenLabs payment
+    /// issue). Without it, a failed background run just reverts the row with
+    /// the explanation stranded in the menu-bar popover.
+    private func meetingErrorCard(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(KleothPalette.failureTint)
+                .symbolRenderingMode(.hierarchical)
+            VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+                Text("Last attempt failed")
+                    .font(.callout.weight(.semibold))
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button {
+                controller.clearMeetingError(for: meeting.directory)
+            } label: {
+                Image(systemName: "xmark")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .padding(KleothMetrics.spacingM)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            KleothPalette.failureTint.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous)
+                .strokeBorder(KleothPalette.failureTint.opacity(0.25), lineWidth: KleothMetrics.hairline)
+        )
     }
 
     // MARK: - Unprocessed (audio-only) state
