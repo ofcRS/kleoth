@@ -14,6 +14,10 @@ import KeyboardShortcuts
 /// a belt-and-suspenders commit when the window goes away.
 struct SettingsView: View {
     @EnvironmentObject private var controller: RecordingController
+    /// Dictation state and settings. `@EnvironmentObject`, never
+    /// `DictationController.shared` — a plain static read doesn't subscribe the
+    /// view, so the live Accessibility state would never refresh.
+    @EnvironmentObject private var dictation: DictationController
     @Environment(\.openWindow) private var openWindow
 
     // Local editable copies; committed to the controller (and Keychain) on change.
@@ -21,6 +25,13 @@ struct SettingsView: View {
     @State private var openRouterKey: String = ""
     @State private var outputDirPath: String = ""
     @State private var selectedModel: String = ""
+
+    /// The dictation polish model, and the personal dictionary as editor text.
+    /// Both live here (rather than inside `SettingsDictationSection`) so
+    /// `commitAll()` can flush unsubmitted edits when the window goes away, and
+    /// so `refreshModels` can pin the slug in the catalog.
+    @State private var dictationModel: String = ""
+    @State private var dictionaryText: String = ""
 
     /// The live, filtered summarization-model catalog backing the picker. Seeded
     /// synchronously from ``ModelCatalog/curatedFallback`` for first paint /
@@ -89,11 +100,16 @@ struct SettingsView: View {
             summarizationSection
             usageSection
             shortcutsSection
+            SettingsDictationSection(
+                dictationModel: $dictationModel,
+                dictionaryText: $dictionaryText,
+                availableModels: availableModels
+            )
             calendarSection
             onboardingSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 560)
+        .frame(width: 460, height: 600)
         .kleothSoftScrollEdge()
         .onAppear {
             loadFromController()
@@ -501,8 +517,13 @@ struct SettingsView: View {
 
         let catalog = ModelCatalog()
         // `fetch` never throws: offline/non-2xx/bad-JSON falls back to a fresh
-        // disk cache, else the curated list — both filtered to keep `selectedModel`.
-        let models = await catalog.fetch(transport: URLSessionTransport(), keeping: selectedModel)
+        // disk cache, else the curated list. Both picker selections are pinned,
+        // so neither the summary model nor the dictation polish model can vanish
+        // from its picker and silently reset.
+        let models = await catalog.fetch(
+            transport: URLSessionTransport(),
+            keepingAll: [selectedModel, dictationModel]
+        )
         availableModels = models
     }
 
@@ -561,18 +582,37 @@ struct SettingsView: View {
         selectedModel = controller.settings.defaultModel
         transcriptionLanguage = controller.settings.transcriptionLanguage ?? "auto"
         autoTranscribe = controller.settings.autoTranscribe
+        dictationModel = dictation.dictationModel
+        dictionaryText = PersonalDictionaryStore.render(dictation.dictionaryTerms())
 
         // Migrate a stored model whose provider 404s under this account's
-        // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") to the
-        // working default, and persist it so it stops reappearing.
-        if Self.isBlockedModel(selectedModel) {
+        // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") or that has
+        // simply been retired upstream, and PERSIST it so it stops reappearing.
+        // `AppConfig.migrating` already rewrites it in memory on every load;
+        // this is the one place the Keychain itself gets cleaned up.
+        if Self.needsModelMigration(selectedModel) {
             selectedModel = ModelCatalog.defaultModel
             controller.updateDefaultModel(selectedModel)
         }
+        if Self.needsModelMigration(dictationModel) {
+            dictationModel = DictationDefaults.polishModel
+            dictation.setDictationModel(dictationModel)
+        }
 
         // Seed the picker synchronously for first paint / offline; `.task` then
-        // refreshes from the live feed. The filter keeps the default + selection.
-        availableModels = ModelCatalog.filtered(from: ModelCatalog.curatedFallback, keeping: selectedModel)
+        // refreshes from the live feed. The filter keeps the default + both
+        // current selections.
+        availableModels = ModelCatalog.filtered(
+            from: ModelCatalog.curatedFallback,
+            keepingAll: [selectedModel, dictationModel]
+        )
+    }
+
+    /// Whether a stored slug must be rewritten: its provider prefix 404s under
+    /// the no-train policy, or `ModelCatalog` maps it away as retired. The
+    /// prefix list stays — it also covers slugs `retiredModels` doesn't name.
+    private static func needsModelMigration(_ slug: String) -> Bool {
+        isBlockedModel(slug) || ModelCatalog.migrating(slug) != slug
     }
 
     /// Whether `slug`'s provider prefix is one that 404s under the no-train policy.
@@ -585,6 +625,9 @@ struct SettingsView: View {
         controller.updateOpenRouterKey(openRouterKey)
         controller.updateOutputDir(outputDirPath)
         controller.updateDefaultModel(selectedModel)
+        dictation.setDictationModel(dictationModel)
+        // Flushes whatever the dictionary editor's 0.5 s debounce hasn't written.
+        dictation.saveDictionaryTerms(PersonalDictionaryStore.parse(text: dictionaryText))
     }
 
     private func chooseFolder() {

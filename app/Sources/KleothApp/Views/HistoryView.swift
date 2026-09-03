@@ -2,16 +2,55 @@ import SwiftUI
 import AppKit
 import KleothCore
 
+/// Which history the window is showing. Meetings and dictations are different
+/// enough — a Finder-like folder list vs. a text-only log — that each gets its
+/// own `NavigationSplitView` behind a scope picker, rather than one list over a
+/// union ID type threaded through the meetings sidebar.
+enum HistoryScope: String, CaseIterable, Identifiable {
+    case meetings, dictations
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .meetings: return "Meetings"
+        case .dictations: return "Dictations"
+        }
+    }
+}
+
+/// The scope switch. It lives in the sidebar's top safe area — not the window
+/// toolbar, where it would read as a window-level mode switch rather than a
+/// filter over the list beneath it.
+struct HistoryScopePicker: View {
+    @Binding var scope: HistoryScope
+
+    var body: some View {
+        Picker("", selection: $scope) {
+            ForEach(HistoryScope.allCases) { scope in
+                Text(scope.label).tag(scope)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, KleothMetrics.spacingS)
+        .padding(.vertical, KleothMetrics.spacingS)
+        .background(.bar)
+    }
+}
+
 /// Resizable window for browsing ALL meetings: a searchable, day-grouped
 /// sidebar plus a detail pane. This is the "full scale" history; the menu-bar
-/// popover stays a control surface.
+/// popover stays a control surface. A segmented picker above the sidebar swaps
+/// it for the dictation log (`DictationsListView`).
 ///
-/// The sidebar behaves like Finder: ⌘-click / ⇧-click multi-select, ⌫ (or the
-/// context menu) moves the selection to the Trash with no confirmation (it's
-/// recoverable — per the HIG, undoable actions don't get alerts), and
+/// The meetings sidebar behaves like Finder: ⌘-click / ⇧-click multi-select, ⌫
+/// (or the context menu) moves the selection to the Trash with no confirmation
+/// (it's recoverable — per the HIG, undoable actions don't get alerts), and
 /// double-click renames the meeting inline.
 struct HistoryView: View {
     @EnvironmentObject private var controller: RecordingController
+    @State private var scope: HistoryScope = .meetings
     @State private var selection = Set<RecentMeeting.ID>()
     @State private var search = ""
 
@@ -21,10 +60,16 @@ struct HistoryView: View {
     @FocusState private var renameFocus: RecentMeeting.ID?
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
+        // The window-lifetime hooks live HERE, above the scope switch — not on
+        // the meetings split view. Attached to a branch they would tear that
+        // branch down on every scope flip: `windowClosed()` (a needless
+        // activation-policy flip) plus a re-run of the meetings reload on the way
+        // back. Up here they fire once per window, as intended.
+        Group {
+            switch scope {
+            case .meetings: meetingsScope
+            case .dictations: DictationsListView(scope: $scope)
+            }
         }
         .task {
             controller.loadRecentMeetings()
@@ -32,6 +77,22 @@ struct HistoryView: View {
                let initial = controller.selectedMeetingID ?? controller.recentMeetings.first?.id {
                 selection = [initial]
             }
+        }
+        // Become a regular, ⌘-Tab-able app while this window is open, then revert
+        // to a pure menu-bar agent when it closes. Without this, an LSUIElement
+        // (.accessory) app's windows don't show in the ⌘-Tab switcher.
+        .onAppear { AppActivation.shared.windowOpened() }
+        .onDisappear { AppActivation.shared.windowClosed() }
+    }
+
+    /// The meetings scope, unchanged. Its three `.onChange` handlers stay here:
+    /// they observe controller state rather than window lifecycle, and none of
+    /// them fires on mount, so a scope flip costs nothing.
+    private var meetingsScope: some View {
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            detail
         }
         .onChange(of: controller.selectedMeetingID) { _, newValue in
             if let newValue { selection = [newValue] }
@@ -56,11 +117,6 @@ struct HistoryView: View {
                 commitRename()
             }
         }
-        // Become a regular, ⌘-Tab-able app while this window is open, then revert
-        // to a pure menu-bar agent when it closes. Without this, an LSUIElement
-        // (.accessory) app's windows don't show in the ⌘-Tab switcher.
-        .onAppear { AppActivation.shared.windowOpened() }
-        .onDisappear { AppActivation.shared.windowClosed() }
     }
 
     // MARK: - Sidebar
@@ -122,6 +178,7 @@ struct HistoryView: View {
                 )
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { HistoryScopePicker(scope: $scope) }
     }
 
     /// Context-menu body for a right-clicked set of rows. Rename only offers
