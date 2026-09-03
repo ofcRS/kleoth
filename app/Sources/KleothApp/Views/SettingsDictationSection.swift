@@ -28,6 +28,10 @@ struct SettingsDictationSection: View {
     /// would rewrite `~/.config/kleoth/dictionary.json` a hundred times a line.
     @State private var dictionarySaveTask: Task<Void, Never>?
 
+    /// Transient acknowledgement for "Reset pill position" — see `resetPillPosition()`.
+    @State private var didResetPillPosition = false
+    @State private var pillResetTask: Task<Void, Never>?
+
     var body: some View {
         Section {
             Toggle("Enable hold-to-talk dictation", isOn: enabledBinding)
@@ -66,7 +70,9 @@ struct SettingsDictationSection: View {
 
             dictionaryEditor
 
-            Button("Reset pill position") { dictation.resetPillPosition() }
+            Button(didResetPillPosition ? "Position reset" : "Reset pill position") {
+                resetPillPosition()
+            }
         } header: {
             KleothSectionHeader("Dictation", systemImage: "mic.and.signal.meter")
         } footer: {
@@ -190,6 +196,24 @@ struct SettingsDictationSection: View {
             try? await Task.sleep(for: .seconds(0.5))
             guard !Task.isCancelled else { return }
             dictation.saveDictionaryTerms(PersonalDictionaryStore.parse(text: text))
+        }
+    }
+
+    // MARK: - Pill position
+
+    /// The controller clears the saved placement and animates the pill home,
+    /// but only if the pill is on screen — which it never is while Settings is
+    /// open, so the click would otherwise look inert. Same transient
+    /// acknowledgement as the Copy buttons (`flashCopied()` in
+    /// DictationDetailView): cancel-and-restart, 1.5 s.
+    private func resetPillPosition() {
+        dictation.resetPillPosition()
+        pillResetTask?.cancel()
+        didResetPillPosition = true
+        pillResetTask = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            didResetPillPosition = false
         }
     }
 

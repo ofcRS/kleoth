@@ -321,6 +321,28 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   model → Scribe `rus` + polish OK in 2.25 s, temp dir empty; release app reinstalled (running
   instance NOT killed). Gotcha: adding a KleothCore source file is invisible to a warm
   `app/.build` until `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
+- **Three unverified review findings, traced and fixed (same day, after the pass above — the
+  original verifier agents crashed, so each was re-traced from the code first):**
+  1. **Quit mid-pipeline no longer strands mic audio:** `DictationController.inFlightClips` records
+     every temp file the run owns (the raw clip, and the `prep-<uuid>.m4a` destination — now named by
+     the new `DictationCapture.preparedURL(for:)` and passed into `prepareForUpload(_:outputURL:)`
+     *before* the detached prep starts), so `shutdown()` deletes them SYNCHRONOUSLY. `cancel()` only
+     marks `pipelineTask` cancelled; `run()`'s `defer` needs a main-actor hop a terminating process
+     never runs, and `sweepStaleClips(olderThan: 3600)` then skipped the leftovers for an hour.
+  2. **A mid-utterance device switch is no longer silent:** `DictationCapture`'s
+     `.AVAudioEngineConfigurationChange` handler is now `handleConfigurationChange()` — it zeroes
+     `level` (the 20 Hz poll was rendering a frozen RMS, so the pill looked live after the mic had
+     stopped) and sets `DictationCaptureResult.interrupted`, which `run()` turns into
+     `.warning("The microphone changed mid-dictation — only part was captured.")` on the pasted
+     result. A polish fallback reason and the clipboard fallback still outrank it. Restarting on the
+     new device stays out of scope.
+  3. **"Reset pill position" acknowledges the click:** `resetPosition()` animates only a visible
+     pill, which it never is while Settings is open, so the button now flashes "Position reset" for
+     1.5 s (`SettingsDictationSection.resetPillPosition()`, the `flashCopied()` idiom).
+  237 core tests green (unchanged — `DictationCapture` lives in the app package, which has no test
+  target); both packages build; release app reinstalled (running instance NOT killed).
+  ⚠️ Not runtime-verified: all three need a human (quit mid-pipeline + `ls $TMPDIR/kleoth-dictation`,
+  unplugging a mic mid-utterance, the Settings button by eye).
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

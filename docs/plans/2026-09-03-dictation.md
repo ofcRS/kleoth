@@ -1529,7 +1529,7 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 
 ### 6.5 Temp files
 
-`$TMPDIR/kleoth-dictation/dictation-<uuid>.m4a` (raw) and `prep-<uuid>.m4a` (mono, normalized). Deleted on every pipeline exit; `sweepStaleClips(olderThan: 3600)` at launch for crash recovery. Dictation audio is never kept (scope).
+`$TMPDIR/kleoth-dictation/dictation-<uuid>.m4a` (raw) and `prep-<uuid>.m4a` (mono, normalized). Deleted on every pipeline exit; `sweepStaleClips(olderThan: 3600)` at launch for crash recovery. Dictation audio is never kept (scope). A quit mid-pipeline cannot wait for `run()`'s `defer` (`pipelineTask.cancel()` needs a main-actor hop the process never runs), so the controller tracks both paths in `inFlightClips` — the prep destination is named by `DictationCapture.preparedURL(for:)` and passed into `prepareForUpload(_:outputURL:)` before the detached prep starts — and `shutdown()` deletes them synchronously.
 
 ---
 
@@ -1550,7 +1550,7 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 | Audio preparation failed (`mixToMono` decode/format/allocation throw) | `run()` prepare `catch` | pill `.failed(.message("Couldn't prepare the audio (…)"))`, sticky; nothing uploaded | — |
 | Esc during listening / pipeline | monitor `.escapePressed` | pill hides; nothing pasted; temp deleted | — |
 | Clip < 0.5 s | `capture.stop` → nil | pill hides silently | — |
-| Device switched mid-utterance | `.AVAudioEngineConfigurationChange` | keeps what was captured if ≥0.5 s, else silent hide; `.writeFailed` with 0 frames → `.failed(.message("The microphone stream was interrupted."))` | — |
+| Device switched mid-utterance | `.AVAudioEngineConfigurationChange` | meter drops to zero; keeps what was captured if ≥0.5 s and pastes it with `.warning("The microphone changed mid-dictation — only part was captured.")` (a polish or clipboard fallback reason outranks it), else silent hide; `.writeFailed` with 0 frames → `.failed(.message("The microphone stream was interrupted."))` | — |
 | Scribe HTTP error (401 payment_issue, 422, 5xx) | `ScribeError.httpError` | pill `.failed(.message("Transcription failed (HTTP 401) …"))`, sticky; **nothing pasted, clipboard untouched** | — |
 | Scribe timeout (25 s) / network down | `KleothTimeoutError` / URLError | pill `.failed(.message("Transcription timed out."))` | — |
 | Empty transcript | controller | pill `.warning("Nothing was heard.")` 3 s | — |

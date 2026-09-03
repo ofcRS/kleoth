@@ -35,11 +35,17 @@ public struct DictationCaptureResult: Sendable {
     public let fileURL: URL
     public let durationSeconds: Double
     public let sampleRate: Double
+    /// `true` when a device switch stopped the capture early
+    /// (`.AVAudioEngineConfigurationChange`): the clip is whatever was written
+    /// before the switch, so the caller must say it is partial rather than let
+    /// a truncated sentence look complete.
+    public let interrupted: Bool
 
-    public init(fileURL: URL, durationSeconds: Double, sampleRate: Double) {
+    public init(fileURL: URL, durationSeconds: Double, sampleRate: Double, interrupted: Bool = false) {
         self.fileURL = fileURL
         self.durationSeconds = durationSeconds
         self.sampleRate = sampleRate
+        self.interrupted = interrupted
     }
 }
 
@@ -84,6 +90,11 @@ public final class DictationCapture {
     /// session — either by `stop`/`cancel` or by a configuration change.
     /// Starts `true` so `quiesce()` is a no-op before the first `start()`.
     private var engineQuiesced = true
+
+    /// Raised when a device switch quiesced this session early; read out into
+    /// ``DictationCaptureResult/interrupted`` by `stop`. Main-thread only (the
+    /// notification is delivered on `OperationQueue.main`).
+    private var interrupted = false
 
     /// Raised (write-only) by the render callback when a buffer write fails.
     private let writeFailed = RenderFlag()
@@ -163,6 +174,7 @@ public final class DictationCapture {
         writeFailed.reset()
         level.reset()
         frames.reset()
+        interrupted = false
 
         let failed = writeFailed
         let meter = level
@@ -228,8 +240,10 @@ public final class DictationCapture {
 
         let frameCount = frames.value
         let didFail = writeFailed.isRaised
+        let wasInterrupted = interrupted
         let rate = captureSampleRate
         level.reset()
+        interrupted = false
 
         guard let url else { return nil }
         if didFail, frameCount == 0 {
@@ -242,7 +256,12 @@ public final class DictationCapture {
             Self.discard(url)
             return nil
         }
-        return DictationCaptureResult(fileURL: url, durationSeconds: duration, sampleRate: rate)
+        return DictationCaptureResult(
+            fileURL: url,
+            durationSeconds: duration,
+            sampleRate: rate,
+            interrupted: wasInterrupted
+        )
     }
 
     /// Stops the engine and deletes the clip. Idempotent.
@@ -254,6 +273,7 @@ public final class DictationCapture {
         currentURL = nil
         removeConfigurationObserver()
         level.reset()
+        interrupted = false
         if let url { Self.discard(url) }
     }
 
@@ -268,19 +288,30 @@ public final class DictationCapture {
     /// normalize loudness, peak-normalize" with no new DSP. CPU-bound — call it
     /// from `Task.detached`, never on the main actor.
     ///
+    /// - Parameter outputURL: where to write; defaults to a fresh
+    ///   ``preparedURL(for:)``. Pass one when the caller must be able to delete
+    ///   the file without waiting for this call to return (see
+    ///   `DictationController.shutdown()`).
     /// - Returns: a sibling `prep-<uuid>.m4a` next to `raw`.
     /// - Throws: `ChannelAudio.AudioError` or an `AVAudioFile` error; the
     ///   controller surfaces it on the pill.
-    public static func prepareForUpload(_ raw: URL) throws -> URL {
-        let output = raw
-            .deletingLastPathComponent()
-            .appendingPathComponent("prep-\(UUID().uuidString).m4a")
+    public static func prepareForUpload(_ raw: URL, outputURL: URL? = nil) throws -> URL {
+        let output = outputURL ?? preparedURL(for: raw)
         return try ChannelAudio.mixToMono(
             channel0: raw,
             channel1: URL(fileURLWithPath: "/nonexistent-dictation-channel"),
             outputURL: output,
             bitRate: DictationDefaults.captureBitRate
         )
+    }
+
+    /// The destination `prepareForUpload` writes to: a fresh `prep-<uuid>.m4a`
+    /// beside `raw`. Exposed so a caller can register the path for cleanup
+    /// *before* the (detached, CPU-bound) preparation starts.
+    public static func preparedURL(for raw: URL) -> URL {
+        raw
+            .deletingLastPathComponent()
+            .appendingPathComponent("prep-\(UUID().uuidString).m4a")
     }
 
     /// Deletes a temp clip, ignoring "already gone". Safe to call twice.
@@ -341,8 +372,20 @@ public final class DictationCapture {
             object: engine,
             queue: .main
         ) { _ in
-            box.owner?.quiesce()
+            box.owner?.handleConfigurationChange()
         }
+    }
+
+    /// The device changed under a live session: stop, zero the meter, and
+    /// remember it. Zeroing matters because the owner polls `currentLevel` at
+    /// 20 Hz — a frozen last-RMS reading keeps the pill looking like it is
+    /// still hearing the user. Restarting on the new device is deliberately
+    /// out of scope (design doc §7).
+    private func handleConfigurationChange() {
+        guard running, !engineQuiesced else { return }
+        interrupted = true
+        quiesce()
+        level.reset()
     }
 
     private func removeConfigurationObserver() {

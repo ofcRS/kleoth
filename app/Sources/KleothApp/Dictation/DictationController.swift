@@ -86,6 +86,14 @@ final class DictationController: ObservableObject {
     /// Restores the pill's pipeline phase after the 1 s "Finishing the previous
     /// dictation…" refusal (a plain `.warning` would auto-hide the pill mid-run).
     private var refusalTask: Task<Void, Never>?
+    /// Every temp file the pipeline in flight owns, registered BEFORE it
+    /// exists. `run()`'s `defer` empties it on every normal exit; it exists so
+    /// `shutdown()` can delete the files SYNCHRONOUSLY — `pipelineTask.cancel()`
+    /// only unblocks that `defer` on a later main-actor hop, which a
+    /// terminating process never runs, and the launch sweep skips anything
+    /// younger than an hour. Without it, quitting mid-pipeline left raw mic
+    /// audio in `$TMPDIR/kleoth-dictation/` for the next hour.
+    private var inFlightClips: [URL] = []
     /// The app that had focus at chord-down (prompt + log). Paste goes to
     /// whoever is frontmost at paste time — the inserter samples again.
     private var target: DictationTarget?
@@ -163,9 +171,12 @@ final class DictationController: ObservableObject {
     }
 
     /// applicationWillTerminate: cancel(); monitor.stop(); eventTask?.cancel().
-    /// Synchronous on purpose — the process may exit before any hop runs.
+    /// Synchronous on purpose — the process may exit before any hop runs, which
+    /// is also why the in-flight clips are deleted here rather than left to
+    /// `run()`'s `defer` (dictation audio is never kept).
     func shutdown() {
         cancel()
+        discardInFlightClips()
         monitor.stop()
         isMonitoring = false
         eventTask?.cancel()
@@ -527,15 +538,15 @@ final class DictationController: ObservableObject {
 
     // MARK: - Pipeline (steps 5–10)
 
-    /// Prepare → transcribe → polish → insert → log → settle. `prepared` is
-    /// declared before the `defer` so the `defer` can legally reference it; that
-    /// single `defer` also owns every flag reset (`endSession()`), so every exit
-    /// — success, early return, `.failed`, cancellation — tears down the same way.
+    /// Prepare → transcribe → polish → insert → log → settle. Temp files are
+    /// registered in `inFlightClips` as they are named, so the single `defer`
+    /// (and a synchronous `shutdown()`) can delete every one of them; that
+    /// `defer` also owns every flag reset (`endSession()`), so every exit —
+    /// success, early return, `.failed`, cancellation — tears down the same way.
     private func run(clip: DictationCaptureResult, target: DictationTarget?) async {
-        var prepared: URL?
+        inFlightClips = [clip.fileURL]
         defer {
-            DictationCapture.discard(clip.fileURL)
-            prepared.map(DictationCapture.discard)
+            discardInFlightClips()
             refusalTask?.cancel()
             refusalTask = nil
             pipelineTask = nil
@@ -551,13 +562,16 @@ final class DictationController: ObservableObject {
         }
 
         // 5. Prepare (off-main): mono downmix + loudness/peak normalize, 64 kbps.
+        //    The destination is named — and registered for deletion — here, so a
+        //    quit *during* the preparation can't strand a half-written clip.
         let uploadURL: URL
         do {
             let raw = clip.fileURL
+            let destination = DictationCapture.preparedURL(for: raw)
+            inFlightClips.append(destination)
             uploadURL = try await Task.detached(priority: .userInitiated) {
-                try DictationCapture.prepareForUpload(raw)
+                try DictationCapture.prepareForUpload(raw, outputURL: destination)
             }.value
-            prepared = uploadURL
             // `.value` on a detached task does not propagate our cancellation.
             try Task.checkCancellation()
         } catch is CancellationError {
@@ -632,7 +646,13 @@ final class DictationController: ObservableObject {
         // 8. Insert.
         phase = .inserting
         var method = DictationInsertMethod.paste
+        // A device switch mid-utterance quiesced the mic early (§7): the clip is
+        // still worth pasting, but the pill has to say it is partial instead of
+        // letting a truncated sentence look finished. A polish fallback outranks
+        // it (the text isn't what was said either), and so does the clipboard
+        // fallback below (actionable: "press ⌘V").
         var warning = polish.fallbackReason
+            ?? (clip.interrupted ? "The microphone changed mid-dictation — only part was captured." : nil)
         do {
             try await inserter.insert(polish.text, pressTimeTarget: target ?? .frontmost())
         } catch let insertion as TextInsertionError where insertion.textLeftOnClipboard {
@@ -670,6 +690,16 @@ final class DictationController: ObservableObject {
 
         // 10. Settle.
         pill.show(warning.map { .warning($0) } ?? .done)
+    }
+
+    /// Deletes every temp file the current run registered. Idempotent
+    /// (`DictationCapture.discard` ignores "already gone"), so the `defer` and
+    /// `shutdown()` can both call it.
+    private func discardInFlightClips() {
+        for url in inFlightClips {
+            DictationCapture.discard(url)
+        }
+        inFlightClips.removeAll()
     }
 
     /// Dictation responses are single-channel and undiarized, so `text` is the
