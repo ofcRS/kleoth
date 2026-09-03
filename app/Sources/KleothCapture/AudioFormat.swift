@@ -106,3 +106,76 @@ final class SendableAudioFileBox: @unchecked Sendable {
         self.file = file
     }
 }
+
+/// A lock-free, single-word `Float` slot holding the most recent RMS level
+/// measured on the audio render thread.
+///
+/// Same rationale as ``RenderFlag``: the value lives in a heap word so a
+/// `@Sendable` real-time callback can store into it without boxing or
+/// allocating, and `@unchecked Sendable` is sound because the single writer is
+/// the render/IO thread while the only reader is the owning control thread
+/// (the `@MainActor` dictation controller), which reads a single aligned word.
+/// A torn read is impossible for a naturally-aligned 32-bit store, and a
+/// slightly stale level is inconsequential for a meter.
+final class RenderLevel: @unchecked Sendable {
+    private let pointer = UnsafeMutablePointer<Float>.allocate(capacity: 1)
+
+    init() {
+        pointer.initialize(to: 0)
+    }
+
+    deinit {
+        pointer.deinitialize(count: 1)
+        pointer.deallocate()
+    }
+
+    /// Resets the level to zero. Call from the control thread before start.
+    func reset() {
+        pointer.pointee = 0
+    }
+
+    /// Stores the latest RMS. Real-time safe (single non-blocking store).
+    func store(_ rms: Float) {
+        pointer.pointee = rms
+    }
+
+    /// The most recently stored RMS.
+    var value: Float {
+        pointer.pointee
+    }
+}
+
+/// A lock-free, single-word `UInt64` accumulator for frames written from the
+/// audio render thread.
+///
+/// `@unchecked Sendable` for the same reason as ``RenderFlag``: the render/IO
+/// thread is the sole writer, and the control thread reads the total only after
+/// the engine has been stopped — which establishes a happens-before edge.
+final class RenderCounter: @unchecked Sendable {
+    private let pointer = UnsafeMutablePointer<UInt64>.allocate(capacity: 1)
+
+    init() {
+        pointer.initialize(to: 0)
+    }
+
+    deinit {
+        pointer.deinitialize(count: 1)
+        pointer.deallocate()
+    }
+
+    /// Resets the counter to zero. Call from the control thread before start.
+    func reset() {
+        pointer.pointee = 0
+    }
+
+    /// Adds `n` to the running total. Real-time safe (single non-blocking
+    /// read-modify-write from the one writer thread).
+    func add(_ n: UInt64) {
+        pointer.pointee &+= n
+    }
+
+    /// The accumulated total. Read after the audio thread has been quiesced.
+    var value: UInt64 {
+        pointer.pointee
+    }
+}

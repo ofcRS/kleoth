@@ -39,8 +39,19 @@ public enum ChannelAudio {
     /// the mono file's duration (frames ÷ rate) wrong for it, corrupting both the
     /// duration Scribe/`AudioProbe` read and the word timestamps speaker
     /// attribution relies on. In practice both often resolve to 48 kHz.
+    ///
+    /// - Parameter bitRate: AAC encoder bit rate for the mixed output. Defaults
+    ///   to ``AudioFormat/defaultBitRate`` (128 kbps) so the meeting path is
+    ///   unchanged; the dictation path passes `DictationDefaults.captureBitRate`
+    ///   (64 kbps) because this re-encode is what actually sets the size of the
+    ///   file uploaded to Scribe.
     @discardableResult
-    public static func mixToMono(channel0: URL, channel1: URL, outputURL: URL) throws -> URL {
+    public static func mixToMono(
+        channel0: URL,
+        channel1: URL,
+        outputURL: URL,
+        bitRate: Int = AudioFormat.defaultBitRate
+    ) throws -> URL {
         var mono0 = try decodeToMono(channel0)
         var mono1 = try decodeToMono(channel1)
 
@@ -71,7 +82,7 @@ public enum ChannelAudio {
         guard let monoFormat = AudioFormat.pcmFloat32(sampleRate: targetRate, channels: 1) else {
             throw AudioError.formatUnavailable
         }
-        let settings = AudioFormat.aacSettings(sampleRate: targetRate, channels: 1)
+        let settings = AudioFormat.aacSettings(sampleRate: targetRate, channels: 1, bitRate: bitRate)
         let outFile = try AVAudioFile(forWriting: outputURL, settings: settings)
         if totalFrames == 0 { return outputURL }
 
