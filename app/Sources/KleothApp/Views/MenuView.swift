@@ -13,6 +13,7 @@ import KleothCore
 /// the History/Detail windows.
 struct MenuView: View {
     @EnvironmentObject private var controller: RecordingController
+    @EnvironmentObject private var dictation: DictationController
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
@@ -32,6 +33,10 @@ struct MenuView: View {
             }
 
             recordControl
+
+            if dictation.isEnabled && !dictation.isTrusted {
+                dictationAccessNotice
+            }
 
             recentSection
 
@@ -193,6 +198,21 @@ struct MenuView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+    }
+
+    // MARK: - Dictation
+
+    /// Dictation is on but the hotkey can't be installed: one actionable line.
+    /// Only ever shown in the enabled-but-untrusted state (design §7).
+    private var dictationAccessNotice: some View {
+        Button { dictation.requestAccessibility() } label: {
+            Label("Dictation needs Accessibility access", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(KleothPalette.pendingTint)
+        .help("Grant Kleoth Accessibility access so the fn+shift dictation hotkey and paste can work")
     }
 
     // MARK: - Recent meetings (quick links into the History window)

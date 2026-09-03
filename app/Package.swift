@@ -11,7 +11,10 @@ let package = Package(
         .library(name: "KleothCapture", targets: ["KleothCapture"]),
     ],
     dependencies: [
-        .package(path: ".."),
+        // `name:` pins the dependency identity: without it SwiftPM derives it from
+        // the directory name, so the app package could only build from a checkout
+        // named `kleoth-app` (every worktree hit this).
+        .package(name: "kleoth-app", path: ".."),
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0"),
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "0.9.0"),
     ],
@@ -53,6 +56,19 @@ let package = Package(
         // on-device WhisperKit engine the app uses. Dev/recovery utility.
         .executableTarget(
             name: "localtranscribe",
+            dependencies: [
+                "KleothCapture",
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        // Headless dictation pipeline probe: record N seconds from the mic →
+        // prepare → Scribe → polish, print the result. No hotkey, no paste, no
+        // Accessibility needed. `dictate [seconds] [--transcriber scribe] [--model <slug>]`
+        .executableTarget(
+            name: "dictate",
             dependencies: [
                 "KleothCapture",
                 .product(name: "KleothCore", package: "kleoth-app"),

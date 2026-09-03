@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-07-22. This file is living context for future sessions — keep it current._
+_Last updated: 2026-09-03. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -24,13 +24,21 @@ _Last updated: 2026-07-22. This file is living context for future sessions — k
 `sindresorhus/KeyboardShortcuts`, `argmaxinc/argmax-oss-swift` (WhisperKit @ 0.18.0).
 - `KleothCapture` (lib): Recorder (writes `mic.m4a` + `system.m4a`, builds 2-channel
   `meeting.m4a`), MicCapture, SystemAudioTap (Core Audio process tap), ScreenshotCapture,
-  **LocalTranscriber** (WhisperKit).
+  **LocalTranscriber** (WhisperKit), **DictationCapture** (own AVAudioEngine input tap → temp m4a).
 - `KleothApp` (exe): MenuBarExtra agent, `RecordingController` (`@MainActor`, owns capture +
-  pipeline, app-lifetime `shared`), Views (MenuView, HistoryView, MeetingDetailView, Settings,
-  Consent, SpeakerRename), App Intents, `kleoth://` URL scheme, global hotkey.
+  pipeline, app-lifetime `shared`), `DictationController` (`@MainActor`, see "Dictation" below),
+  `AppConfig` (Settings/Credentials + Keychain overlay, shared by both controllers), Views
+  (MenuView, HistoryView, MeetingDetailView, Settings, Consent, SpeakerRename, Dictation*),
+  `Dictation/` (hotkey monitor, pill panel, text inserter), App Intents, `kleoth://` URL scheme,
+  global hotkey.
 - `taptest` (exe): dev probe for the audio tap.
 - `localtranscribe` (exe): headless recovery tool — re-transcribe a meeting folder with the
   same engine the app uses. `localtranscribe <meeting-dir> [scribe]`.
+- `dictate` (exe): headless dictation pipeline probe — record N s → prepare → Scribe → polish,
+  print the result, no paste. `dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish]`.
+- `app/Package.swift` declares the root dependency as `.package(name: "kleoth-app", path: "..")` —
+  the explicit `name:` is what lets the app package build from a worktree/checkout NOT named
+  `kleoth-app` (SwiftPM otherwise derives the identity from the directory name).
 
 ## Transcription model (the core design — decided with the user)
 Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `transcribe(fileURL:options:)`):
@@ -80,9 +88,65 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
   `resolvedLanguage ?? …`) so the summarizer writes in that language. Pinnable via Settings →
   `transcription_language` (Keychain), `nil`/`"auto"` = detect. Verified live: RU meeting → `ru`.
 
+## Dictation (fn+shift voice typing — v1, 2026-09-03)
+Design doc = `docs/plans/2026-09-03-dictation.md` (single source of truth; §3 is the binding
+interface contract, §5.10 the controller design, §7 the error matrix, §8.2 the manual checklist).
+- **Flow:** hold **fn+shift** → `DictationHotkeyMonitor` (NSEvent global+local monitors, needs
+  `AXIsProcessTrusted()`) feeds the pure, tested `DictationChordMachine` (KleothCore) → `.armed`
+  (mic on at key-down, no UI) → `.began` at 0.30 s (pill appears; double-tap within 0.40 s =
+  hands-free `.toggledOn`) → release `.ended` → `DictationCapture.stop(min 0.5 s)` → off-main
+  `prepareForUpload` (`ChannelAudio.mixToMono` with a nonexistent 2nd channel = mono + loudness
+  + peak normalize, 64 kbps) → **`any Transcriber`** (`ScribeClient`, `ScribeOptions.dictation`:
+  `scribe_v2`, `no_verbatim`, diarize/audio-events off, ≤100 sanitized `keyterms`, 25 s
+  `withTimeout`) → `DictationPolisher` (ONE OpenRouter call, json_schema, temp 0.2, 8 s budget,
+  **non-throwing** → `.polished` or `.raw(reason)`; translation guard: model language ≠ Scribe's
+  → raw) → `TextInserter` (full pasteboard snapshot → marked write → synthetic ⌘V via
+  `CGEvent.post(.cgSessionEventTap)` → restore after 0.5 s iff `changeCount` still ours) →
+  `DictationLogStore` actor append → `logRevision += 1` → pill `.done` (1 s) / `.warning` (3 s).
+- **Controller:** `DictationController` (`@MainActor`, `shared`, `@EnvironmentObject` in views —
+  never read `.shared` from SwiftUI). `Phase` idle/armed/listening/transcribing/polishing/inserting;
+  `endSession()` is the ONLY place `phase`/`escapeCancels`/`isSessionActive` reset (called from
+  the two listening exits + `run()`'s single `defer`, which also deletes both temp clips).
+  Preflight at `.armed`: enabled → trusted → ElevenLabs key → mic not denied → no secure input →
+  `capture.start()`; each failure is a sticky `.failed` pill (no spend, no log row). Chord while
+  the pipeline runs → 1 s "Finishing the previous dictation…" then the phase's pill returns
+  (a bare `.warning` would auto-hide mid-run). Esc cancels listening or the in-flight pipeline
+  (`pipelineTask.cancel()` + `Task.isCancelled` checks after prepare/STT/polish so a cancelled
+  polish never pastes). `.cancelled(.external)` mid-pipeline (trust lost) is a deliberate no-op —
+  the paste then falls back to clipboard-only. Pill `.openSettings` = `NSApp.activate` +
+  `NSApp.sendAction(Selector(("showSettingsWindow:")))` (AppKit panel, no SwiftUI env — don't "fix").
+- **Lifecycle:** `AppDelegate` hooks via `MainActor.assumeIsolated` (never a `Task` hop —
+  `applicationWillTerminate` may exit first): `startIfEnabled()` (sweeps stale temp clips, installs
+  monitors), `refreshTrust()` on `didBecomeActive` (+ the Settings section's 1 Hz poll) reinstalls
+  monitors on grant; `shutdown()` on terminate. The monitor's own 30 s health timer tears down on
+  trust loss. `eventTask` (one `for await` over `monitor.events`) lives for the app's lifetime
+  across Settings off→on cycles.
+- **Keys/files:** Keychain `dictation_enabled` ("true" strict, default off — existing installs stay
+  off), `dictation_model` (default `DictationDefaults.polishModel`, passed through
+  `ModelCatalog.migrating`); UserDefaults `dev.kleoth.dictation.pillPlacement`;
+  `~/Kleoth/dictations/<yyyy-MM-dd>.json` (bare array, snake_case, oldest-first; costs stored,
+  never shown); `~/.config/kleoth/dictionary.json` (≤1000 stored, ≤100 sent);
+  `$TMPDIR/kleoth-dictation/{dictation,prep}-<uuid>.m4a` (deleted on every exit; 1 h sweep at launch).
+- **Decisions:** Kleoth **stays un-sandboxed** (`CGEvent.post` is blocked under App Sandbox with no
+  re-enabling entitlement — `app/bundle/Kleoth.entitlements` must never gain
+  `com.apple.security.app-sandbox`; no Mac App Store path without rebuilding insertion). The
+  **stable "Kleoth Self-Signed" identity is now required**, not just nice: Accessibility trust is
+  bound to the code signature and would be lost on every rebuild otherwise. `kVK_ANSI_V` is
+  hardcoded (QWERTY-family incl. RU; plain Dvorak/Colemak deferred). fn+shift with any extra
+  modifier never arms. `no_verbatim` always on, so stored `raw_text` is already filler-light.
+  Translation-guard mismatch → raw + warning (revisit if it fires on real mixed RU/EN).
+- **Probe:** `swift build --package-path app --product dictate && app/.build/debug/dictate 4`
+  (prints a 20 Hz RMS meter, raw/language/billed duration/cost, polished/fallback reason).
+  `log stream --predicate 'subsystem == "dev.kleoth" AND (category == "DictationHotkey" OR
+  category == "Dictation")'` is the live hotkey/controller probe.
+
 ## Summarization
-- OpenRouter chat-completions. **Default model: `google/gemini-3-flash-preview`** (set in
-  `Settings.swift` and in the Keychain `default_model`). Was `openai/gpt-4.1-mini` — broken (see below).
+- OpenRouter chat-completions. **Default model: `google/gemini-3.8-flash`** = `ModelCatalog.defaultModel`
+  (the ONE place the literal lives; `Settings.load`, `Summarizer.init`, `DictationDefaults.polishModel`
+  all read it or repeat it). Was `google/gemini-3-flash-preview` (retired) and before that
+  `openai/gpt-4.1-mini` (policy-404'd); both are in `ModelCatalog.retiredModels` and are migrated
+  in memory on every `AppConfig` load and persisted to the Keychain the first time Settings opens.
+  ⚠️ On THIS account `google/*` currently 404s — see the data-policy note below.
 - The summary model is config: Settings → Keychain `default_model` (app), or `--model` (CLI).
 - `OpenRouterClient` sends `provider: {require_parameters: true}` and requests **structured output
   via `response_format: {type: json_schema, strict}`** (the `MeetingSummary` schema, incl. a
@@ -108,8 +172,16 @@ Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `tr
 This account's privacy setting blocks providers that may train on data. Combined with
 `require_parameters: true`, that **404s** (`"No endpoints available matching your guardrail
 restrictions and data policy"`) for `openai/*`, `mistralai/*`, `qwen/qwen3.x-max`, `x-ai/grok-*`.
-- **Works (no-train providers, verified live):** `google/*` (Gemini 3.x), `deepseek/*` (v4),
-  `z-ai/glm-*`, `moonshotai/kimi-*`, `minimax/*`, `meta-llama/*`.
+- **Works (no-train providers, verified live 2026-06):** `deepseek/*` (v4), `z-ai/glm-*`,
+  `moonshotai/kimi-*`, `minimax/*`, `meta-llama/*`. **`google/*` NO LONGER works here (2026-09-03,
+  verified twice — T4 probe + the `dictate` probe):** every `google/*` slug (3.8 and 3.7 flash,
+  json_schema AND the json_object fallback) returns **404 `zdr-violation-by-account`** ("ZDR violation
+  (account settings): 1 endpoint excluded") — the account now enforces Zero Data Retention and
+  Google's endpoints don't qualify. Consequence: the shipped default `google/gemini-3.8-flash` makes
+  every dictation take the raw fallback and every summary fail on this account until the user either
+  relaxes the ZDR guardrail at https://openrouter.ai/settings/privacy or sets another model in
+  Settings. **`z-ai/glm-5.3-flash` verified 200** with structured output, RU preserved, 2.6 s polish
+  (it emits ~500 reasoning tokens per call — inside the 8 s budget but not by a huge margin).
 - To use OpenAI/Mistral: enable **"Paid endpoints that may train on request data"** at
   https://openrouter.ai/settings/privacy (or stop sending `require_parameters`).
 - The original "OpenRouter key doesn't work" report was THIS 404, not a bad key.
@@ -145,6 +217,89 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
 also hold `variants/<tier>/` (archived transcript set of the non-active tier + `variant.json`
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
+
+## Current status (2026-09-03 — dictation v1)
+User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 integration), branch
+`feat/dictation` (NOT merged to main yet). Design doc `docs/plans/2026-09-03-dictation.md`.
+**Shipped (compile-checked, 217 core tests green, both packages build, release app installed):**
+- KleothCore `Dictation/`: `DictationDefaults`, `DictationChordMachine` (15 tests), `Keyterms`,
+  `DictationPrompt` + `DictationPolisher` (+ `Concurrency/Timeout.swift` `withTimeout`),
+  `DictationLogEntry`/`DictationLogStore` (actor) / `PersonalDictionaryStore`, `PillGeometry`,
+  `PasteboardPolicy`; `ScribeOptions.noVerbatim/keyterms` + `.dictation(keyterms:)`,
+  `Multipart.writeBody(repeatedFields:)`, `OpenRouterClient: Sendable` + `temperature:`,
+  `Settings.dictationEnabled/dictationModel`, `ModelCatalog.defaultModel/retiredModels/migrating`.
+- KleothCapture: `DictationCapture` (+ `RenderLevel`/`RenderCounter`, `mixToMono(bitRate:)`).
+- KleothApp: `Dictation/` (DictationTypes = contract, DictationController, DictationHotkeyMonitor,
+  AccessibilityPermission, DictationPanel/PillController/PillModel, TextInserter,
+  PasteboardSnapshot, InsertionEnvironment), `AppConfig`, Views (DictationPillView,
+  DictationsListView, DictationDetailView, SettingsDictationSection; HistoryView scope picker
+  Meetings | Dictations; SettingsView mounts the section), MenuView "Dictation needs
+  Accessibility access" line (enabled + untrusted only), AppDelegate hooks, `dictate` probe.
+- **T8 live probes (this Mac, 2026-09-03):** `dictate 3` → capture 3.2 s @ 48 kHz → prep 87 KB →
+  Scribe **200** in 1.6 s (ambient audio → "Why have…", `eng`) → polish **404 zdr-violation** with
+  the default `google/gemini-3.8-flash` → raw fallback; temp dir empty afterwards.
+  `say -v Milena "Привет, это проверка диктовки, короче нужно задеплоить пул реквест завтра утром"`
+  + `dictate 6 --model z-ai/glm-5.3-flash` → Scribe `rus` in 1.3 s, raw "Привет! Это проверка
+  диктовки. Короче, нужно задеплоить pull request завтра утром" → polished in 2.6 s
+  "Привет! Это проверка диктовки. Нужно задеплоить pull request завтра утром." (filler removed,
+  English term kept, translation guard passed on `rus` vs `ru`), $0.00024. Pipeline plumbing
+  through the `Transcriber` seam is therefore verified end-to-end; only the default model is the
+  account-level blocker above. ElevenLabs' 2026-08-17 `payment_issue` is gone.
+- **Decisions recorded:** Kleoth stays un-sandboxed; stable signing identity required; QWERTY-family
+  layouts assumed; fn+shift+⌘/⌥/⌃ never arms; translation guard kept; `google/gemini-3.8-flash`
+  kept as the shipped default per the design doc — **the user must either relax ZDR on the
+  OpenRouter account or set `dictation_model`/`default_model` to a reachable slug** (the T8 lane
+  does not own `DictationDefaults.swift`/`ModelCatalog.swift`, so this was NOT changed in code).
+- **Known leftovers (small):** `DictationHotkeyMonitor.appEvent(_:)` is now an identity map (the T0
+  placeholder types it bridged are gone) and can be deleted along with the `KleothCore.` qualifier
+  in `emit`; `SettingsDictationSection` spells the send cap as the literal "first 100" instead of
+  `Keyterms.maxTerms`; CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving (from
+  2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
+- ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —
+  the hotkey monitor live (chord detection, fn/🌐 double-tap emoji-picker caveat, trust-loss
+  teardown, local monitor while a Kleoth window is key), the real ⌘V paste into real apps,
+  secure-input refusal + 0.5 s clipboard restore + Maccy transient markers, the pill by eye (activation
+  policy, Spaces/full-screen, second display, drag/clamp/persist, VoiceOver, Reduce Motion), the
+  Settings section (trust polling, dictionary file write, delete confirmation), History scope switch
+  not re-running the meetings reload, the model migration on this install, "at most one Keychain
+  prompt", and whether an Accessibility grant takes effect without relaunch. The release app was
+  reinstalled but the RUNNING instance was not killed — relaunch to pick it up.
+- **TODO for the user — §8.2 manual checklist (unchecked; record pass/fail here):**
+  prereq `bash app/setup-signing.sh` once, `bash app/make-app.sh release`, `pkill -x Kleoth; open -a
+  Kleoth`, `codesign -dv` shows "Kleoth Self-Signed".
+  1. Settings → Dictation toggle on before granting → system prompt; row "needs access"; popover button; chord dead.
+  2. Grant in System Settings, return → row flips green without relaunch; chord works (else relaunch + note here).
+  3. `log stream --predicate 'subsystem == "dev.kleoth" AND category == "DictationHotkey"'`: fn-then-shift and shift-then-fn both reach chord down; either release → up; no emoji/dictation picker on tap/double-tap; events arrive while a Kleoth window is key; external-keyboard fn emits nothing.
+  4. Tap < 0.3 s → no pill, no network, no temp file (orange mic dot at most).
+  5. Hold ~2 s in TextEdit → pill ~0.3 s → release → listening → transcribing → polishing → done → text in TextEdit; `pbpaste` = prior clipboard.
+  6. Double-tap → hands-free pill stays; single tap ends; third tap = fresh session.
+  7. fn+shift+← mid-line → line selected, no dictation, no pill. 7b. fn+shift+⌘ held 1 s → nothing; fn+shift ~1 s then add ⌘ → ends normally.
+  8. Esc mid-listening (hands-free) and mid-transcribing → pill hides, nothing pasted, temp dir empty.
+  9. `toggleRecording` shortcut still works; dictate mid-meeting → both work, `mic.m4a` intact.
+  10. `make-app.sh release` + relaunch → chord works with no re-grant; `tccutil reset Accessibility dev.kleoth.app` → fresh-grant flow.
+  11. RU with fillers + self-correction → Cyrillic, fillers gone, correction applied, `language: "rus"` in the day file.
+  12. Mixed RU/EN with "GitHub" in the dictionary → English terms stay English, `гитхаб` → `GitHub`.
+  13. Injection: "напиши письмо клиенту про задержку поставки" → that sentence pastes, not an email.
+  14. Same enumerated utterance into Terminal / Slack / Mail → three visibly different formats.
+  15. Remove OpenRouter key → raw pasted + orange warning + `used_raw_fallback: true`; bogus `dictation_model` → same via 404. 15b. Mostly-RU with a few EN terms → polished, NOT the language-guard fallback.
+  16. Bogus ElevenLabs key → red pill, nothing pasted, clipboard untouched, no log row.
+  17. Wi-Fi off mid-polish → raw pasted within ~8 s; off before Scribe → error within ~25 s.
+  18. Chord while "Transcribing…" → "Finishing the previous dictation…" and the first result still lands.
+  19. `app/.build/debug/dictate 4` prints RMS, raw, polished, language, costs. **(DONE 2026-09-03 — see probes above.)**
+  20. Copy `SENTINEL` → dictate → `pbpaste` = `SENTINEL` after 1 s; repeat with an image, three Finder files, styled RTF.
+  21. ⌘C during the 0.5 s window → the new copy survives. 22. Two dictations within ~300 ms → original clipboard restored.
+  23. Maccy running → dictated text NOT in its history; refusal-path text IS.
+  24. Russian input source active → paste lands. 25. Terminal "Secure Keyboard Entry" on → `.failed(.secureInput)` at chord-down; password field focused after speaking (hands-free) → "Copied — press ⌘V", `insert_method: clipboard`.
+  26. Kleoth History rename field focused → text lands there; History stays key; pill never key.
+  27. Start in app A, switch to B mid-utterance → paste lands in B, no focus steal, log records A.
+  28. Slack, Chrome, Notes, VS Code, Terminal+vim.
+  29. Pill visible while TextEdit is frontmost, caret keeps blinking; over full-screen Safari; across Spaces; no Dock/⌘-Tab entry; closing History still drops to `.accessory`; `panel.level == .statusBar`.
+  30. First click registers; drag 1:1, clamps; second display → relaunch → same spot; disconnect → bottom-center of the display under the mouse; Reset pill position animates back; type immediately after a dictation → no dropped characters.
+  31. Light/dark legible; Reduce Motion → no animations; VoiceOver announces phases; idle CPU after a 60 s hands-free session.
+  32. Dictionary editor → `~/.config/kleoth/dictionary.json` is a plain array; the term transcribes correctly.
+  33. History → Dictations: scope picker, day sections, search, detail polished/raw/copy, delete asks + rewrites; Meetings scope unchanged; scope flip doesn't re-trigger the meetings reload; app stays `.regular`.
+  34. Stored `google/gemini-3-flash-preview`: (a) summarizing before opening Settings already uses `google/gemini-3.8-flash`; (b) open Settings once → picker shows the new default, Keychain rewritten. (On this account expect the ZDR 404 until the model/guardrail is changed.)
+  35. At most one Keychain prompt at launch after adding the two keys.
 
 ## Current status (2026-08-17 — per-meeting failure surfacing)
 - Root-caused "Transcribe in cloud silently reverts": ElevenLabs returned **401 `payment_issue`**
@@ -541,7 +696,19 @@ Settings/variant/remove tests); both packages build; release app installed to /A
 - **Availability:** `Recorder`/`SystemAudioTap` are `@available(macOS 14.4, *)`; WhisperKit runs
   on 14.4+. `RecordingController` is unconditionally available and boxes `Recorder` as `AnyObject`.
 - **Recovery surfacing:** `loadRecentMeetings` lists audio-only folders (no `meta.json`) as
-  `isProcessed=false` ("Untranscribed"), excluding the in-progress recording dir.
+  `isProcessed=false` ("Untranscribed"), excluding the in-progress recording dir. `~/Kleoth/dictations/`
+  never shows as a meeting (no audio inside).
+- **Dictation keys/paths (2026-09-03):** Keychain `dictation_enabled` / `dictation_model` (NOT in
+  `Keychain.legacyAccounts`); `~/Kleoth/dictations/<day>.json`; `~/.config/kleoth/dictionary.json`;
+  UserDefaults `dev.kleoth.dictation.pillPlacement`; `$TMPDIR/kleoth-dictation/`. Every stored
+  property is acronym-free (`appBundleId`, `displayId`) — the snake_case rule above applies.
+- **Un-sandboxed is load-bearing:** `TextInserter` posts `CGEvent`s to `.cgSessionEventTap`, which
+  the App Sandbox blocks outright. Never add `com.apple.security.app-sandbox` to
+  `app/bundle/Kleoth.entitlements`. Accessibility trust is bound to the code signature → always
+  sign with the stable "Kleoth Self-Signed" identity (`app/setup-signing.sh`).
+- **`AppDelegate` ↔ `@MainActor` controllers:** delegate callbacks run on the main thread; use
+  `MainActor.assumeIsolated { … }`, never `Task { @MainActor in … }` — in `applicationWillTerminate`
+  the process can exit before the hop runs.
 
 ## Security (hard rules)
 - **API keys NEVER printed to stdout or committed.** `.env` (ELEVEN_API_KEY, OPENROUTER_API_KEY)

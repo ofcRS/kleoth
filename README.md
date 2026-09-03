@@ -34,6 +34,11 @@ and keeps the transcript and summary as files in `~/Kleoth`.
   meeting's own language.
 - **Your data, your files** — every meeting is a folder of audio + `transcript.md` + `summary.md` +
   JSON in `~/Kleoth`. Grep it, sync it, delete it. There is no database and no lock-in.
+- **Dictation anywhere (opt-in)** — hold **fn+shift**, speak, release: Kleoth transcribes the
+  utterance (ElevenLabs Scribe, your key), cleans it up with one short LLM pass (fillers gone, never
+  translated), and pastes it into whatever app has focus. Double-tap for hands-free. Text-only
+  history in `~/Kleoth/dictations/`; a personal dictionary biases recognition toward your names
+  and jargon. Audio is never kept.
 
 ## Requirements
 
@@ -89,6 +94,7 @@ brew install --cask kleoth
 | **System Audio Recording** | Record the other participants (the audio your Mac plays). Shown under *Privacy & Security → Screen & System Audio Recording*. | First recording. |
 | **Keychain** | Store your optional API keys securely. **Click "Always Allow"** so you are not re-prompted. | When you save a key, or on a re-signed build. |
 | Calendar *(optional)* | Name a meeting from the calendar event you're in. Decline freely. | If you grant it. |
+| Accessibility *(optional)* | Dictation only: watch for the fn+shift chord system-wide and send the ⌘V that pastes the dictated text. | When you turn dictation on in Settings. |
 
 Everything except the microphone and system-audio grants is optional. Kleoth never uploads audio
 unless you trigger the cloud transcription action yourself.
@@ -111,11 +117,17 @@ Open **Settings** from the menu bar. Everything here is optional:
 
 - **ElevenLabs API key** — enables the per-meeting **"Fully transcribe"** (Cloud) action. The key
   needs the `speech_to_text` permission.
-- **OpenRouter API key** — enables AI summaries. Note: if your OpenRouter account blocks providers
-  that may train on your data, choose a no-train model (e.g. `google/*`, `deepseek/*`,
-  `meta-llama/*`); the default `google/gemini-3-flash-preview` works out of the box.
-- **Summary model** — any OpenRouter model slug. Default: `google/gemini-3-flash-preview`.
+- **OpenRouter API key** — enables AI summaries and the dictation clean-up pass. Note: if your
+  OpenRouter account blocks providers that may train on your data, choose a no-train model (e.g.
+  `google/*`, `deepseek/*`, `z-ai/*`, `meta-llama/*`); accounts that enforce Zero Data Retention may
+  also find `google/*` blocked — pick e.g. `z-ai/glm-5.3-flash` or relax the guardrail at
+  openrouter.ai/settings/privacy.
+- **Summary model** — any OpenRouter model slug. Default: `google/gemini-3.8-flash`.
 - **Transcription language** — *Auto* (detect per meeting) or pin a specific language.
+- **Dictation** — enable hold-to-talk (fn+shift), pick the polish model (default
+  `google/gemini-3.8-flash`), edit your personal dictionary (one term per line; the first 100 are
+  sent with each dictation), reset the pill position. Needs an ElevenLabs key; without an
+  OpenRouter key the raw transcript is pasted as-is.
 
 Keys are stored in the macOS Keychain and are **never** printed or committed.
 
@@ -165,6 +177,11 @@ summary.json   · summary.md           # the AI summary (if generated)
 speakers.json                         # speaker_0 / speaker_1 → display names (You / Them)
 meta.json                             # metadata: duration, tier, timestamps, consent
 ```
+
+Dictations are text-only: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished
+text, the target app, language, and models per utterance; the audio clip is deleted as soon as it
+has been transcribed (it only ever lives in `$TMPDIR/kleoth-dictation/`). The personal dictionary
+is a plain JSON array at `~/.config/kleoth/dictionary.json`.
 
 **Consent:** recording conversations is regulated and the rules vary by jurisdiction — many places
 require **all-party consent**. Kleoth records both sides without a visible bot; that is a UX choice,

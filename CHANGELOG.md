@@ -8,6 +8,19 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Added
 
+- **Dictation (hold fn+shift, speak, release).** System-wide voice typing: the utterance is
+  transcribed by ElevenLabs Scribe (`scribe_v2`, `no_verbatim`, your personal-dictionary terms
+  as keyterms), cleaned up by ONE short OpenRouter "polish" call (fillers/self-corrections removed,
+  never translated — falls back to the raw transcript within 8 s if the model is slow, blocked, or
+  changes the language), and pasted into whatever app has keyboard focus via the clipboard + a
+  synthetic ⌘V; your previous clipboard is restored 0.5 s later. Double-tap for hands-free, tap
+  once to stop, Esc cancels. A floating, draggable pill shows listening / transcribing /
+  polishing / done / warnings. Text-only history lands in `~/Kleoth/dictations/<day>.json` and is
+  browsable from the new **Dictations** scope in the History window; a personal dictionary lives
+  in `~/.config/kleoth/dictionary.json` (Settings → Dictation). Audio is never kept. Opt-in
+  (Settings → Dictation) and requires the **Accessibility** permission (for the hotkey and the
+  paste); `dictate` is a headless CLI probe for the pipeline.
+
 - **Choose the engine per meeting.** An untranscribed recording's detail pane now offers
   both **Transcribe** (free, on-device) and **Transcribe in cloud** (ElevenLabs Scribe, your
   key) side by side.
@@ -29,6 +42,14 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Changed
 
+- **Default summary model is now `google/gemini-3.8-flash`** (was the retired
+  `google/gemini-3-flash-preview`). A stored retired slug is migrated in memory on every launch and
+  rewritten in the Keychain the first time Settings opens. Note: accounts whose OpenRouter privacy
+  settings enforce Zero Data Retention may find `google/*` blocked (404 `zdr-violation-by-account`)
+  — pick another no-train model in Settings (e.g. `z-ai/glm-5.3-flash`) or relax the guardrail at
+  openrouter.ai/settings/privacy.
+- Cloud transcription (Scribe) requests for dictation send `no_verbatim=true` (fillers dropped
+  server-side); meeting transcription is unchanged.
 - **Transcription after recording is now opt-in.** Stopping a recording saves the audio and
   lists it as *Untranscribed*; transcription starts only when you choose an engine on the
   meeting (or turn on "Transcribe automatically after recording" in Settings). This applies to

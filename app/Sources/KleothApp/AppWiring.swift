@@ -51,15 +51,40 @@ final class AppActivation {
     }
 }
 
-/// AppKit delegate for the menu-bar agent. Handles the two entry points that a
+/// AppKit delegate for the menu-bar agent. Handles the entry points that a
 /// pure SwiftUI `App` can't cleanly own for an `LSUIElement` app: inbound
-/// `kleoth://` URLs and the global record/stop hotkey. Both funnel into the
-/// shared `RecordingController.handle(_:)` so every surface runs one code path.
+/// `kleoth://` URLs and the global record/stop hotkey (both funnel into the
+/// shared `RecordingController.handle(_:)` so every surface runs one code
+/// path), plus the dictation controller's launch / trust-refresh / terminate
+/// hooks.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         KeyboardShortcuts.onKeyUp(for: .toggleRecording) {
             Task { @MainActor in RecordingController.shared?.handle(.toggle) }
         }
+
+        // Dictation (fn+shift). `AppDelegate` is a plain `NSObject` and
+        // `DictationController` is `@MainActor`; both delegate callbacks arrive
+        // on the main thread, so assume — never hop — so the hotkey monitor is
+        // installed before the first chord can arrive.
+        MainActor.assumeIsolated { DictationController.shared?.startIfEnabled() }
+        // Accessibility trust has no change notification: re-check whenever the
+        // user comes back from System Settings, so a fresh grant installs the
+        // monitors without a relaunch.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { DictationController.shared?.refreshTrust() }
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // NOT `Task { @MainActor in … }`: the process may exit before a hop runs.
+        // Synchronous: drops any live dictation, deletes its temp clips, removes
+        // the NSEvent monitors.
+        MainActor.assumeIsolated { DictationController.shared?.shutdown() }
     }
 
     /// Routes `kleoth://record`, `kleoth://stop`, `kleoth://toggle`, and
