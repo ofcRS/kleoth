@@ -5,7 +5,9 @@ import SwiftUI
 /// Presents a `MenuBarExtra` whose icon reflects recording state, plus a
 /// standard `Settings` scene. The single `RecordingController` is created here
 /// and shared into every view via the environment so a recording survives any
-/// view being torn down.
+/// view being torn down. The `DictationController` (fn+shift dictation) is
+/// created the same way and injected alongside it — dictation views read it
+/// via `@EnvironmentObject`, never through `DictationController.shared`.
 ///
 /// - Note: As a menu-bar `LSUIElement` agent this needs an app bundle with the
 ///   appropriate `Info.plist` and TCC usage descriptions to run; it compiles
@@ -13,12 +15,14 @@ import SwiftUI
 @main
 struct KleothApp: App {
     @StateObject private var controller = RecordingController()
+    @StateObject private var dictation = DictationController()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         MenuBarExtra {
             MenuView()
                 .environmentObject(controller)
+                .environmentObject(dictation)
         } label: {
             // The menu-bar label is the only view mounted at launch, so it's the
             // single place with a live SwiftUI environment from which the
@@ -36,6 +40,7 @@ struct KleothApp: App {
         Window("Meeting History", id: "kleoth-history") {
             HistoryView()
                 .environmentObject(controller)
+                .environmentObject(dictation)
         }
         .defaultSize(width: 960, height: 640)
 
@@ -45,6 +50,7 @@ struct KleothApp: App {
         Window("Welcome to Kleoth", id: "kleoth-onboarding") {
             OnboardingView()
                 .environmentObject(controller)
+                .environmentObject(dictation)
         }
         .defaultSize(width: 560, height: 600)
         .windowResizability(.contentSize)
@@ -52,6 +58,7 @@ struct KleothApp: App {
         Settings {
             SettingsView()
                 .environmentObject(controller)
+                .environmentObject(dictation)
         }
     }
 }

@@ -17,9 +17,25 @@ import FoundationNetworking
 /// ``fetch(transport:)`` wraps it with networking + disk caching and is
 /// **fail-soft** — it never throws to the UI.
 public struct ModelCatalog: Sendable {
-    /// Default summarization model — kept in sync with `Settings.load()`.
-    /// Always surfaced first in the picker and guaranteed present.
-    public static let defaultModel = "google/gemini-3-flash-preview"
+    /// Default summarization model — `Settings.load()` reads it from here, so
+    /// the literal exists in exactly one place. Always surfaced first in the
+    /// picker and guaranteed present.
+    public static let defaultModel = "google/gemini-3.8-flash"
+
+    /// Slugs that no longer work (retired by the provider, or 404'd by this
+    /// account's no-train data policy) mapped to their replacement. A stored
+    /// value naming one of these is rewritten via ``migrating(_:)`` on every
+    /// load (in memory) and persisted the first time Settings opens.
+    public static let retiredModels: [String: String] = [
+        "google/gemini-3-flash-preview": defaultModel,
+        "openai/gpt-4.1-mini": defaultModel,
+    ]
+
+    /// `retiredModels[slug] ?? slug` — the replacement for a retired slug,
+    /// otherwise the slug unchanged.
+    public static func migrating(_ slug: String) -> String {
+        retiredModels[slug] ?? slug
+    }
 
     /// Provider prefixes that work under this account's no-train data policy.
     /// Anything outside this set (`openai/`, `mistralai/`, `x-ai/`, …) is
@@ -37,9 +53,11 @@ public struct ModelCatalog: Sendable {
     /// A small set of real, currently-available slugs (verified live against
     /// the models endpoint) used offline or when the fetch fails. The default
     /// model is first; the rest span the allowed providers so the picker is
-    /// useful even with no network. Keep these to real slugs only.
+    /// useful even with no network. Keep these to real slugs only — never a
+    /// ``retiredModels`` key (the offline picker must not offer a slug that
+    /// ``migrating(_:)`` maps away).
     public static let curatedFallback: [String] = [
-        "google/gemini-3-flash-preview",   // default
+        defaultModel,                      // google/gemini-3.8-flash
         "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",
         "deepseek/deepseek-v4-flash",
@@ -72,13 +90,26 @@ public struct ModelCatalog: Sendable {
     /// (grouped by provider, then by name), and guarantees both ``defaultModel``
     /// and `current` are present even if the feed omits them.
     ///
-    /// Pure and deterministic — the unit-tested core of the catalog.
+    /// Pure and deterministic — the unit-tested core of the catalog. Wrapper
+    /// over ``filtered(from:keepingAll:)`` for the single-selection case.
     ///
     /// - Parameters:
     ///   - ids: candidate model ids (e.g. from the live feed or fallback).
     ///   - current: the model the user currently has selected; always retained
     ///     so an externally-configured choice never vanishes from the picker.
     public static func filtered(from ids: [String], keeping current: String? = nil) -> [String] {
+        filtered(from: ids, keepingAll: current.map { [$0] } ?? [])
+    }
+
+    /// ``filtered(from:keeping:)`` generalized to several pinned selections —
+    /// the Settings window shows one picker for the summary model and one for
+    /// the dictation polish model, and neither configured slug may vanish.
+    ///
+    /// - Parameters:
+    ///   - ids: candidate model ids (e.g. from the live feed or fallback).
+    ///   - pinned: every slug that must survive the filter (empty strings are
+    ///     ignored), in addition to ``defaultModel``.
+    public static func filtered(from ids: [String], keepingAll pinned: [String]) -> [String] {
         // De-duplicate while keeping only allowed providers.
         var seen = Set<String>()
         var allowed: [String] = []
@@ -88,9 +119,9 @@ public struct ModelCatalog: Sendable {
             allowed.append(id)
         }
 
-        // Guarantee the default and the current selection are present.
-        for guaranteed in [defaultModel, current] {
-            guard let id = guaranteed, !id.isEmpty, !seen.contains(id) else { continue }
+        // Guarantee the default and every pinned selection are present.
+        for id in [defaultModel] + pinned {
+            guard !id.isEmpty, !seen.contains(id) else { continue }
             seen.insert(id)
             allowed.append(id)
         }
@@ -142,6 +173,12 @@ public struct ModelCatalog: Sendable {
     ///   - transport: HTTP seam (pass `URLSessionTransport()` in the app).
     ///   - current: the user's current selection, always kept in the result.
     public func fetch(transport: HTTPTransport, keeping current: String? = nil) async -> [String] {
+        await fetch(transport: transport, keepingAll: current.map { [$0] } ?? [])
+    }
+
+    /// ``fetch(transport:keeping:)`` with several pinned selections (see
+    /// ``filtered(from:keepingAll:)``).
+    public func fetch(transport: HTTPTransport, keepingAll pinned: [String]) async -> [String] {
         do {
             var request = URLRequest(url: Self.endpoint)
             request.httpMethod = "GET"
@@ -153,28 +190,28 @@ public struct ModelCatalog: Sendable {
             let (data, response) = try await transport.data(for: request)
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             guard (200...299).contains(statusCode) else {
-                return fallbackList(keeping: current)
+                return fallbackList(keepingAll: pinned)
             }
 
             let decoded = try JSONDecoder().decode(ModelsResponse.self, from: data)
             let ids = decoded.data.map(\.id)
-            let result = Self.filtered(from: ids, keeping: current)
+            let result = Self.filtered(from: ids, keepingAll: pinned)
 
-            // Cache the raw allowed ids (without the per-call `current`/default
-            // guarantees) so a later call's own `current` is honored.
+            // Cache the raw allowed ids (without the per-call pinned/default
+            // guarantees) so a later call's own selections are honored.
             writeCache(Self.filtered(from: ids))
             return result
         } catch {
-            return fallbackList(keeping: current)
+            return fallbackList(keepingAll: pinned)
         }
     }
 
     /// Freshest offline list: a non-expired cache, else the curated fallback.
-    private func fallbackList(keeping current: String?) -> [String] {
+    private func fallbackList(keepingAll pinned: [String]) -> [String] {
         if let cached = readFreshCache() {
-            return Self.filtered(from: cached, keeping: current)
+            return Self.filtered(from: cached, keepingAll: pinned)
         }
-        return Self.filtered(from: Self.curatedFallback, keeping: current)
+        return Self.filtered(from: Self.curatedFallback, keepingAll: pinned)
     }
 
     // MARK: - Disk cache (acronym-free keys, fail-soft)

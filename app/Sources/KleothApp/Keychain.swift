@@ -48,6 +48,14 @@ public enum Keychain {
         /// "true" once the first-run onboarding window has been completed (or
         /// skipped), so it never auto-opens again.
         public static let onboardingCompleted = "onboarding_completed"
+        /// "true" (strict) enables the global fn+shift dictation hotkey; absent
+        /// or anything else keeps it off — including on existing installs.
+        /// New key: NOT in `legacyAccounts`.
+        public static let dictationEnabled = "dictation_enabled"
+        /// OpenRouter slug for the dictation "polish" call (default
+        /// `DictationDefaults.polishModel`; passed through `ModelCatalog.migrating`).
+        /// New key: NOT in `legacyAccounts`.
+        public static let dictationModel = "dictation_model"
     }
 
     /// Every legacy per-value account, for the one-time migration.

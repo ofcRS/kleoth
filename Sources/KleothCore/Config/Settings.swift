@@ -13,22 +13,32 @@ public struct Settings: Sendable {
     /// default: recordings wait in the list as "Untranscribed" until the user
     /// picks an engine (free on-device or paid cloud).
     public var autoTranscribe: Bool
+    /// Whether the global fn+shift dictation hotkey is active. Strict opt-in
+    /// (`"true"` only), off by default — including on existing installs.
+    public var dictationEnabled: Bool
+    /// OpenRouter model used for the one dictation "polish" call. Defaults to
+    /// `DictationDefaults.polishModel`.
+    public var dictationModel: String
 
     public init(
         outputDir: URL,
         defaultModel: String,
         transcriptionLanguage: String? = nil,
-        autoTranscribe: Bool = false
+        autoTranscribe: Bool = false,
+        dictationEnabled: Bool = false,
+        dictationModel: String = DictationDefaults.polishModel
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
         self.transcriptionLanguage = transcriptionLanguage
         self.autoTranscribe = autoTranscribe
+        self.dictationEnabled = dictationEnabled
+        self.dictationModel = dictationModel
     }
 
     /// Loads settings, applying defaults:
     /// - `outputDir`: `~/Kleoth` (callers create it lazily).
-    /// - `defaultModel`: `google/gemini-3-flash-preview`.
+    /// - `defaultModel`: `ModelCatalog.defaultModel`.
     public static func load() -> Settings {
         load(config: loadConfigJSON())
     }
@@ -39,7 +49,7 @@ public struct Settings: Sendable {
         let outputDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Kleoth", isDirectory: true)
 
-        let defaultModel = "google/gemini-3-flash-preview"
+        let defaultModel = ModelCatalog.defaultModel
 
         // Normalize to the struct's contract (nil == auto): an empty value or the
         // literal "auto" both mean automatic detection, so they decode to nil
@@ -54,11 +64,24 @@ public struct Settings: Sendable {
         // other value (malformed "1"/"yes") stays off.
         let autoTranscribe = (config["auto_transcribe"] == "true")
 
+        // Same strict opt-in for the dictation hotkey.
+        let dictationEnabled = (config["dictation_enabled"] == "true")
+
+        // Polish model: a non-empty configured slug wins, otherwise the
+        // dictation default. (Retired slugs are migrated by the app's Keychain
+        // overlay, not here.)
+        var dictationModel = DictationDefaults.polishModel
+        if let configured = config["dictation_model"], !configured.isEmpty {
+            dictationModel = configured
+        }
+
         return Settings(
             outputDir: outputDir,
             defaultModel: defaultModel,
             transcriptionLanguage: transcriptionLanguage,
-            autoTranscribe: autoTranscribe
+            autoTranscribe: autoTranscribe,
+            dictationEnabled: dictationEnabled,
+            dictationModel: dictationModel
         )
     }
 

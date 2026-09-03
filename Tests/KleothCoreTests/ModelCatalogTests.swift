@@ -13,7 +13,7 @@ import Testing
         "x-ai/grok-4",
         "mistralai/mistral-large",
         "qwen/qwen3.5-max",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.8-flash",
         "google/gemini-3.5-flash",
         "anthropic/claude-haiku-4.5",
         "anthropic/claude-sonnet-4.6",
@@ -37,7 +37,7 @@ import Testing
 
     @Test func keepsAllowedProviders() {
         let result = ModelCatalog.filtered(from: Self.feed)
-        #expect(result.contains("google/gemini-3-flash-preview"))
+        #expect(result.contains("google/gemini-3.8-flash"))
         #expect(result.contains("google/gemini-3.5-flash"))
         #expect(result.contains("anthropic/claude-haiku-4.5"))
         #expect(result.contains("anthropic/claude-sonnet-4.6"))
@@ -99,5 +99,56 @@ import Testing
         // every entry is an allowed provider and the default is first.
         #expect(ModelCatalog.curatedFallback.first == ModelCatalog.defaultModel)
         #expect(ModelCatalog.curatedFallback.allSatisfy { ModelCatalog.isAllowed($0) })
+    }
+
+    // MARK: - Default bump + retired-slug migration (dictation v1, 2026-09-03)
+
+    @Test func defaultModelIsGemini38Flash() {
+        #expect(ModelCatalog.defaultModel == "google/gemini-3.8-flash")
+    }
+
+    @Test func curatedFallbackLeadsWithDefault() {
+        #expect(ModelCatalog.curatedFallback.first == ModelCatalog.defaultModel)
+    }
+
+    @Test func curatedFallbackContainsNoRetiredSlug() {
+        // The offline picker must never offer a slug `migrating` maps away.
+        for slug in ModelCatalog.curatedFallback {
+            #expect(ModelCatalog.retiredModels[slug] == nil, "retired slug in curatedFallback: \(slug)")
+        }
+    }
+
+    @Test func filteredKeepsEveryPinnedModel() {
+        // Two pickers (summary + dictation polish) pin two slugs, neither in
+        // the feed, one from a disallowed provider — both must survive.
+        let pinned = ["z-ai/glm-5", "openai/gpt-4o-mini"]
+        let result = ModelCatalog.filtered(from: Self.feed, keepingAll: pinned)
+        for slug in pinned {
+            #expect(result.contains(slug))
+        }
+        #expect(result.first == ModelCatalog.defaultModel)
+        // Empty pins are ignored, and the wrapper stays equivalent.
+        #expect(ModelCatalog.filtered(from: Self.feed, keepingAll: [""]) == ModelCatalog.filtered(from: Self.feed))
+        #expect(
+            ModelCatalog.filtered(from: Self.feed, keepingAll: ["z-ai/glm-5"])
+                == ModelCatalog.filtered(from: Self.feed, keeping: "z-ai/glm-5")
+        )
+    }
+
+    @Test func migratingMapsRetiredSlugsToDefault() {
+        #expect(ModelCatalog.migrating("google/gemini-3-flash-preview") == ModelCatalog.defaultModel)
+        #expect(ModelCatalog.migrating("openai/gpt-4.1-mini") == ModelCatalog.defaultModel)
+        #expect(ModelCatalog.retiredModels.values.allSatisfy { $0 == ModelCatalog.defaultModel })
+    }
+
+    @Test func migratingPassesUnknownSlugsThrough() {
+        #expect(ModelCatalog.migrating("google/gemini-3.5-flash") == "google/gemini-3.5-flash")
+        #expect(ModelCatalog.migrating(ModelCatalog.defaultModel) == ModelCatalog.defaultModel)
+        #expect(ModelCatalog.migrating("") == "")
+    }
+
+    @Test func summarizerDefaultModelIsCatalogDefault() {
+        let client = OpenRouterClient(apiKey: "test", transport: MockTransport(outcomes: []))
+        #expect(Summarizer(client: client).model == ModelCatalog.defaultModel)
     }
 }

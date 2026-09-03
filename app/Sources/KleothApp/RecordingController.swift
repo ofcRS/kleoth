@@ -1631,32 +1631,14 @@ public final class RecordingController: ObservableObject {
             || fm.fileExists(atPath: dir.appendingPathComponent("combined.m4a").path)
     }
 
+    // The Keychain overlay lives in `AppConfig` so `DictationController` can read
+    // the same merged configuration without depending on this class.
     private static func mergeCredentialsFromKeychain(_ base: Credentials) -> Credentials {
-        var merged = base
-        if let key = Keychain.get(Keychain.Account.elevenLabsKey), !key.isEmpty {
-            merged.elevenLabsKey = key
-        }
-        if let key = Keychain.get(Keychain.Account.openRouterKey), !key.isEmpty {
-            merged.openRouterKey = key
-        }
-        return merged
+        AppConfig.mergeCredentialsFromKeychain(base)
     }
 
     private static func mergeSettingsFromKeychain(_ base: KleothCore.Settings) -> KleothCore.Settings {
-        var merged = base
-        if let model = Keychain.get(Keychain.Account.defaultModel), !model.isEmpty {
-            merged.defaultModel = model
-        }
-        if let lang = Keychain.get(Keychain.Account.transcriptionLanguage), !lang.isEmpty {
-            merged.transcriptionLanguage = lang
-        }
-        if let auto = Keychain.get(Keychain.Account.autoTranscribe), !auto.isEmpty {
-            merged.autoTranscribe = (auto == "true")
-        }
-        if let path = Keychain.get(Keychain.Account.outputDir), !path.isEmpty {
-            merged.outputDir = URL(fileURLWithPath: path, isDirectory: true)
-        }
-        return merged
+        AppConfig.mergeSettingsFromKeychain(base)
     }
 
     private static func isoDate() -> String {

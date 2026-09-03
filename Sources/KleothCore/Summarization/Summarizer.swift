@@ -30,7 +30,7 @@ public struct Summarizer {
     public let client: OpenRouterClient
     public var model: String
 
-    public init(client: OpenRouterClient, model: String = "openai/gpt-4.1-mini") {
+    public init(client: OpenRouterClient, model: String = ModelCatalog.defaultModel) {
         self.client = client
         self.model = model
     }
