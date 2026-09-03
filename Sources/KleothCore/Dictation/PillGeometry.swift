@@ -56,20 +56,88 @@ public struct PillPlacement: Codable, Equatable, Sendable {
 /// corner, and `panelSize` is the whole `NSPanel` — including the transparent
 /// shadow margin the SwiftUI capsule draws inside.
 public enum PillGeometry {
-    /// Minimum gap between the panel rect and the edge of `visibleFrame`. The
+    /// Minimum gap between the panel rect and the edge of the bounds. The
     /// visible capsule sits a further `shadowPadding` inside that.
     public static let edgeMargin: CGFloat = 8
-    /// Default distance from the bottom of `visibleFrame` to the bottom of the
-    /// *capsule* (not the panel) — high enough to clear the Dock.
-    public static let defaultBottomInset: CGFloat = 96
+    /// Default distance from the bottom of the screen to the bottom of the
+    /// *capsule* (not the panel) when the pill is active. Small on purpose: the
+    /// pill lives at the very bottom edge, over the Dock if there is one (the
+    /// reference bar does the same), and rises here out of its tucked resting
+    /// spot. Equals `edgeMargin` + the app's 18 pt shadow padding — the closest
+    /// `clamp` lets the capsule sit to the edge.
+    public static let defaultBottomInset: CGFloat = 26
+
+    /// The screen edge a resting pill tucks into.
+    public enum Edge: Equatable, Sendable {
+        case bottom, top, left, right
+    }
     /// Meter shaping exponent. > 1 so room tone near the −55 dBFS floor stays
     /// visually quiet and speech still swings the bars.
     public static let levelGamma: Double = 1.4
 
+    // MARK: Bounds
+
+    /// The area the *active* pill may occupy: the whole screen minus the menu
+    /// bar. Deliberately NOT `visibleFrame`, which also excludes the Dock — the
+    /// pill sits at the very bottom edge of the display, over the Dock, so it
+    /// can rise straight out of its tucked resting spot. A `visibleFrame` that
+    /// does not fit inside `screenFrame` (garbage) falls back to the full screen.
+    public static func bounds(screenFrame: CGRect, visibleFrame: CGRect) -> CGRect {
+        guard screenFrame.width.isFinite, screenFrame.height.isFinite else { return screenFrame }
+        var top = visibleFrame.maxY
+        if !top.isFinite || top <= screenFrame.minY || top > screenFrame.maxY {
+            top = screenFrame.maxY
+        }
+        return CGRect(
+            x: screenFrame.minX, y: screenFrame.minY,
+            width: screenFrame.width, height: top - screenFrame.minY
+        )
+    }
+
+    // MARK: Resting
+
+    /// The screen edge closest to the center of a panel at `origin`. Ties go
+    /// to the bottom — the default home.
+    public static func nearestEdge(
+        ofPanelAt origin: CGPoint, panelSize: CGSize, in screenFrame: CGRect
+    ) -> Edge {
+        let center = CGPoint(x: origin.x + panelSize.width / 2, y: origin.y + panelSize.height / 2)
+        let distances: [(Edge, CGFloat)] = [
+            (.bottom, abs(center.y - screenFrame.minY)),
+            (.top, abs(screenFrame.maxY - center.y)),
+            (.left, abs(center.x - screenFrame.minX)),
+            (.right, abs(screenFrame.maxX - center.x)),
+        ]
+        var best = distances[0]
+        for candidate in distances.dropFirst() where candidate.1.isFinite && candidate.1 < best.1 {
+            best = candidate
+        }
+        return best.0
+    }
+
+    /// Where the pill rests between dictations: the *active* panel rect slid
+    /// into the nearest screen edge until its center sits exactly on that
+    /// edge. The capsule is centered in the panel, so exactly half of it stays
+    /// on screen — a small tab peeking in from the border, like the reference
+    /// bar. The other coordinate is untouched, so the pill rises (or slides)
+    /// straight back to `activeOrigin` when a dictation starts.
+    public static func restingOrigin(
+        activeOrigin: CGPoint, panelSize: CGSize, in screenFrame: CGRect
+    ) -> CGPoint {
+        var origin = activeOrigin
+        switch nearestEdge(ofPanelAt: activeOrigin, panelSize: panelSize, in: screenFrame) {
+        case .bottom: origin.y = screenFrame.minY - panelSize.height / 2
+        case .top: origin.y = screenFrame.maxY - panelSize.height / 2
+        case .left: origin.x = screenFrame.minX - panelSize.width / 2
+        case .right: origin.x = screenFrame.maxX - panelSize.width / 2
+        }
+        return origin
+    }
+
     // MARK: Placement
 
     /// Bottom-center of `visibleFrame`, with the capsule's bottom edge
-    /// `defaultBottomInset` above the bottom of the screen's visible area.
+    /// `defaultBottomInset` above the bottom of the bounds.
     /// `shadowPadding` is the transparent margin the panel carries around the
     /// capsule, so it is subtracted from the y inset.
     public static func defaultOrigin(

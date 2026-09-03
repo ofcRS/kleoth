@@ -299,6 +299,20 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   nothing); Reduce Motion → static bars/dots. Panel sizes per phase in
   `DictationPillController.panelSize/capsuleHeight`. Hover `.help` + VoiceOver keep the sentences.
   ⚠️ Compile-checked only — the user is the visual reviewer (relaunch to see it).
+- **Pill placement v2 (same day; user: "inactive should be small and half outside the screen, and
+  emerge from there on the hotkey"):** ONE anchor per pill (saved `PillPlacement`, else bottom-center
+  just above the screen's bottom edge — `defaultBottomInset` 96 → **26**, over the Dock like Wispr
+  Flow). Active phases sit centered on the anchor; `.idle` is the anchor slid into the **nearest
+  screen edge** until the panel center is ON the edge (`PillGeometry.restingOrigin` /
+  `nearestEdge`, tested) → exactly half the 68×22 capsule peeks in. A chord animates the frame
+  back to the anchor (`setFrame(_:animated:)`, 0.3 s, slight overshoot); `dismiss()` sinks it back;
+  a fresh show starts tucked and rises. The idle capsule has NO content (anything centered would be
+  cut in half) — a `RestingSheen` gradient breathes over it. Active bounds = `PillGeometry.bounds`
+  (screen frame minus the menu bar, INCLUDING the Dock strip; `visibleFrame` is no longer used for
+  placement), `DictationPanel.constrainFrameRect` returns the frame untouched so AppKit can't nudge
+  the tucked panel back on screen, and `currentDisplayId` tracks the anchored screen because a
+  straddling frame can't be resolved from geometry. Dragging pops the resting pill fully on screen
+  (clamped), the drop becomes the new anchor, and an idle pill tucks back on release. 244 tests.
 - **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
   then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
   the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]

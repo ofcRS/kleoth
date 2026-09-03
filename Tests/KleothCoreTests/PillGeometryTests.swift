@@ -173,6 +173,80 @@ import CoreGraphics
         #expect(PillGeometry.maxPanelWidth(in: offOriginVisible) == offOriginVisible.width - 2 * PillGeometry.edgeMargin)
     }
 
+    @Test func boundsKeepTheDockStripAndDropTheMenuBar() {
+        // Main display: menu bar 25 pt at the top, Dock 70 pt at the bottom.
+        let screen = CGRect(x: 0, y: 0, width: 1600, height: 1000)
+        let visible = CGRect(x: 0, y: 70, width: 1600, height: 905)
+        let bounds = PillGeometry.bounds(screenFrame: screen, visibleFrame: visible)
+        #expect(bounds.minY == 0)                 // over the Dock
+        #expect(bounds.maxY == 975)               // below the menu bar
+        #expect(bounds.minX == 0 && bounds.width == 1600)
+
+        // Off-origin secondary display without a menu bar.
+        let bounds2 = PillGeometry.bounds(screenFrame: offOriginVisible, visibleFrame: offOriginVisible)
+        #expect(bounds2 == offOriginVisible)
+
+        // Garbage visible frames fall back to the whole screen.
+        let empty = PillGeometry.bounds(screenFrame: screen, visibleFrame: .zero)
+        #expect(empty == screen)
+        let nan = PillGeometry.bounds(screenFrame: screen, visibleFrame: CGRect(x: 0, y: CGFloat.nan, width: 1, height: 1))
+        #expect(nan == screen)
+    }
+
+    @Test func defaultActiveSpotSitsJustAboveTheBottomEdge() {
+        // The active pill is meant to emerge from the edge, not float mid-Dock:
+        // the default keeps the capsule within the clamp's reach of the bottom.
+        let origin = PillGeometry.defaultOrigin(
+            panelSize: panelSize, shadowPadding: shadowPadding, in: mainVisible
+        )
+        #expect(origin.y == mainVisible.minY + PillGeometry.edgeMargin)
+    }
+
+    @Test func nearestEdgePicksTheClosestBorderAndTiesGoToTheBottom() {
+        let screen = CGRect(x: 0, y: 0, width: 1600, height: 1000)
+        func edge(_ x: CGFloat, _ y: CGFloat) -> PillGeometry.Edge {
+            PillGeometry.nearestEdge(ofPanelAt: CGPoint(x: x, y: y), panelSize: panelSize, in: screen)
+        }
+        #expect(edge(680, 8) == .bottom)          // default spot
+        #expect(edge(680, 930) == .top)
+        #expect(edge(8, 470) == .left)
+        #expect(edge(1352, 470) == .right)
+        // Dead center: every edge is far; bottom wins the tie-break.
+        #expect(edge(680, 470) == .bottom)
+        // An exact tie between bottom and left resolves to bottom.
+        #expect(edge(100 - panelSize.width / 2, 100 - panelSize.height / 2) == .bottom)
+    }
+
+    @Test func restingOriginTucksHalfThePanelPastTheEdge() {
+        let screen = CGRect(x: -1920, y: -300, width: 1920, height: 1080)
+        // Parked near the bottom → slides down until the panel center is ON the edge.
+        let bottom = PillGeometry.restingOrigin(
+            activeOrigin: CGPoint(x: -1000, y: screen.minY + 8), panelSize: panelSize, in: screen
+        )
+        #expect(bottom.x == -1000)
+        #expect(bottom.y == screen.minY - panelSize.height / 2)
+        let bottomRect = CGRect(origin: bottom, size: panelSize)
+        #expect(abs(bottomRect.midY - screen.minY) < 0.001)
+        #expect(bottomRect.intersection(screen).height == panelSize.height / 2)
+
+        // Near the right edge → slides right, y untouched.
+        let right = PillGeometry.restingOrigin(
+            activeOrigin: CGPoint(x: screen.maxX - panelSize.width - 8, y: 200), panelSize: panelSize, in: screen
+        )
+        #expect(right.y == 200)
+        #expect(right.x == screen.maxX - panelSize.width / 2)
+
+        // Top and left, for completeness.
+        let top = PillGeometry.restingOrigin(
+            activeOrigin: CGPoint(x: -1000, y: screen.maxY - panelSize.height - 8), panelSize: panelSize, in: screen
+        )
+        #expect(top.y == screen.maxY - panelSize.height / 2)
+        let left = PillGeometry.restingOrigin(
+            activeOrigin: CGPoint(x: screen.minX + 8, y: 200), panelSize: panelSize, in: screen
+        )
+        #expect(left.x == screen.minX - panelSize.width / 2)
+    }
+
     @Test func smoothLevelAttackFasterThanRelease() {
         let rising = PillGeometry.smoothLevel(previous: 0, target: 1)
         let falling = PillGeometry.smoothLevel(previous: 1, target: 0)

@@ -5,6 +5,14 @@ import KleothCore
 /// Owns the dictation pill's panel: when it is on screen, where it sits, how it
 /// resizes between phases, and when it hides itself (design §3.19, §5.6).
 ///
+/// Placement model (reworked 2026-09-03 after the reference bar): the pill has
+/// ONE anchor — the saved placement, else bottom-center of the screen under the
+/// mouse, just above its bottom edge. Every active phase sits on that anchor
+/// (centered on it, so phase-to-phase size changes grow in place). The resting
+/// `.idle` capsule is the same anchor slid into the nearest screen edge until
+/// half of it is off-screen (`PillGeometry.restingOrigin`), and a chord makes
+/// it rise back out to the anchor. Dragging moves the anchor.
+///
 /// It is the `DictationPillPresenting` the controller talks to; all it exposes
 /// upward is `show/setLevel/dismiss/resetPosition` plus the two callbacks. All
 /// pure math lives in `PillGeometry` (KleothCore) so it can be unit-tested — the
@@ -34,17 +42,21 @@ final class DictationPillController: DictationPillPresenting {
     /// `setResting(true)`: the compact capsule stays up between sessions and
     /// `dismiss()` collapses to it instead of hiding the panel.
     private var restingVisible = false
+    /// `NSScreenNumber` of the display the panel was last anchored on. A tucked
+    /// panel's frame straddles a screen edge, so deriving its screen from the
+    /// frame is unreliable; this is the source of truth while it is up.
+    private var currentDisplayId: UInt32?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        // Re-clamp when a display is added, removed, or resized so the pill can
+        // Re-anchor when a display is added, removed, or resized so the pill can
         // never be stranded off-screen while it is up.
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.clampToCurrentScreen() }
+            MainActor.assumeIsolated { self?.reanchorAfterScreenChange() }
         }
     }
 
@@ -63,23 +75,30 @@ final class DictationPillController: DictationPillPresenting {
         // "Already up" means visible AND presented — a panel caught mid fade-out
         // is re-anchored and springs in again.
         let alreadyUp = panel.isVisible && model.isPresented
+        let screen = (alreadyUp ? panelScreen() : nil) ?? anchorScreen()
+        currentDisplayId = screen?.kleothDisplayId
         // Width is capped to the screen the pill will sit on, so an unbounded
         // message truncates inside the capsule instead of pushing the ✕ off
         // the right edge (`PillGeometry.maxPanelWidth`).
-        let screen = (alreadyUp ? self.screen(containing: panel.frame) : nil) ?? anchorScreen()
-        let size = Self.panelSize(for: state, in: screen?.visibleFrame)
+        let size = Self.panelSize(for: state, in: screen.map(Self.bounds))
+        let target = CGRect(origin: origin(for: state, panelSize: size, on: screen), size: size)
 
         model.apply(phase: state)
 
         if alreadyUp {
-            // Phase swap on a visible pill: grow/shrink around the current
-            // center. `animator().setFrame` (not `setFrame(animate:)`, which
-            // blocks the main thread with a synchronous run loop).
-            setFrame(size: size, animated: !Self.reduceMotion)
+            // Resting → active rises out of the edge; active → resting sinks
+            // back; phase swaps grow in place. One animated frame change.
+            setFrame(target, animated: !Self.reduceMotion)
         } else {
-            panel.setFrame(CGRect(origin: anchorOrigin(panelSize: size), size: size), display: false)
+            // A fresh show starts from the tucked spot and emerges, so even the
+            // first pill of the day comes in from the edge rather than popping.
+            let tucked = CGRect(origin: restingOrigin(activeOrigin: target.origin, panelSize: size, on: screen), size: size)
+            panel.setFrame(tucked, display: false)
             panel.orderFrontRegardless()
             present()
+            if target != tucked {
+                setFrame(target, animated: !Self.reduceMotion)
+            }
         }
 
         announce(state)
@@ -144,16 +163,15 @@ final class DictationPillController: DictationPillPresenting {
     }
 
     /// Forgets the saved placement and, if the pill is up, walks it back to the
-    /// default bottom-center spot. Settings → "Reset pill position".
+    /// default bottom-center spot (tucked, if it is resting). Settings →
+    /// "Reset pill position".
     func resetPosition() {
         defaults.removeObject(forKey: Self.placementDefaultsKey)
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
-        let origin = PillGeometry.defaultOrigin(
-            panelSize: panel.frame.size,
-            shadowPadding: Self.shadowPadding,
-            in: screen.visibleFrame
-        )
-        move(panel, to: origin, animated: !Self.reduceMotion)
+        currentDisplayId = screen.kleothDisplayId
+        let size = panel.frame.size
+        let origin = origin(for: model.phase, panelSize: size, on: screen)
+        setFrame(CGRect(origin: origin, size: size), animated: !Self.reduceMotion)
     }
 
     // MARK: View-facing API (DictationPillView)
@@ -171,26 +189,34 @@ final class DictationPillController: DictationPillPresenting {
             panel.setFrameOrigin(origin)
             return
         }
+        // A resting pill pops fully on screen while it is being dragged (the
+        // clamp keeps the whole capsule visible) and tucks back on release.
         panel.setFrameOrigin(
-            PillGeometry.clamp(origin, panelSize: panel.frame.size, in: screen.visibleFrame)
+            PillGeometry.clamp(origin, panelSize: panel.frame.size, in: Self.bounds(of: screen))
         )
     }
 
     /// Persists where the user dropped the pill, as fractions of the screen it
-    /// landed on (see `PillPlacement`).
+    /// landed on (see `PillPlacement`). The drop spot is the new *anchor*; a
+    /// resting pill then slides back into the nearest edge from there.
     func commitDraggedPlacement() {
         guard let panel else { return }
         let frame = panel.frame
         guard let screen = screen(containing: frame) ?? defaultScreen() else { return }
+        currentDisplayId = screen.kleothDisplayId
         let placement = PillGeometry.placement(
             origin: frame.origin,
             panelSize: frame.size,
-            in: screen.visibleFrame,
+            in: Self.bounds(of: screen),
             displayId: screen.kleothDisplayId ?? 0,
             displayName: screen.localizedName
         )
-        guard let data = try? JSONEncoder().encode(placement) else { return }
-        defaults.set(data, forKey: Self.placementDefaultsKey)
+        if let data = try? JSONEncoder().encode(placement) {
+            defaults.set(data, forKey: Self.placementDefaultsKey)
+        }
+        guard model.phase == .idle else { return }
+        let tucked = restingOrigin(activeOrigin: frame.origin, panelSize: frame.size, on: screen)
+        setFrame(CGRect(origin: tucked, size: frame.size), animated: !Self.reduceMotion)
     }
 
     /// The pill's action button. The handler lives in `DictationController`;
@@ -254,20 +280,17 @@ final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    private func setFrame(size: CGSize, animated: Bool) {
-        guard let panel else { return }
-        let current = panel.frame
-        let center = CGPoint(x: current.midX, y: current.midY)
-        var origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
-        if let screen = screen(containing: current) ?? defaultScreen() {
-            origin = PillGeometry.clamp(origin, panelSize: size, in: screen.visibleFrame)
-        }
-        let target = CGRect(origin: origin, size: size)
-        guard target != current else { return }
+    /// One animated frame change for every move the pill makes — rising out of
+    /// the edge, sinking back, growing between phases, walking home after a
+    /// reset. `animator().setFrame` (not `setFrame(animate:)`, which blocks the
+    /// main thread with a synchronous run loop). The curve overshoots a touch
+    /// so the rise reads as a spring, not a slide.
+    private func setFrame(_ target: CGRect, animated: Bool) {
+        guard let panel, target != panel.frame else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
+                context.duration = 0.3
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 1.1, 0.3, 1.0)
                 panel.animator().setFrame(target, display: true)
             }
         } else {
@@ -275,48 +298,64 @@ final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    private func move(_ panel: DictationPanel, to origin: CGPoint, animated: Bool) {
-        let target = CGRect(origin: origin, size: panel.frame.size)
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
-            panel.setFrame(target, display: true)
-        }
-    }
-
-    private func clampToCurrentScreen() {
+    /// Displays changed: put the pill back on its anchor (tucked if resting)
+    /// on whatever screen still exists, without animation.
+    private func reanchorAfterScreenChange() {
         guard let panel, panel.isVisible else { return }
-        guard let screen = screen(containing: panel.frame) ?? defaultScreen() else { return }
-        let clamped = PillGeometry.clamp(
-            panel.frame.origin, panelSize: panel.frame.size, in: screen.visibleFrame
-        )
-        if clamped != panel.frame.origin {
-            panel.setFrameOrigin(clamped)
-        }
+        guard let screen = panelScreen() ?? anchorScreen() else { return }
+        currentDisplayId = screen.kleothDisplayId
+        let size = Self.panelSize(for: model.phase, in: Self.bounds(of: screen))
+        let target = CGRect(origin: origin(for: model.phase, panelSize: size, on: screen), size: size)
+        setFrame(target, animated: false)
     }
 
     // MARK: Placement
 
-    /// Where a freshly shown pill goes: the saved placement if its display is
-    /// still around, else bottom-center of the screen **under the mouse**. For
-    /// an `.accessory` app with no key window `NSScreen.main` is whatever screen
-    /// last had one — unreliable — while the mouse is where the user is looking.
-    private func anchorOrigin(panelSize size: CGSize) -> CGPoint {
-        if let placement = savedPlacement(), let screen = screen(for: placement) {
-            return PillGeometry.origin(for: placement, panelSize: size, in: screen.visibleFrame)
+    /// The anchor: the saved placement if its display is still around, else
+    /// bottom-center of the screen **under the mouse**. For an `.accessory` app
+    /// with no key window `NSScreen.main` is whatever screen last had one —
+    /// unreliable — while the mouse is where the user is looking.
+    private func activeOrigin(panelSize size: CGSize, on screen: NSScreen?) -> CGPoint {
+        guard let screen else { return .zero }
+        let bounds = Self.bounds(of: screen)
+        if let placement = savedPlacement(), self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
+            return PillGeometry.origin(for: placement, panelSize: size, in: bounds)
         }
-        guard let screen = defaultScreen() else { return .zero }
-        return PillGeometry.defaultOrigin(
-            panelSize: size, shadowPadding: Self.shadowPadding, in: screen.visibleFrame
-        )
+        return PillGeometry.defaultOrigin(panelSize: size, shadowPadding: Self.shadowPadding, in: bounds)
     }
 
-    /// The screen `anchorOrigin` will pick — the saved placement's display if
-    /// it is still around, else the one under the mouse.
+    /// The anchor slid into the nearest edge of `screen` until half the panel
+    /// is off-screen — where `.idle` lives.
+    private func restingOrigin(activeOrigin: CGPoint, panelSize size: CGSize, on screen: NSScreen?) -> CGPoint {
+        guard let screen else { return activeOrigin }
+        return PillGeometry.restingOrigin(activeOrigin: activeOrigin, panelSize: size, in: screen.frame)
+    }
+
+    /// Where a phase sits: active phases on the anchor, `.idle` tucked.
+    private func origin(for state: DictationPillState, panelSize size: CGSize, on screen: NSScreen?) -> CGPoint {
+        let active = activeOrigin(panelSize: size, on: screen)
+        guard state == .idle else { return active }
+        return restingOrigin(activeOrigin: active, panelSize: size, on: screen)
+    }
+
+    /// The area an active pill may occupy on `screen` — the full display minus
+    /// the menu bar (`PillGeometry.bounds`), so it can sit over the Dock.
+    private static func bounds(of screen: NSScreen) -> CGRect {
+        PillGeometry.bounds(screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
+    }
+
+    /// The screen the visible panel belongs to: the one it was anchored on if
+    /// it still exists, else whichever screen holds most of its frame.
+    private func panelScreen() -> NSScreen? {
+        if let id = currentDisplayId, let screen = NSScreen.screens.first(where: { $0.kleothDisplayId == id }) {
+            return screen
+        }
+        guard let panel else { return nil }
+        return screen(containing: panel.frame)
+    }
+
+    /// The screen `activeOrigin` will anchor on — the saved placement's display
+    /// if it is still around, else the one under the mouse.
     private func anchorScreen() -> NSScreen? {
         if let placement = savedPlacement(), let screen = screen(for: placement) {
             return screen
@@ -331,15 +370,16 @@ final class DictationPillController: DictationPillPresenting {
     }
 
     /// Resolve the saved display: by `NSScreenNumber` first, then by name plus a
-    /// matching `visibleFrame` size (ids change on replug).
+    /// matching bounds size (ids change on replug).
     private func screen(for placement: PillPlacement) -> NSScreen? {
         if let byId = NSScreen.screens.first(where: { $0.kleothDisplayId == placement.displayId }) {
             return byId
         }
         return NSScreen.screens.first {
-            $0.localizedName == placement.displayName
-                && abs($0.visibleFrame.width - CGFloat(placement.visibleWidth)) < 1
-                && abs($0.visibleFrame.height - CGFloat(placement.visibleHeight)) < 1
+            let bounds = Self.bounds(of: $0)
+            return $0.localizedName == placement.displayName
+                && abs(bounds.width - CGFloat(placement.visibleWidth)) < 1
+                && abs(bounds.height - CGFloat(placement.visibleHeight)) < 1
         }
     }
 
@@ -362,11 +402,11 @@ final class DictationPillController: DictationPillPresenting {
 
     private static let fadeOutDuration: Double = 0.18
     /// Capsule heights per phase; the panel adds `shadowPadding` above and
-    /// below. Resting is a sliver, motion phases a short bar, text phases the
-    /// old label height.
+    /// below. Resting is a sliver (and only half of it is on screen), motion
+    /// phases a short bar, text phases the old label height.
     static func capsuleHeight(for state: DictationPillState) -> CGFloat {
         switch state {
-        case .idle: return 24
+        case .idle: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
         case .warning, .failed: return 38
         }
@@ -385,7 +425,7 @@ final class DictationPillController: DictationPillPresenting {
         var width: CGFloat
         switch state {
         case .hidden, .idle:
-            width = PillStyle.dotsWidth + 2 * PillStyle.compactPadding
+            width = PillStyle.restingWidth
         case .listening(let handsFree):
             width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
                 + (handsFree ? 6 + KleothMetrics.spacingS : 0)

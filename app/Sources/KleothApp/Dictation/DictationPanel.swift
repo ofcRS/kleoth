@@ -69,6 +69,14 @@ final class DictationPanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    /// The resting pill is parked HALF OUTSIDE the screen (its center on the
+    /// edge — `PillGeometry.restingOrigin`). AppKit's default nudges frames back
+    /// on screen; the controller is the only thing that decides where this
+    /// panel goes, so the frame passes through untouched.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
 }
 
 /// Hosting view for the pill's SwiftUI content.

@@ -8,7 +8,10 @@ import KleothCore
 /// a Wispr-Flow-style bar).
 ///
 /// Phases:
-/// - `.idle` — compact resting capsule, five faint dots breathing slowly.
+/// - `.idle` — a small resting capsule parked half off the nearest screen edge
+///   (the controller places it; `PillGeometry.restingOrigin`), breathing a
+///   soft sheen. No content: with half of it off-screen anything centered in
+///   the capsule would be cut in two, so the shape itself is the indicator.
 /// - `.listening` — expands into a live 14-bar waveform driven by the mic level
 ///   (an accent dot marks hands-free mode).
 /// - `.transcribing` / `.polishing` — the bars carry a travelling wave
@@ -63,6 +66,12 @@ struct DictationPillView: View {
             Capsule(style: .continuous)
                 .strokeBorder(PillStyle.rim, lineWidth: KleothMetrics.hairline)
         )
+        .overlay {
+            if model.phase == .idle {
+                RestingSheen(reduceMotion: reduceMotion)
+                    .transition(.opacity)
+            }
+        }
         // Resting is quieter than active: lower opacity so it reads as an
         // indicator, not a window.
         .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
@@ -76,8 +85,9 @@ struct DictationPillView: View {
         case .hidden:
             EmptyView()
         case .idle:
-            RestingDots(reduceMotion: reduceMotion)
-                .transition(.opacity.combined(with: .scale(scale: 0.6)))
+            Color.clear
+                .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
+                .transition(.opacity)
         case .listening(let handsFree):
             if handsFree {
                 Circle()
@@ -190,7 +200,6 @@ enum PillStyle {
     static let surface = Color(white: 0.09).opacity(0.86)
     static let rim = Color.white.opacity(0.12)
     static let ink = Color.white.opacity(0.92)
-    static let restingInk = Color.white.opacity(0.55)
     static let restingOpacity: Double = 0.9
     static let compactPadding: CGFloat = 14
 
@@ -204,44 +213,37 @@ enum PillStyle {
         CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
     }
 
-    // Resting dots.
-    static let dotCount = 5
-    static let dotSize: CGFloat = 3
-    static let dotSpacing: CGFloat = 4
-    static var dotsWidth: CGFloat {
-        CGFloat(dotCount) * dotSize + CGFloat(dotCount - 1) * dotSpacing
-    }
+    // Resting capsule. Only half of it is on screen (`PillGeometry.restingOrigin`),
+    // so these are the full shape's dimensions, not what the user sees.
+    static let restingWidth: CGFloat = 68
+    static let restingHeight: CGFloat = 22
 }
 
-// MARK: - Resting dots
+// MARK: - Resting sheen
 
-/// Five faint dots that breathe in a slow, staggered ripple — the "I'm here"
-/// state. Static under Reduce Motion.
-private struct RestingDots: View {
+/// A slow, soft light that washes over the resting capsule — the "I'm here"
+/// breath of a pill that is mostly off-screen. Static under Reduce Motion.
+private struct RestingSheen: View {
     let reduceMotion: Bool
     @State private var breathing = false
 
     var body: some View {
-        HStack(spacing: PillStyle.dotSpacing) {
-            ForEach(0..<PillStyle.dotCount, id: \.self) { index in
-                Circle()
-                    .fill(PillStyle.restingInk)
-                    .frame(width: PillStyle.dotSize, height: PillStyle.dotSize)
-                    .scaleEffect(breathing ? 1.0 : 0.72)
-                    .opacity(breathing ? 1.0 : 0.55)
-                    .animation(
-                        reduceMotion ? nil :
-                            .easeInOut(duration: 1.4)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(index) * 0.16),
-                        value: breathing
-                    )
-            }
-        }
-        .frame(width: PillStyle.dotsWidth, height: PillStyle.barMaxHeight)
-        .onAppear { breathing = true }
-        .onDisappear { breathing = false }
-        .accessibilityHidden(true)
+        Capsule(style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            .opacity(reduceMotion ? 0.5 : (breathing ? 1.0 : 0.15))
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 1.9).repeatForever(autoreverses: true),
+                value: breathing
+            )
+            .onAppear { breathing = true }
+            .onDisappear { breathing = false }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
