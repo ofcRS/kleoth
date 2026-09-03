@@ -125,6 +125,66 @@ import Foundation
         #expect(body["max_tokens"] as? Int == 32)
     }
 
+    @Test func relaxedRetryFiresForTemperatureOnJSONObject() async throws {
+        // A 404 on a body that was already `json_object` still retries when
+        // there is a parameter left to drop — the retry is about routing
+        // parameters, not only the strict schema.
+        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        let transport = MockTransport(outcomes: [
+            .success(Data("{\"error\":\"no endpoints\"}".utf8), MockTransport.httpResponse(url: url, statusCode: 404)),
+            .success(Data(Self.envelope(#"{"ok":true}"#).utf8), MockTransport.httpResponse(url: url, statusCode: 200)),
+        ])
+        let result = try await OpenRouterClient(apiKey: "k", transport: transport).complete(
+            messages: [ChatMessage(role: "user", content: "hi")],
+            model: "google/gemini-3.8-flash",
+            responseFormat: .jsonObject,
+            maxTokens: 32,
+            temperature: 0.2,
+            reasoning: .low
+        )
+        #expect(result.content == #"{"ok":true}"#)
+        #expect(transport.callCount == 2)
+
+        let firstData = try #require(transport.recordedRequests[0].httpBody)
+        let first = try #require(try JSONSerialization.jsonObject(with: firstData) as? [String: Any])
+        #expect(first["temperature"] as? Double == 0.2)
+        #expect(first["reasoning"] != nil)
+        let secondData = try #require(transport.recordedRequests[1].httpBody)
+        let second = try #require(try JSONSerialization.jsonObject(with: secondData) as? [String: Any])
+        #expect(second["temperature"] == nil)
+        #expect(second["reasoning"] == nil)
+        // The format is left alone — it was not the strict schema.
+        #expect((second["response_format"] as? [String: Any])?["type"] as? String == "json_object")
+    }
+
+    @Test func noRetryWhenNothingIsLeftToRelax() async throws {
+        // `.jsonObject` with no temperature/reasoning: the retry body would be
+        // identical, so a 404 is surfaced after ONE call.
+        let transport = MockTransport(json: "{\"error\":\"no endpoints\"}", statusCode: 404)
+        await #expect(throws: OpenRouterError.self) {
+            _ = try await OpenRouterClient(apiKey: "k", transport: transport).complete(
+                messages: [ChatMessage(role: "user", content: "hi")],
+                model: "m",
+                responseFormat: .jsonObject,
+                maxTokens: 32
+            )
+        }
+        #expect(transport.callCount == 1)
+
+        // A 500 never retries, even with everything to drop.
+        let serverError = MockTransport(json: "{\"error\":\"boom\"}", statusCode: 500)
+        await #expect(throws: OpenRouterError.self) {
+            _ = try await OpenRouterClient(apiKey: "k", transport: serverError).complete(
+                messages: [ChatMessage(role: "user", content: "hi")],
+                model: "m",
+                responseFormat: .jsonSchema(name: "t", schemaJSON: "{\"type\":\"object\"}"),
+                maxTokens: 32,
+                temperature: 0.2
+            )
+        }
+        #expect(serverError.callCount == 1)
+    }
+
     @Test func openRouterClientIsSendable() {
         let client = OpenRouterClient(apiKey: "k", transport: MockTransport(json: "{}"))
         // Compile-time proof of the conformance `DictationPolisher: Sendable`

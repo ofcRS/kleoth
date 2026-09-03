@@ -101,15 +101,75 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
         #expect(transport.callCount == 1)
     }
 
+    @Test func postResponseFallbacksCarryTheBilledCost() async {
+        // These three fallbacks are decided after a successful, billed response,
+        // so the day file must not record `polish_cost: 0` for them.
+        let truncated = MockTransport(
+            json: Self.envelope(content: #"{"text":"Ship the fix","language":"en"}"#, cost: 0.0031, finishReason: "length")
+        )
+        let a = await Self.polisher(truncated).polish(rawText: "ship the fix", context: DictationContext())
+        #expect(a == .raw(text: "ship the fix", reason: "Polish was cut off — pasted the raw transcript.", cost: 0.0031))
+        #expect(a.cost == 0.0031)
+        #expect(a.usedRawFallback)
+
+        let prose = MockTransport(json: Self.envelope(content: "Sure! Here is your cleaned text.", cost: 0.0002))
+        let b = await Self.polisher(prose).polish(rawText: "hello there", context: DictationContext())
+        #expect(b.usedRawFallback)
+        #expect(b.cost == 0.0002)
+
+        let translated = MockTransport(
+            json: Self.envelope(content: #"{"text":"We need to deploy this today.","language":"en"}"#, cost: 0.0005)
+        )
+        let c = await Self.polisher(translated).polish(
+            rawText: "нам нужно задеплоить это сегодня",
+            context: DictationContext(languageCode: "rus")
+        )
+        #expect(c.usedRawFallback)
+        #expect(c.cost == 0.0005)
+
+        // Nothing was billed when the request never completed.
+        let failed = MockTransport(json: "{\"error\":\"boom\"}", statusCode: 500)
+        let d = await Self.polisher(failed).polish(rawText: "hello there", context: DictationContext())
+        #expect(d.cost == 0)
+        #expect(DictationPolishResult.raw(text: "x", reason: "y") == .raw(text: "x", reason: "y", cost: 0))
+    }
+
     @Test func http500FallsBackToRaw() async {
         let transport = MockTransport(json: "{\"error\":\"boom\"}", statusCode: 500)
         let result = await Self.polisher(transport).polish(rawText: "hello there", context: DictationContext())
 
         #expect(result.usedRawFallback)
         #expect(result.text == "hello there")
-        #expect(result.fallbackReason?.contains("Polish failed") == true)
-        // A 500 is not the strict-schema symptom, so there is no json_object retry.
+        // Status only — the provider body never reaches the pill / day file.
+        #expect(result == .raw(text: "hello there", reason: "Polish failed (OpenRouter returned HTTP 500) — pasted the raw transcript."))
+        // A 500 is not a parameter-routing symptom, so there is no relaxed retry.
         #expect(transport.callCount == 1)
+    }
+
+    @Test func failureReasonIsBoundedEvenForLongProviderBodies() async {
+        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        // A ~550-char guardrail body like the live `zdr-violation-by-account` one, on both attempts.
+        let body = "{\"error\":{\"message\":\"0 endpoints out of 1 requested are available matching your guardrail restrictions and data policy. "
+            + String(repeating: "We removed them for the following reasons. ", count: 10) + "\",\"code\":404}}"
+        #expect(body.count > 500)
+        let transport = MockTransport(outcomes: [
+            .success(Data(body.utf8), MockTransport.httpResponse(url: url, statusCode: 404)),
+            .success(Data(body.utf8), MockTransport.httpResponse(url: url, statusCode: 404)),
+        ])
+
+        let result = await Self.polisher(transport).polish(rawText: "hello there", context: DictationContext())
+
+        #expect(result == .raw(text: "hello there", reason: "Polish failed (OpenRouter returned HTTP 404) — pasted the raw transcript."))
+        #expect(transport.callCount == 2)
+
+        // Non-HTTP errors are clipped rather than dropped.
+        struct Chatty: LocalizedError {
+            var errorDescription: String? { String(repeating: "x", count: 400) }
+        }
+        let clipped = DictationPolisher.shortDescription(of: Chatty())
+        #expect(clipped.count == DictationPolisher.maxFailureDetailLength + 1)
+        #expect(clipped.hasSuffix("…"))
+        #expect(DictationPolisher.shortDescription(of: OpenRouterError.noContent) == "OpenRouter returned an empty response.")
     }
 
     @Test func proseContentFallsBackToRaw() async {
@@ -154,7 +214,7 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
 
     // MARK: - Request shape
 
-    @Test func http400OnJSONSchemaRetriesAsJSONObject() async throws {
+    @Test func http400OnJSONSchemaRetriesRelaxed() async throws {
         let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
         let payload = #"{"text":"Ship it.","language":"en"}"#
         let transport = MockTransport(outcomes: [
@@ -173,12 +233,42 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
         let first = try Self.requestBody(transport, at: 0)
         let firstFormat = try #require(first["response_format"] as? [String: Any])
         #expect(firstFormat["type"] as? String == "json_schema")
+        #expect(first["temperature"] as? Double == 0.2)
+        #expect(first["reasoning"] != nil)
 
+        // Under `require_parameters: true` every parameter narrows routing, so
+        // the retry drops all of them — not just the strict schema. (Live:
+        // google/gemini-3.8-flash 404s on `temperature` alone on this account.)
         let second = try Self.requestBody(transport, at: 1)
         let secondFormat = try #require(second["response_format"] as? [String: Any])
         #expect(secondFormat["type"] as? String == "json_object")
-        // The retry keeps the temperature (it is not a schema-support symptom).
-        #expect(second["temperature"] as? Double == 0.2)
+        #expect(second["temperature"] == nil)
+        #expect(second["reasoning"] == nil)
+        let provider = try #require(second["provider"] as? [String: Any])
+        #expect(provider["require_parameters"] as? Bool == true)
+    }
+
+    @Test func routing404IsRecoveredByTheRelaxedRetry() async throws {
+        // The exact live failure: the first body 404s with the ZDR guardrail
+        // message; the relaxed body succeeds. The user must get polished text.
+        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        let guardrail = "{\"error\":{\"message\":\"0 endpoints out of 1 requested are available matching your guardrail restrictions and data policy.\",\"code\":404,\"metadata\":{\"reason\":\"zdr-violation-by-account\"}}}"
+        let transport = MockTransport(outcomes: [
+            .success(Data(guardrail.utf8), MockTransport.httpResponse(url: url, statusCode: 404)),
+            .success(Data(Self.envelope(content: #"{"text":"Ship it.","language":"en"}"#, cost: 0.0001).utf8),
+                     MockTransport.httpResponse(url: url, statusCode: 200)),
+        ])
+        var polisher = Self.polisher(transport)
+        polisher.model = "google/gemini-3.8-flash"
+
+        let result = await polisher.polish(rawText: "uh ship it", context: DictationContext(languageCode: "eng"))
+
+        #expect(result == .polished(text: "Ship it.", language: "en", cost: 0.0001))
+        #expect(transport.callCount == 2)
+        let second = try Self.requestBody(transport, at: 1)
+        #expect(second["model"] as? String == "google/gemini-3.8-flash")
+        #expect(second["temperature"] == nil)
+        #expect(second["reasoning"] == nil)
     }
 
     @Test func requestBodyCarriesTemperatureAndDictationModel() async throws {

@@ -148,9 +148,9 @@ struct DictateMain {
         case .polished(let text, let language, let cost):
             print("polished  : \(text)")
             print("polish    : ok in \(format(polishSeconds)) s, model language \(language ?? "<nil>"), $\(String(format: "%.6f", cost))")
-        case .raw(_, let reason):
+        case .raw(_, let reason, let cost):
             print("polished  : <raw fallback>")
-            print("polish    : FELL BACK after \(format(polishSeconds)) s — \(reason)")
+            print("polish    : FELL BACK after \(format(polishSeconds)) s — \(reason) (billed $\(String(format: "%.6f", cost)))")
         }
     }
 

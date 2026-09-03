@@ -22,10 +22,14 @@ public struct ModelCatalog: Sendable {
     /// picker and guaranteed present.
     ///
     /// `z-ai/glm-5.3-flash` (verified live 2026-09-03: 200 with strict
-    /// `json_schema`, Russian preserved) rather than a `google/*` model because
-    /// this account's OpenRouter Zero-Data-Retention guardrail 404s every
-    /// Google endpoint (`zdr-violation-by-account`) — see CLAUDE.md. Gemini
-    /// stays selectable in ``curatedFallback`` for accounts without that guardrail.
+    /// `json_schema`, Russian preserved) rather than `google/gemini-3.8-flash`,
+    /// which this account's OpenRouter Zero-Data-Retention guardrail 404s
+    /// (`zdr-violation-by-account`) whenever the body carries `temperature`
+    /// under `require_parameters: true` — the dictation polish call's first
+    /// attempt. Not every Google endpoint: without `temperature` (the
+    /// Summarizer's body) 3.8-flash returns 200, and `gemini-3.5-flash` /
+    /// `gemini-3.1-pro-preview` accept schema + temperature (measured
+    /// 2026-09-03) — see CLAUDE.md. Gemini stays selectable in ``curatedFallback``.
     public static let defaultModel = "z-ai/glm-5.3-flash"
 
     /// Slugs that no longer work (retired by the provider, or 404'd by this

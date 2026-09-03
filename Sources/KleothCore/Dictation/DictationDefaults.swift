@@ -4,8 +4,13 @@ import Foundation
 /// redefine these numbers.
 public enum DictationDefaults {
     /// Verified live 2026-09-03: 200 with strict `json_schema` + `temperature`, Russian preserved,
-    /// fillers removed. Deliberately NOT `google/*` — this account's OpenRouter Zero-Data-Retention
-    /// guardrail 404s every Google endpoint (`zdr-violation-by-account`); see CLAUDE.md.
+    /// fillers removed. Chosen over `google/gemini-3.8-flash` because, on this account, that slug
+    /// 404s (`zdr-violation-by-account`) whenever the body carries `temperature` under
+    /// `require_parameters: true` — the polish call's first attempt — so every dictation on it
+    /// would pay an extra round trip for `OpenRouterClient.complete`'s relaxed retry. It is NOT
+    /// "every Google endpoint": the same body without `temperature` returns 200, and
+    /// `gemini-3.5-flash` / `gemini-3.1-pro-preview` accept schema + temperature (measured
+    /// 2026-09-03). See CLAUDE.md.
     public static let polishModel = "z-ai/glm-5.3-flash"
     /// Models whose polish request carries `reasoning: {effort: "low"}`
     /// (`OpenRouterReasoning.low`). The cap is model-specific, NOT a general
@@ -13,7 +18,8 @@ public enum DictationDefaults {
     /// on `z-ai/glm-5.3-flash` it drops ~100–360 reasoning tokens to 0 and
     /// mean latency 8.4 s → 3.4 s with identical output; on
     /// `meta-llama/llama-3.3-70b-instruct` the same body **404s** ("No
-    /// endpoints found that can handle the requested parameters"); on
+    /// endpoints found that can handle the requested parameters" — the client's
+    /// relaxed retry recovers, at the price of a round trip); on
     /// `deepseek/deepseek-v4-flash` it *enables* reasoning (0 → 216 tokens,
     /// 4.9 s → 9.5 s). Add a slug here only after measuring it.
     public static let reasoningCappedModels: Set<String> = ["z-ai/glm-5.3-flash"]

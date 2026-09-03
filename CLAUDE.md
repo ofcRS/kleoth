@@ -178,11 +178,16 @@ This account's privacy settings apply TWO guardrails, and `require_parameters: t
 into **404s**:
 1. **No-train:** `"No endpoints available matching your guardrail restrictions and data policy"`
    for `openai/*`, `mistralai/*`, `qwen/qwen3.x-max`, `x-ai/grok-*`.
-2. **Zero Data Retention (since 2026-09-03):** every `google/*` slug (3.8 and 3.7 flash, with
-   `json_schema` AND the `json_object` fallback — the fallback does not help) returns **404
-   `zdr-violation-by-account`** ("ZDR violation (account settings): 1 endpoint excluded") because
-   Google's endpoints don't qualify as ZDR. Verified three times (T4 probe, the `dictate` probe, and
-   the default-switch pass). To use Gemini again, relax the ZDR guardrail at
+2. **Zero Data Retention (since 2026-09-03):** `google/gemini-3.8-flash` returns **404
+   `zdr-violation-by-account`** ("ZDR violation (account settings): 1 endpoint excluded") whenever
+   the body carries **`temperature`** under `require_parameters` — with `json_schema` AND
+   `json_object` alike (the parameter forces routing onto the one excluded endpoint). ⚠️ It is NOT
+   "every Google endpoint" (an earlier note said so — wrong): the same body without `temperature`
+   (= the Summarizer's) returns 200 on 3.8-flash, and `gemini-3.5-flash` / `gemini-3.1-pro-preview`
+   return 200 with schema + temperature (re-probed 2026-09-03). Since the root fixer pass,
+   `OpenRouterClient.complete`'s 400/404 retry drops `temperature` + `reasoning` (and downgrades
+   `json_schema` → `json_object`), so a polish on 3.8-flash now succeeds on the second round trip
+   instead of pasting raw. To avoid that extra round trip, relax the ZDR guardrail at
    https://openrouter.ai/settings/privacy.
 - **Works (verified live 2026-09-03):** **`z-ai/glm-5.3-flash` = the shipped default** (200 with
   strict structured output, RU preserved, fillers removed; reasoning model, ~100–500 reasoning tokens

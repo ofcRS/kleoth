@@ -161,15 +161,24 @@ public struct OpenRouterClient: Sendable {
     ///   `Summarizer` — send a byte-identical body to before this parameter existed.
     /// - Parameter reasoning: OpenRouter's `reasoning` object (see
     ///   ``OpenRouterReasoning``). Omitted from the body when `nil` (the
-    ///   default) — again so `Summarizer`'s body is unchanged. Kept on the
-    ///   `.jsonObject` fallback retry, like `temperature` (it is not a
-    ///   schema-support symptom).
+    ///   default) — again so `Summarizer`'s body is unchanged.
     ///
-    /// When `responseFormat` is `.jsonSchema` and the request fails with HTTP
-    /// 400 or 404 — the symptoms of a provider that doesn't support strict JSON
-    /// schemas, including this account's no-train providers under
-    /// `require_parameters: true` — it transparently retries once with
-    /// `.jsonObject` so summarization still succeeds.
+    /// **Fallback retry.** The body always carries `provider.require_parameters:
+    /// true`, so OpenRouter routes only to endpoints that declare support for
+    /// EVERY parameter sent — the strict `json_schema`, `temperature` and
+    /// `reasoning` alike. Under this account's data-policy guardrails that can
+    /// leave zero eligible endpoints and the request fails with HTTP 400 or 404
+    /// (no-train providers reject the strict schema; the ZDR guardrail 404s
+    /// `google/gemini-3.8-flash` only when `temperature` is present — measured
+    /// live 2026-09-03: schema + temperature → 404 `zdr-violation-by-account`,
+    /// the same body without `temperature` → 200; `reasoning` did the same on
+    /// `meta-llama/llama-3.3-70b-instruct`). On a 400/404 the call therefore
+    /// retries ONCE with everything that narrows routing removed: a `.jsonSchema`
+    /// format is downgraded to `.jsonObject`, and `temperature` / `reasoning`
+    /// are dropped. A single relaxed retry (rather than a ladder) keeps the
+    /// worst case at two round trips, which matters inside the 8 s dictation
+    /// budget. The retry is skipped when it would re-send an identical body
+    /// (already `.jsonObject`/`.none` with no temperature or reasoning).
     public func complete(
         messages: [ChatMessage],
         model: String,
@@ -188,18 +197,30 @@ public struct OpenRouterClient: Sendable {
                 reasoning: reasoning
             )
         } catch let OpenRouterError.httpError(status, _)
-            where (status == 400 || status == 404) && responseFormat.isJSONSchema {
-            // Provider can't honor the strict schema; fall back to a plain JSON
-            // object so no-train-provider compatibility is preserved.
+            where (status == 400 || status == 404)
+                && Self.hasRoutingNarrowingParameters(responseFormat, temperature, reasoning) {
+            // No endpoint could honor every parameter under `require_parameters`;
+            // retry once with the routing-narrowing ones removed (strict schema →
+            // plain JSON object, no temperature, no reasoning).
             return try await send(
                 messages: messages,
                 model: model,
-                responseFormat: .jsonObject,
+                responseFormat: responseFormat.isJSONSchema ? .jsonObject : responseFormat,
                 maxTokens: maxTokens,
-                temperature: temperature,
-                reasoning: reasoning
+                temperature: nil,
+                reasoning: nil
             )
         }
+    }
+
+    /// Whether the relaxed retry would send a different body than the first
+    /// attempt — i.e. whether there is anything left to drop.
+    private static func hasRoutingNarrowingParameters(
+        _ responseFormat: OpenRouterResponseFormat,
+        _ temperature: Double?,
+        _ reasoning: OpenRouterReasoning?
+    ) -> Bool {
+        responseFormat.isJSONSchema || temperature != nil || reasoning != nil
     }
 
     /// Performs a single chat-completions request with the given response format.

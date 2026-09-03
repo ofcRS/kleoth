@@ -37,13 +37,19 @@ public enum DictationPolishResult: Sendable, Equatable {
     /// `"rus"`), never this value — one source of truth on disk.
     case polished(text: String, language: String?, cost: Double)
     /// Every failure path. `reason` is short and user-facing (it goes on the pill).
-    case raw(text: String, reason: String)
+    ///
+    /// `cost` is what the failed attempt still billed: three fallbacks
+    /// (truncation, undecodable content, the translation guard) are decided
+    /// AFTER a successful, fully billed OpenRouter response, and the day file
+    /// must not claim those were free. It stays 0 for the no-key, timeout,
+    /// cancellation, HTTP-error and pre-request short-circuit paths.
+    case raw(text: String, reason: String, cost: Double = 0)
 
     /// The text to insert, whichever branch won.
     public var text: String {
         switch self {
         case let .polished(text, _, _): return text
-        case let .raw(text, _): return text
+        case let .raw(text, _, _): return text
         }
     }
 
@@ -53,14 +59,17 @@ public enum DictationPolishResult: Sendable, Equatable {
     }
 
     public var fallbackReason: String? {
-        if case let .raw(_, reason) = self { return reason }
+        if case let .raw(_, reason, _) = self { return reason }
         return nil
     }
 
-    /// USD spent on the polish call; 0 for `.raw`.
+    /// USD the polish call billed — for `.raw` too, when the fallback was
+    /// decided after a billed response (see ``raw(text:reason:cost:)``).
     public var cost: Double {
-        if case let .polished(_, _, cost) = self { return cost }
-        return 0
+        switch self {
+        case let .polished(_, _, cost): return cost
+        case let .raw(_, _, cost): return cost
+        }
     }
 
     /// The model-reported language; nil for `.raw`.
@@ -127,11 +136,19 @@ public struct DictationPolisher: Sendable {
                 )
             }
 
+            // From here on the call has been billed, so every fallback carries
+            // the cost OpenRouter reported.
+            let billed = response.usage?.cost ?? 0
+
             if Summarizer.isTruncated(response.finishReason) {
-                return .raw(text: raw, reason: "Polish was cut off — pasted the raw transcript.")
+                return .raw(text: raw, reason: "Polish was cut off — pasted the raw transcript.", cost: billed)
             }
             guard let decoded = Self.decode(response.content) else {
-                return .raw(text: raw, reason: "Polish returned unusable output — pasted the raw transcript.")
+                return .raw(
+                    text: raw,
+                    reason: "Polish returned unusable output — pasted the raw transcript.",
+                    cost: billed
+                )
             }
             let polished = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -139,7 +156,7 @@ public struct DictationPolisher: Sendable {
             // reshape. Anything wildly longer is the model having written an
             // email instead of cleaning one up.
             guard !polished.isEmpty, polished.count <= raw.count * 3 + 200 else {
-                return .raw(text: raw, reason: "Polish output looked wrong — pasted the raw transcript.")
+                return .raw(text: raw, reason: "Polish output looked wrong — pasted the raw transcript.", cost: billed)
             }
 
             // Translation guard — the reason the schema asks for `language` at
@@ -150,14 +167,10 @@ public struct DictationPolisher: Sendable {
             if let spoken = Summarizer.languageName(for: context.languageCode),
                let written = Summarizer.languageName(for: decoded.language),
                spoken != written {
-                return .raw(text: raw, reason: "Polish changed the language — pasted the raw transcript.")
+                return .raw(text: raw, reason: "Polish changed the language — pasted the raw transcript.", cost: billed)
             }
 
-            return .polished(
-                text: polished,
-                language: decoded.language,
-                cost: response.usage?.cost ?? 0
-            )
+            return .polished(text: polished, language: decoded.language, cost: billed)
         } catch is KleothTimeoutError {
             return .raw(text: raw, reason: "Polish timed out — pasted the raw transcript.")
         } catch is CancellationError {
@@ -165,9 +178,28 @@ public struct DictationPolisher: Sendable {
         } catch {
             return .raw(
                 text: raw,
-                reason: "Polish failed (\(error.localizedDescription)) — pasted the raw transcript."
+                reason: "Polish failed (\(Self.shortDescription(of: error))) — pasted the raw transcript."
             )
         }
+    }
+
+    // MARK: - Failure wording
+
+    /// Longest failure detail allowed into a `.raw` reason.
+    static let maxFailureDetailLength = 120
+
+    /// A bounded, user-facing description of a polish error. The reason lands
+    /// on the pill AND in the day file as `fallback_reason`, so an HTTP error
+    /// is reduced to its status (the up-to-500-char provider body stays in the
+    /// thrown `OpenRouterError` for logs) and anything else is clipped to
+    /// ``maxFailureDetailLength`` characters.
+    static func shortDescription(of error: Error) -> String {
+        if case let OpenRouterError.httpError(status, _) = error {
+            return "OpenRouter returned HTTP \(status)"
+        }
+        let text = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count > maxFailureDetailLength else { return text }
+        return String(text.prefix(maxFailureDetailLength)) + "…"
     }
 
     // MARK: - Request shaping
@@ -175,8 +207,10 @@ public struct DictationPolisher: Sendable {
     /// The `reasoning` cap for `model`, or nil (key omitted) for every model
     /// not in `DictationDefaults.reasoningCappedModels`. On the default model
     /// this cut polish latency from a mean 8.4 s (one run over the 8 s budget)
-    /// to 3.4 s with identical output; on other models it can 404 or slow
-    /// things down — see the measurements on `reasoningCappedModels`.
+    /// to 3.4 s with identical output; on other models it can slow things
+    /// down, or 404 on the first attempt (`OpenRouterClient.complete` then
+    /// retries without it, costing a round trip) — see the measurements on
+    /// `reasoningCappedModels`.
     static func reasoning(for model: String) -> OpenRouterReasoning? {
         DictationDefaults.reasoningCappedModels.contains(model) ? .low : nil
     }
