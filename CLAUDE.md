@@ -313,6 +313,13 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   the tucked panel back on screen, and `currentDisplayId` tracks the anchored screen because a
   straddling frame can't be resolved from geometry. Dragging pops the resting pill fully on screen
   (clamped), the drop becomes the new anchor, and an idle pill tucks back on release. 244 tests.
+  Follow-up (user feedback after seeing it): (a) an EMPTY transcript now just `pill.dismiss()`es
+  (was a "Nothing was heard." warning — "worst UI"); (b) a tab tucked into a LEFT/RIGHT edge stands
+  up — `panelSize(for: .idle, edge:)` swaps w/h, the view applies `rotationEffect` (±90°, 180° on
+  top; sheen's bright end faces inward) AFTER the hit shape + gestures so the vertical tab stays
+  clickable, and the rotation unwinds as the bar rises; `DictationPillModel.restingEdge` carries the
+  edge, `PillGeometry.restingOrigin(…edge:in:)` takes it explicitly; (c) idle rim = white 0.42 @ 1 pt
+  (`PillStyle.restingRim`), active keeps the hairline.
 - **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
   then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
   the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]

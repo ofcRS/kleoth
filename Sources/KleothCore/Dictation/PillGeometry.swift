@@ -124,8 +124,21 @@ public enum PillGeometry {
     public static func restingOrigin(
         activeOrigin: CGPoint, panelSize: CGSize, in screenFrame: CGRect
     ) -> CGPoint {
+        restingOrigin(
+            activeOrigin: activeOrigin, panelSize: panelSize,
+            edge: nearestEdge(ofPanelAt: activeOrigin, panelSize: panelSize, in: screenFrame),
+            in: screenFrame
+        )
+    }
+
+    /// `restingOrigin` for a caller that has already picked the edge — the
+    /// controller does, because a side edge swaps the panel's width and height
+    /// (the tab stands vertically) and the edge must not flip with the size.
+    public static func restingOrigin(
+        activeOrigin: CGPoint, panelSize: CGSize, edge: Edge, in screenFrame: CGRect
+    ) -> CGPoint {
         var origin = activeOrigin
-        switch nearestEdge(ofPanelAt: activeOrigin, panelSize: panelSize, in: screenFrame) {
+        switch edge {
         case .bottom: origin.y = screenFrame.minY - panelSize.height / 2
         case .top: origin.y = screenFrame.maxY - panelSize.height / 2
         case .left: origin.x = screenFrame.minX - panelSize.width / 2

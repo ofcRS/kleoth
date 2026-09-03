@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import KleothCore
 
 /// The observable state `DictationPillView` renders (design §3.19).
 ///
@@ -17,6 +18,10 @@ final class DictationPillModel: ObservableObject {
     /// Drives the spring-in / fade-out. Set *after* the panel is on screen so
     /// SwiftUI has a state change to animate.
     @Published var isPresented: Bool = false
+    /// The screen edge the resting capsule is tucked into. The view rotates
+    /// the `.idle` capsule to lie along a side edge (a vertical tab) and points
+    /// its sheen inward; set by the controller before the phase changes.
+    @Published private(set) var restingEdge: PillGeometry.Edge = .bottom
 
     // MARK: Controller-facing mutation
 
@@ -27,6 +32,10 @@ final class DictationPillModel: ObservableObject {
         // pill never flashes the last frame of the previous session.
         if case .listening = newPhase { return }
         if level != 0 { level = 0 }
+    }
+
+    func apply(restingEdge edge: PillGeometry.Edge) {
+        if restingEdge != edge { restingEdge = edge }
     }
 
     func apply(level newLevel: Double) {

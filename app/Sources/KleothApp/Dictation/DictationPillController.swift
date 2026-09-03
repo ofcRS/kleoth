@@ -80,9 +80,11 @@ final class DictationPillController: DictationPillPresenting {
         // Width is capped to the screen the pill will sit on, so an unbounded
         // message truncates inside the capsule instead of pushing the ✕ off
         // the right edge (`PillGeometry.maxPanelWidth`).
-        let size = Self.panelSize(for: state, in: screen.map(Self.bounds))
-        let target = CGRect(origin: origin(for: state, panelSize: size, on: screen), size: size)
+        let edge = restingEdge(on: screen)
+        let size = Self.panelSize(for: state, edge: edge, in: screen.map(Self.bounds))
+        let target = CGRect(origin: origin(for: state, panelSize: size, edge: edge, on: screen), size: size)
 
+        model.apply(restingEdge: edge)
         model.apply(phase: state)
 
         if alreadyUp {
@@ -92,7 +94,7 @@ final class DictationPillController: DictationPillPresenting {
         } else {
             // A fresh show starts from the tucked spot and emerges, so even the
             // first pill of the day comes in from the edge rather than popping.
-            let tucked = CGRect(origin: restingOrigin(activeOrigin: target.origin, panelSize: size, on: screen), size: size)
+            let tucked = CGRect(origin: restingOrigin(activeOrigin: target.origin, panelSize: size, edge: edge, on: screen), size: size)
             panel.setFrame(tucked, display: false)
             panel.orderFrontRegardless()
             present()
@@ -169,8 +171,10 @@ final class DictationPillController: DictationPillPresenting {
         defaults.removeObject(forKey: Self.placementDefaultsKey)
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
-        let size = panel.frame.size
-        let origin = origin(for: model.phase, panelSize: size, on: screen)
+        let edge = restingEdge(on: screen)
+        model.apply(restingEdge: edge)
+        let size = Self.panelSize(for: model.phase, edge: edge, in: Self.bounds(of: screen))
+        let origin = origin(for: model.phase, panelSize: size, edge: edge, on: screen)
         setFrame(CGRect(origin: origin, size: size), animated: !Self.reduceMotion)
     }
 
@@ -215,8 +219,14 @@ final class DictationPillController: DictationPillPresenting {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
         guard model.phase == .idle else { return }
-        let tucked = restingOrigin(activeOrigin: frame.origin, panelSize: frame.size, on: screen)
-        setFrame(CGRect(origin: tucked, size: frame.size), animated: !Self.reduceMotion)
+        // The dragged tab may have crossed to another edge: re-size (a side
+        // edge stands the tab up) and tuck into the new nearest edge.
+        let edge = restingEdge(on: screen)
+        model.apply(restingEdge: edge)
+        let size = Self.panelSize(for: .idle, edge: edge, in: Self.bounds(of: screen))
+        let active = activeOrigin(panelSize: size, on: screen)
+        let tucked = restingOrigin(activeOrigin: active, panelSize: size, edge: edge, on: screen)
+        setFrame(CGRect(origin: tucked, size: size), animated: !Self.reduceMotion)
     }
 
     /// The pill's action button. The handler lives in `DictationController`;
@@ -304,8 +314,10 @@ final class DictationPillController: DictationPillPresenting {
         guard let panel, panel.isVisible else { return }
         guard let screen = panelScreen() ?? anchorScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
-        let size = Self.panelSize(for: model.phase, in: Self.bounds(of: screen))
-        let target = CGRect(origin: origin(for: model.phase, panelSize: size, on: screen), size: size)
+        let edge = restingEdge(on: screen)
+        model.apply(restingEdge: edge)
+        let size = Self.panelSize(for: model.phase, edge: edge, in: Self.bounds(of: screen))
+        let target = CGRect(origin: origin(for: model.phase, panelSize: size, edge: edge, on: screen), size: size)
         setFrame(target, animated: false)
     }
 
@@ -324,18 +336,32 @@ final class DictationPillController: DictationPillPresenting {
         return PillGeometry.defaultOrigin(panelSize: size, shadowPadding: Self.shadowPadding, in: bounds)
     }
 
-    /// The anchor slid into the nearest edge of `screen` until half the panel
-    /// is off-screen — where `.idle` lives.
-    private func restingOrigin(activeOrigin: CGPoint, panelSize size: CGSize, on screen: NSScreen?) -> CGPoint {
+    /// The edge the resting tab tucks into on `screen`: the one nearest the
+    /// anchor. Decided from the horizontal resting size so that standing the
+    /// tab up for a side edge cannot flip the answer.
+    private func restingEdge(on screen: NSScreen?) -> PillGeometry.Edge {
+        guard let screen else { return .bottom }
+        let size = Self.panelSize(for: .idle, edge: .bottom, in: Self.bounds(of: screen))
+        let active = activeOrigin(panelSize: size, on: screen)
+        return PillGeometry.nearestEdge(ofPanelAt: active, panelSize: size, in: screen.frame)
+    }
+
+    /// The anchor slid into `edge` of `screen` until half the panel is
+    /// off-screen — where `.idle` lives.
+    private func restingOrigin(
+        activeOrigin: CGPoint, panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?
+    ) -> CGPoint {
         guard let screen else { return activeOrigin }
-        return PillGeometry.restingOrigin(activeOrigin: activeOrigin, panelSize: size, in: screen.frame)
+        return PillGeometry.restingOrigin(activeOrigin: activeOrigin, panelSize: size, edge: edge, in: screen.frame)
     }
 
     /// Where a phase sits: active phases on the anchor, `.idle` tucked.
-    private func origin(for state: DictationPillState, panelSize size: CGSize, on screen: NSScreen?) -> CGPoint {
+    private func origin(
+        for state: DictationPillState, panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?
+    ) -> CGPoint {
         let active = activeOrigin(panelSize: size, on: screen)
         guard state == .idle else { return active }
-        return restingOrigin(activeOrigin: active, panelSize: size, on: screen)
+        return restingOrigin(activeOrigin: active, panelSize: size, edge: edge, on: screen)
     }
 
     /// The area an active pill may occupy on `screen` — the full display minus
@@ -421,7 +447,17 @@ final class DictationPillController: DictationPillPresenting {
     /// rather than read from `fittingSize` so the frame is known synchronously,
     /// before SwiftUI has laid the new phase out. When `visibleFrame` is known
     /// the width is capped to it (the label then truncates — `DictationPillView`).
-    static func panelSize(for state: DictationPillState, in visibleFrame: CGRect? = nil) -> CGSize {
+    static func panelSize(
+        for state: DictationPillState, edge: PillGeometry.Edge = .bottom, in visibleFrame: CGRect? = nil
+    ) -> CGSize {
+        // A resting tab on a side edge stands up: the view rotates the capsule
+        // 90°, so the panel swaps its dimensions to hold it.
+        if state == .idle, edge == .left || edge == .right {
+            return CGSize(
+                width: PillStyle.restingHeight + 2 * shadowPadding,
+                height: PillStyle.restingWidth + 2 * shadowPadding
+            )
+        }
         var width: CGFloat
         switch state {
         case .hidden, .idle:

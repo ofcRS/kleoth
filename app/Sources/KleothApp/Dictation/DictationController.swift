@@ -617,7 +617,10 @@ final class DictationController: ObservableObject {
         }
         let rawText = Self.extractText(response)
         guard !rawText.isEmpty else {
-            pill.show(.warning("Nothing was heard."))
+            // Silence is not an error: the pill just sinks back to resting,
+            // exactly like a too-short hold. No warning, no log row.
+            log.debug("transcript empty — nothing to paste")
+            pill.dismiss()
             return
         }
 

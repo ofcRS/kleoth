@@ -47,6 +47,14 @@ struct DictationPillView: View {
                 if model.phase.isSticky { controller.dismissFromUser() }
             }
             .help(model.phase.pillText)
+            // A tab tucked into a side edge stands up (its "top" — the sheen's
+            // bright end — pointing into the screen); the rotation unwinds as
+            // the pill rises into a horizontal bar. Applied AFTER the hit shape
+            // and gestures so they rotate with it — a horizontal hit capsule
+            // under a vertical tab would leave only its middle clickable, and
+            // that middle is the part that is off-screen.
+            .rotationEffect(restingRotation)
+            .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: restingRotation)
             .scaleEffect(model.isPresented ? 1 : 0.9, anchor: .center)
             .opacity(model.isPresented ? 1 : 0)
             .padding(DictationPillController.shadowPadding)
@@ -63,8 +71,13 @@ struct DictationPillView: View {
         .frame(height: DictationPillController.capsuleHeight(for: model.phase))
         .background(PillStyle.surface, in: Capsule(style: .continuous))
         .overlay(
+            // Resting gets a visible white rim so the half-hidden tab reads as
+            // an edge of something, not a smudge; active phases keep the hairline.
             Capsule(style: .continuous)
-                .strokeBorder(PillStyle.rim, lineWidth: KleothMetrics.hairline)
+                .strokeBorder(
+                    model.phase == .idle ? PillStyle.restingRim : PillStyle.rim,
+                    lineWidth: model.phase == .idle ? 1 : KleothMetrics.hairline
+                )
         )
         .overlay {
             if model.phase == .idle {
@@ -72,11 +85,24 @@ struct DictationPillView: View {
                     .transition(.opacity)
             }
         }
+
         // Resting is quieter than active: lower opacity so it reads as an
         // indicator, not a window.
         .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
         .shadow(color: .black.opacity(model.phase == .idle ? 0.18 : 0.28), radius: 10, y: 3)
         .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: model.phase)
+    }
+
+    /// 0 for active phases and a bottom tab; ±90° on the sides, 180° on top,
+    /// chosen so the sheen's bright end always faces inward.
+    private var restingRotation: Angle {
+        guard model.phase == .idle else { return .zero }
+        switch model.restingEdge {
+        case .bottom: return .zero
+        case .top: return .degrees(180)
+        case .left: return .degrees(90)
+        case .right: return .degrees(-90)
+        }
     }
 
     @ViewBuilder
@@ -199,6 +225,7 @@ struct DictationPillView: View {
 enum PillStyle {
     static let surface = Color(white: 0.09).opacity(0.86)
     static let rim = Color.white.opacity(0.12)
+    static let restingRim = Color.white.opacity(0.42)
     static let ink = Color.white.opacity(0.92)
     static let restingOpacity: Double = 0.9
     static let compactPadding: CGFloat = 14
