@@ -75,7 +75,13 @@ public enum OpenRouterResponseFormat: Sendable {
 ///
 /// POST `https://openrouter.ai/api/v1/chat/completions`, authenticated with
 /// `Authorization: Bearer <key>`.
-public struct OpenRouterClient {
+///
+/// `Sendable` is explicit (a public struct gets no implicit conformance):
+/// every stored property is a value or a `Sendable` existential (`HTTPTransport`
+/// refines `Sendable`). Dictation needs it — `DictationPolisher: Sendable` and
+/// capturing a client inside `withTimeout`'s `@Sendable` closure both depend on
+/// it. Mirrors how `ScribeClient` is `Sendable` via `Transcriber`.
+public struct OpenRouterClient: Sendable {
     public let apiKey: String
     public let transport: HTTPTransport
 
@@ -111,6 +117,9 @@ public struct OpenRouterClient {
     ///
     /// - Parameter responseFormat: how the response shape is constrained
     ///   (none / `json_object` / strict `json_schema`).
+    /// - Parameter temperature: sampling temperature. Omitted from the request
+    ///   body entirely when `nil` (the default), so callers that never set it —
+    ///   `Summarizer` — send a byte-identical body to before this parameter existed.
     ///
     /// When `responseFormat` is `.jsonSchema` and the request fails with HTTP
     /// 400 or 404 — the symptoms of a provider that doesn't support strict JSON
@@ -121,14 +130,16 @@ public struct OpenRouterClient {
         messages: [ChatMessage],
         model: String,
         responseFormat: OpenRouterResponseFormat,
-        maxTokens: Int
+        maxTokens: Int,
+        temperature: Double? = nil
     ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
         do {
             return try await send(
                 messages: messages,
                 model: model,
                 responseFormat: responseFormat,
-                maxTokens: maxTokens
+                maxTokens: maxTokens,
+                temperature: temperature
             )
         } catch let OpenRouterError.httpError(status, _)
             where (status == 400 || status == 404) && responseFormat.isJSONSchema {
@@ -138,7 +149,8 @@ public struct OpenRouterClient {
                 messages: messages,
                 model: model,
                 responseFormat: .jsonObject,
-                maxTokens: maxTokens
+                maxTokens: maxTokens,
+                temperature: temperature
             )
         }
     }
@@ -148,7 +160,8 @@ public struct OpenRouterClient {
         messages: [ChatMessage],
         model: String,
         responseFormat: OpenRouterResponseFormat,
-        maxTokens: Int
+        maxTokens: Int,
+        temperature: Double?
     ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
@@ -162,7 +175,8 @@ public struct OpenRouterClient {
             messages: messages,
             model: model,
             responseFormat: responseFormat,
-            maxTokens: maxTokens
+            maxTokens: maxTokens,
+            temperature: temperature
         )
 
         let (data, response) = try await transport.data(for: request)
@@ -195,7 +209,8 @@ public struct OpenRouterClient {
         messages: [ChatMessage],
         model: String,
         responseFormat: OpenRouterResponseFormat,
-        maxTokens: Int
+        maxTokens: Int,
+        temperature: Double?
     ) throws -> Data {
         var body: [String: Any] = [
             "model": model,
@@ -203,6 +218,12 @@ public struct OpenRouterClient {
             "max_tokens": maxTokens,
             "provider": ["require_parameters": true],
         ]
+
+        // Only written when the caller asked for one, so `Summarizer`'s body is
+        // unchanged from before the parameter existed.
+        if let temperature {
+            body["temperature"] = temperature
+        }
 
         switch responseFormat {
         case .none:
