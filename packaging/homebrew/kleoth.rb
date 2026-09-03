@@ -6,8 +6,8 @@
 # Typical home: a tap repo named "homebrew-kleoth", installed via
 #   brew install --cask ofcRS/kleoth/kleoth
 cask "kleoth" do
-  version "0.1.0"
-  sha256 "6028cafbbdddccadc337eb6e482b2c5ddfb0bfea9fc16c7ffed3304ceaa81641"
+  version "0.2.0"
+  sha256 "46544836789b46c046d97ecb41d6b7cd5212f05eb83153b64ae49f1bc5b46e2e"
 
   url "https://github.com/ofcRS/kleoth/releases/download/v#{version}/Kleoth-#{version}.dmg",
       verified: "github.com/ofcRS/kleoth/"
