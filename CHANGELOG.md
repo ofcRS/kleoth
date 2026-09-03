@@ -20,6 +20,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Changed
 
+- **Faster pill motion.** Every rise, sink, morph and hover peek runs in roughly 0.2–0.35 s
+  (was 0.5–0.55 s); the stretch and content reveal are scaled to match.
 - **Pill motion rebuilt.** The capsule's size is now an explicit animated value, so it grows out of
   the edge instead of popping to its full shape while still tucked; a keyframed squash-and-stretch
   follows the direction of travel (squat, stretch on the way, land, settle); the waveform blooms in
