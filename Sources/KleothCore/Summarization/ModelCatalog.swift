@@ -20,7 +20,13 @@ public struct ModelCatalog: Sendable {
     /// Default summarization model — `Settings.load()` reads it from here, so
     /// the literal exists in exactly one place. Always surfaced first in the
     /// picker and guaranteed present.
-    public static let defaultModel = "google/gemini-3.8-flash"
+    ///
+    /// `z-ai/glm-5.3-flash` (verified live 2026-09-03: 200 with strict
+    /// `json_schema`, Russian preserved) rather than a `google/*` model because
+    /// this account's OpenRouter Zero-Data-Retention guardrail 404s every
+    /// Google endpoint (`zdr-violation-by-account`) — see CLAUDE.md. Gemini
+    /// stays selectable in ``curatedFallback`` for accounts without that guardrail.
+    public static let defaultModel = "z-ai/glm-5.3-flash"
 
     /// Slugs that no longer work (retired by the provider, or 404'd by this
     /// account's no-train data policy) mapped to their replacement. A stored
@@ -57,7 +63,8 @@ public struct ModelCatalog: Sendable {
     /// ``retiredModels`` key (the offline picker must not offer a slug that
     /// ``migrating(_:)`` maps away).
     public static let curatedFallback: [String] = [
-        defaultModel,                      // google/gemini-3.8-flash
+        defaultModel,                      // z-ai/glm-5.3-flash
+        "google/gemini-3.8-flash",         // selectable, not default (ZDR-blocked on some accounts)
         "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",
         "deepseek/deepseek-v4-flash",

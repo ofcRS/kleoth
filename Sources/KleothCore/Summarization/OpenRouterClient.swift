@@ -71,6 +71,45 @@ public enum OpenRouterResponseFormat: Sendable {
     }
 }
 
+/// OpenRouter's unified `reasoning` request parameter (`{"reasoning": {…}}`),
+/// which caps how much a reasoning model thinks before answering.
+///
+/// Measured on `z-ai/glm-5.3-flash` (the default polish model) on 2026-09-03
+/// against the verbatim dictation prompt + a Russian sample: without the
+/// parameter the model spent 104–362 reasoning tokens per polish and took
+/// 4.9–14.2 s (mean 8.4 s — over the 8 s dictation budget in one of three
+/// runs); `effort: "low"` produced 0 reasoning tokens, 2.3–4.9 s (mean 3.4 s),
+/// with identical, correct output. `{"enabled": false}` is rejected by that
+/// endpoint with 400 "Reasoning is mandatory", and `{"exclude": true}` only
+/// hides the reasoning (155–272 tokens, 6.7–9.4 s). Only the dictation path
+/// sends this; `Summarizer` never does, so its body is unchanged.
+public struct OpenRouterReasoning: Sendable, Equatable {
+    /// OpenRouter's normalized effort levels.
+    public enum Effort: String, Sendable {
+        case minimal, low, medium, high
+    }
+
+    public var effort: Effort
+    /// When true, OpenRouter strips the reasoning tokens from the response
+    /// (they are still generated and billed).
+    public var exclude: Bool
+
+    public init(effort: Effort, exclude: Bool = false) {
+        self.effort = effort
+        self.exclude = exclude
+    }
+
+    /// The setting the dictation polisher uses.
+    public static let low = OpenRouterReasoning(effort: .low)
+
+    /// The JSON object written under the `reasoning` key.
+    var bodyValue: [String: Any] {
+        var value: [String: Any] = ["effort": effort.rawValue]
+        if exclude { value["exclude"] = true }
+        return value
+    }
+}
+
 /// Client for the OpenRouter chat completions endpoint.
 ///
 /// POST `https://openrouter.ai/api/v1/chat/completions`, authenticated with
@@ -120,6 +159,11 @@ public struct OpenRouterClient: Sendable {
     /// - Parameter temperature: sampling temperature. Omitted from the request
     ///   body entirely when `nil` (the default), so callers that never set it —
     ///   `Summarizer` — send a byte-identical body to before this parameter existed.
+    /// - Parameter reasoning: OpenRouter's `reasoning` object (see
+    ///   ``OpenRouterReasoning``). Omitted from the body when `nil` (the
+    ///   default) — again so `Summarizer`'s body is unchanged. Kept on the
+    ///   `.jsonObject` fallback retry, like `temperature` (it is not a
+    ///   schema-support symptom).
     ///
     /// When `responseFormat` is `.jsonSchema` and the request fails with HTTP
     /// 400 or 404 — the symptoms of a provider that doesn't support strict JSON
@@ -131,7 +175,8 @@ public struct OpenRouterClient: Sendable {
         model: String,
         responseFormat: OpenRouterResponseFormat,
         maxTokens: Int,
-        temperature: Double? = nil
+        temperature: Double? = nil,
+        reasoning: OpenRouterReasoning? = nil
     ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
         do {
             return try await send(
@@ -139,7 +184,8 @@ public struct OpenRouterClient: Sendable {
                 model: model,
                 responseFormat: responseFormat,
                 maxTokens: maxTokens,
-                temperature: temperature
+                temperature: temperature,
+                reasoning: reasoning
             )
         } catch let OpenRouterError.httpError(status, _)
             where (status == 400 || status == 404) && responseFormat.isJSONSchema {
@@ -150,7 +196,8 @@ public struct OpenRouterClient: Sendable {
                 model: model,
                 responseFormat: .jsonObject,
                 maxTokens: maxTokens,
-                temperature: temperature
+                temperature: temperature,
+                reasoning: reasoning
             )
         }
     }
@@ -161,7 +208,8 @@ public struct OpenRouterClient: Sendable {
         model: String,
         responseFormat: OpenRouterResponseFormat,
         maxTokens: Int,
-        temperature: Double?
+        temperature: Double?,
+        reasoning: OpenRouterReasoning?
     ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
@@ -176,7 +224,8 @@ public struct OpenRouterClient: Sendable {
             model: model,
             responseFormat: responseFormat,
             maxTokens: maxTokens,
-            temperature: temperature
+            temperature: temperature,
+            reasoning: reasoning
         )
 
         let (data, response) = try await transport.data(for: request)
@@ -210,7 +259,8 @@ public struct OpenRouterClient: Sendable {
         model: String,
         responseFormat: OpenRouterResponseFormat,
         maxTokens: Int,
-        temperature: Double?
+        temperature: Double?,
+        reasoning: OpenRouterReasoning?
     ) throws -> Data {
         var body: [String: Any] = [
             "model": model,
@@ -223,6 +273,9 @@ public struct OpenRouterClient: Sendable {
         // unchanged from before the parameter existed.
         if let temperature {
             body["temperature"] = temperature
+        }
+        if let reasoning {
+            body["reasoning"] = reasoning.bodyValue
         }
 
         switch responseFormat {

@@ -54,6 +54,6 @@ import Foundation
 
     @Test func defaultModelComesFromModelCatalog() {
         #expect(Settings.load(config: [:]).defaultModel == ModelCatalog.defaultModel)
-        #expect(Settings.load(config: [:]).defaultModel == "google/gemini-3.8-flash")
+        #expect(Settings.load(config: [:]).defaultModel == "z-ai/glm-5.3-flash")
     }
 }

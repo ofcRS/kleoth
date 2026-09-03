@@ -190,8 +190,13 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
 
         let body = try Self.requestBody(transport)
         #expect(body["model"] as? String == DictationDefaults.polishModel)
-        #expect(body["model"] as? String == "google/gemini-3.8-flash")
+        #expect(body["model"] as? String == "z-ai/glm-5.3-flash")
         #expect(body["temperature"] as? Double == 0.2)
+        // The default model is a reasoning model: the polish call caps its
+        // thinking (latency). The summarizer never sends this key.
+        let reasoning = try #require(body["reasoning"] as? [String: Any])
+        #expect(reasoning["effort"] as? String == "low")
+        #expect(DictationDefaults.reasoningCappedModels.contains(DictationDefaults.polishModel))
 
         let provider = try #require(body["provider"] as? [String: Any])
         #expect(provider["require_parameters"] as? Bool == true)
@@ -210,6 +215,27 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
         #expect(user.contains("Target application: Terminal (com.apple.Terminal)"))
         #expect(user.contains(AppStyle.code.hint))
         #expect(user.contains("<<<TRANSCRIPT\nuh ship it\nTRANSCRIPT>>>"))
+    }
+
+    @Test func reasoningCapIsOmittedForModelsNotMeasured() async throws {
+        // Under `require_parameters: true` the `reasoning` key 404s on
+        // non-reasoning models (measured on llama-3.3-70b) and slows hybrid
+        // ones (deepseek-v4-flash), so a user-picked model outside the
+        // allowlist must get a body without the key at all.
+        let transport = MockTransport(json: Self.envelope(content: #"{"text":"Ship it.","language":"en"}"#))
+        var polisher = Self.polisher(transport)
+        polisher.model = "meta-llama/llama-3.3-70b-instruct"
+        let result = await polisher.polish(
+            rawText: "uh ship it",
+            context: DictationContext(appBundleId: "com.apple.Terminal", appName: "Terminal")
+        )
+        #expect(result == .polished(text: "Ship it.", language: "en", cost: 0))
+
+        let body = try Self.requestBody(transport)
+        #expect(body["model"] as? String == "meta-llama/llama-3.3-70b-instruct")
+        #expect(body["reasoning"] == nil)
+        #expect(DictationPolisher.reasoning(for: "meta-llama/llama-3.3-70b-instruct") == nil)
+        #expect(DictationPolisher.reasoning(for: DictationDefaults.polishModel) == .low)
     }
 
     @Test func stalledTransportTimesOutPromptly() async {

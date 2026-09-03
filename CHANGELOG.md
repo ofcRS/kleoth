@@ -42,12 +42,13 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Changed
 
-- **Default summary model is now `google/gemini-3.8-flash`** (was the retired
-  `google/gemini-3-flash-preview`). A stored retired slug is migrated in memory on every launch and
-  rewritten in the Keychain the first time Settings opens. Note: accounts whose OpenRouter privacy
-  settings enforce Zero Data Retention may find `google/*` blocked (404 `zdr-violation-by-account`)
-  — pick another no-train model in Settings (e.g. `z-ai/glm-5.3-flash`) or relax the guardrail at
-  openrouter.ai/settings/privacy.
+- **Default summary model is now `z-ai/glm-5.3-flash`** (was the retired
+  `google/gemini-3-flash-preview`); the dictation polish model defaults to the same slug. A stored
+  retired slug is migrated in memory on every launch and rewritten in the Keychain the first time
+  Settings opens. Why not Gemini: accounts whose OpenRouter privacy settings enforce Zero Data
+  Retention find every `google/*` model blocked (404 `zdr-violation-by-account`), while GLM works
+  under both the no-train and ZDR guardrails. `google/gemini-3.8-flash` remains selectable in the
+  picker — relax the guardrail at openrouter.ai/settings/privacy to use it.
 - Cloud transcription (Scribe) requests for dictation send `no_verbatim=true` (fillers dropped
   server-side); meeting transcription is unchanged.
 - **Transcription after recording is now opt-in.** Stopping a recording saves the audio and

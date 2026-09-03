@@ -3,8 +3,20 @@ import Foundation
 /// Single source of truth for every dictation constant. Nothing else may
 /// redefine these numbers.
 public enum DictationDefaults {
-    /// Verified live in the OpenRouter catalog on 2026-09-03; supports structured outputs.
-    public static let polishModel = "google/gemini-3.8-flash"
+    /// Verified live 2026-09-03: 200 with strict `json_schema` + `temperature`, Russian preserved,
+    /// fillers removed. Deliberately NOT `google/*` — this account's OpenRouter Zero-Data-Retention
+    /// guardrail 404s every Google endpoint (`zdr-violation-by-account`); see CLAUDE.md.
+    public static let polishModel = "z-ai/glm-5.3-flash"
+    /// Models whose polish request carries `reasoning: {effort: "low"}`
+    /// (`OpenRouterReasoning.low`). The cap is model-specific, NOT a general
+    /// speed-up — measured live 2026-09-03 under `require_parameters: true`:
+    /// on `z-ai/glm-5.3-flash` it drops ~100–360 reasoning tokens to 0 and
+    /// mean latency 8.4 s → 3.4 s with identical output; on
+    /// `meta-llama/llama-3.3-70b-instruct` the same body **404s** ("No
+    /// endpoints found that can handle the requested parameters"); on
+    /// `deepseek/deepseek-v4-flash` it *enables* reasoning (0 → 216 tokens,
+    /// 4.9 s → 9.5 s). Add a slug here only after measuring it.
+    public static let reasoningCappedModels: Set<String> = ["z-ai/glm-5.3-flash"]
     public static let transcriptionModel = "scribe_v2"
     public static let hotkeyDescription = "fn + shift"
     /// A chord held shorter than this (with no double-tap) is discarded.

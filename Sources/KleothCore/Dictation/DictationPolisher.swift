@@ -122,7 +122,8 @@ public struct DictationPolisher: Sendable {
                         schemaJSON: DictationPrompt.schemaJSON
                     ),
                     maxTokens: maxTokens,
-                    temperature: 0.2
+                    temperature: 0.2,
+                    reasoning: Self.reasoning(for: model)
                 )
             }
 
@@ -167,6 +168,17 @@ public struct DictationPolisher: Sendable {
                 reason: "Polish failed (\(error.localizedDescription)) — pasted the raw transcript."
             )
         }
+    }
+
+    // MARK: - Request shaping
+
+    /// The `reasoning` cap for `model`, or nil (key omitted) for every model
+    /// not in `DictationDefaults.reasoningCappedModels`. On the default model
+    /// this cut polish latency from a mean 8.4 s (one run over the 8 s budget)
+    /// to 3.4 s with identical output; on other models it can 404 or slow
+    /// things down — see the measurements on `reasoningCappedModels`.
+    static func reasoning(for model: String) -> OpenRouterReasoning? {
+        DictationDefaults.reasoningCappedModels.contains(model) ? .low : nil
     }
 
     // MARK: - Response parsing

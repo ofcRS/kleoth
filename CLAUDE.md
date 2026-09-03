@@ -141,12 +141,17 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
   category == "Dictation")'` is the live hotkey/controller probe.
 
 ## Summarization
-- OpenRouter chat-completions. **Default model: `google/gemini-3.8-flash`** = `ModelCatalog.defaultModel`
-  (the ONE place the literal lives; `Settings.load`, `Summarizer.init`, `DictationDefaults.polishModel`
-  all read it or repeat it). Was `google/gemini-3-flash-preview` (retired) and before that
-  `openai/gpt-4.1-mini` (policy-404'd); both are in `ModelCatalog.retiredModels` and are migrated
-  in memory on every `AppConfig` load and persisted to the Keychain the first time Settings opens.
-  ⚠️ On THIS account `google/*` currently 404s — see the data-policy note below.
+- OpenRouter chat-completions. **Default model: `z-ai/glm-5.3-flash`** = `ModelCatalog.defaultModel`
+  (the ONE place the literal lives; `Settings.load`, `Summarizer.init` read it;
+  `DictationDefaults.polishModel` repeats the same slug — a test pins them equal). **Verified live
+  2026-09-03** (200 with strict `json_schema`, RU preserved). Chosen over `google/gemini-3.8-flash`
+  because this account's ZDR guardrail 404s every `google/*` endpoint — see the data-policy note
+  below; Gemini 3.8 stays selectable in `curatedFallback`. Was `google/gemini-3-flash-preview`
+  (retired) and before that `openai/gpt-4.1-mini` (policy-404'd); both are in
+  `ModelCatalog.retiredModels` and are migrated in memory on every `AppConfig` load and persisted to
+  the Keychain the first time Settings opens. ⚠️ GLM 5.3 flash is a **reasoning model** and OpenRouter
+  says reasoning "is mandatory for this endpoint and cannot be disabled" — expect ~100–500 reasoning
+  tokens per call; polish latency measured 2.6–14 s (see the 2026-09-03 status block).
 - The summary model is config: Settings → Keychain `default_model` (app), or `--model` (CLI).
 - `OpenRouterClient` sends `provider: {require_parameters: true}` and requests **structured output
   via `response_format: {type: json_schema, strict}`** (the `MeetingSummary` schema, incl. a
@@ -169,19 +174,21 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
   Transcript. `maxOutputTokens` 8192.
 
 ### ⚠️ OpenRouter data-policy constraint (important, account-specific)
-This account's privacy setting blocks providers that may train on data. Combined with
-`require_parameters: true`, that **404s** (`"No endpoints available matching your guardrail
-restrictions and data policy"`) for `openai/*`, `mistralai/*`, `qwen/qwen3.x-max`, `x-ai/grok-*`.
-- **Works (no-train providers, verified live 2026-06):** `deepseek/*` (v4), `z-ai/glm-*`,
-  `moonshotai/kimi-*`, `minimax/*`, `meta-llama/*`. **`google/*` NO LONGER works here (2026-09-03,
-  verified twice — T4 probe + the `dictate` probe):** every `google/*` slug (3.8 and 3.7 flash,
-  json_schema AND the json_object fallback) returns **404 `zdr-violation-by-account`** ("ZDR violation
-  (account settings): 1 endpoint excluded") — the account now enforces Zero Data Retention and
-  Google's endpoints don't qualify. Consequence: the shipped default `google/gemini-3.8-flash` makes
-  every dictation take the raw fallback and every summary fail on this account until the user either
-  relaxes the ZDR guardrail at https://openrouter.ai/settings/privacy or sets another model in
-  Settings. **`z-ai/glm-5.3-flash` verified 200** with structured output, RU preserved, 2.6 s polish
-  (it emits ~500 reasoning tokens per call — inside the 8 s budget but not by a huge margin).
+This account's privacy settings apply TWO guardrails, and `require_parameters: true` turns both
+into **404s**:
+1. **No-train:** `"No endpoints available matching your guardrail restrictions and data policy"`
+   for `openai/*`, `mistralai/*`, `qwen/qwen3.x-max`, `x-ai/grok-*`.
+2. **Zero Data Retention (since 2026-09-03):** every `google/*` slug (3.8 and 3.7 flash, with
+   `json_schema` AND the `json_object` fallback — the fallback does not help) returns **404
+   `zdr-violation-by-account`** ("ZDR violation (account settings): 1 endpoint excluded") because
+   Google's endpoints don't qualify as ZDR. Verified three times (T4 probe, the `dictate` probe, and
+   the default-switch pass). To use Gemini again, relax the ZDR guardrail at
+   https://openrouter.ai/settings/privacy.
+- **Works (verified live 2026-09-03):** **`z-ai/glm-5.3-flash` = the shipped default** (200 with
+  strict structured output, RU preserved, fillers removed; reasoning model, ~100–500 reasoning tokens
+  per polish — OpenRouter rejects `reasoning: {enabled: false}` for it with 400 "Reasoning is
+  mandatory for this endpoint"). Also fine under no-train (verified 2026-06): `deepseek/*` (v4),
+  `z-ai/glm-*`, `moonshotai/kimi-*`, `minimax/*`, `meta-llama/*`.
 - To use OpenAI/Mistral: enable **"Paid endpoints that may train on request data"** at
   https://openrouter.ai/settings/privacy (or stop sending `require_parameters`).
 - The original "OpenRouter key doesn't work" report was THIS 404, not a bad key.
@@ -237,7 +244,7 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   Accessibility access" line (enabled + untrusted only), AppDelegate hooks, `dictate` probe.
 - **T8 live probes (this Mac, 2026-09-03):** `dictate 3` → capture 3.2 s @ 48 kHz → prep 87 KB →
   Scribe **200** in 1.6 s (ambient audio → "Why have…", `eng`) → polish **404 zdr-violation** with
-  the default `google/gemini-3.8-flash` → raw fallback; temp dir empty afterwards.
+  the THEN-default `google/gemini-3.8-flash` → raw fallback; temp dir empty afterwards.
   `say -v Milena "Привет, это проверка диктовки, короче нужно задеплоить пул реквест завтра утром"`
   + `dictate 6 --model z-ai/glm-5.3-flash` → Scribe `rus` in 1.3 s, raw "Привет! Это проверка
   диктовки. Короче, нужно задеплоить pull request завтра утром" → polished in 2.6 s
@@ -246,10 +253,29 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   through the `Transcriber` seam is therefore verified end-to-end; only the default model is the
   account-level blocker above. ElevenLabs' 2026-08-17 `payment_issue` is gone.
 - **Decisions recorded:** Kleoth stays un-sandboxed; stable signing identity required; QWERTY-family
-  layouts assumed; fn+shift+⌘/⌥/⌃ never arms; translation guard kept; `google/gemini-3.8-flash`
-  kept as the shipped default per the design doc — **the user must either relax ZDR on the
-  OpenRouter account or set `dictation_model`/`default_model` to a reachable slug** (the T8 lane
-  does not own `DictationDefaults.swift`/`ModelCatalog.swift`, so this was NOT changed in code).
+  layouts assumed; fn+shift+⌘/⌥/⌃ never arms; translation guard kept.
+- **Default model switched to `z-ai/glm-5.3-flash` (fixer pass, same day):** `ModelCatalog.defaultModel`
+  AND `DictationDefaults.polishModel` (test pins them equal); `google/gemini-3.8-flash` stays in
+  `curatedFallback` (selectable, not default); `retiredModels` still map the two dead slugs → the
+  default. Rationale: the T8 probes above showed the Gemini default 404s on this account (ZDR),
+  making every dictation raw-fallback and every summary fail. Design doc §10.3 item 5 records it.
+- **Reasoning cap on the polish call (measured, model-gated):** `OpenRouterClient.complete(…,
+  reasoning:)` is a new optional arg (`OpenRouterReasoning`, nil → body unchanged; a test pins the
+  Summarizer body to exactly `model/messages/max_tokens/provider/response_format`). `DictationPolisher`
+  sends `reasoning: {effort: "low"}` ONLY for slugs in `DictationDefaults.reasoningCappedModels`
+  (= `["z-ai/glm-5.3-flash"]`). Live numbers (verbatim `DictationPrompt.system`, RU + EN samples,
+  json_schema strict, temperature 0.2, `require_parameters: true`, 2026-09-03): baseline glm-5.3-flash
+  = 104–362 reasoning tokens, **4.8–14.2 s (mean 8.4 s RU / 7.4 s EN — one RU run blew the 8 s
+  budget)**; `effort: low` = **0 reasoning tokens, 1.5–4.9 s (mean 3.2 s over 9 runs)**, byte-identical
+  correct output (fillers gone, "Anna, sorry, Boris" self-correction applied, RU stays RU).
+  `enabled: false` → 400 "Reasoning is mandatory for this endpoint"; `exclude: true` only hides the
+  tokens (155–272, 6.7–9.4 s). ⚠️ NOT a general speed-up: the same body **404s on
+  `meta-llama/llama-3.3-70b-instruct`** ("No endpoints found that can handle the requested
+  parameters") and *enables* reasoning on `deepseek/deepseek-v4-flash` (0 → 216 tokens, 4.9 → 9.5 s)
+  — hence the allowlist. Also observed: `z-ai/glm-4.7` and `moonshotai/kimi-k2.6` return EMPTY
+  content under the strict dictation schema (reasoning eats the 1024-token cap, 17–28 s) — poor
+  polish picks; they stay in `curatedFallback` for summaries (8192-token budget) untested.
+  `polishTimeout` stays 8 s (max capped run 4.9 s). Probe scripts were scratch-only (not committed).
 - **Known leftovers (small):** `DictationHotkeyMonitor.appEvent(_:)` is now an identity map (the T0
   placeholder types it bridged are gone) and can be deleted along with the `KleothCore.` qualifier
   in `emit`; `SettingsDictationSection` spells the send cap as the literal "first 100" instead of
@@ -298,7 +324,7 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   31. Light/dark legible; Reduce Motion → no animations; VoiceOver announces phases; idle CPU after a 60 s hands-free session.
   32. Dictionary editor → `~/.config/kleoth/dictionary.json` is a plain array; the term transcribes correctly.
   33. History → Dictations: scope picker, day sections, search, detail polished/raw/copy, delete asks + rewrites; Meetings scope unchanged; scope flip doesn't re-trigger the meetings reload; app stays `.regular`.
-  34. Stored `google/gemini-3-flash-preview`: (a) summarizing before opening Settings already uses `google/gemini-3.8-flash`; (b) open Settings once → picker shows the new default, Keychain rewritten. (On this account expect the ZDR 404 until the model/guardrail is changed.)
+  34. Stored `google/gemini-3-flash-preview`: (a) summarizing before opening Settings already uses `z-ai/glm-5.3-flash`; (b) open Settings once → picker shows the new default, Keychain rewritten.
   35. At most one Keychain prompt at launch after adding the two keys.
 
 ## Current status (2026-08-17 — per-meeting failure surfacing)

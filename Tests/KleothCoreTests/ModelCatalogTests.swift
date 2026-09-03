@@ -45,7 +45,7 @@ import Testing
     }
 
     @Test func alwaysIncludesDefaultEvenWhenAbsentFromFeed() {
-        // A feed with no Google models at all still yields the default.
+        // A feed without the default provider at all still yields the default.
         let result = ModelCatalog.filtered(from: ["anthropic/claude-haiku-4.5"])
         #expect(result.contains(ModelCatalog.defaultModel))
     }
@@ -103,8 +103,15 @@ import Testing
 
     // MARK: - Default bump + retired-slug migration (dictation v1, 2026-09-03)
 
-    @Test func defaultModelIsGemini38Flash() {
-        #expect(ModelCatalog.defaultModel == "google/gemini-3.8-flash")
+    @Test func defaultModelIsGLM53Flash() {
+        // Not `google/*`: this account's ZDR guardrail 404s every Google endpoint (2026-09-03).
+        #expect(ModelCatalog.defaultModel == "z-ai/glm-5.3-flash")
+        #expect(DictationDefaults.polishModel == ModelCatalog.defaultModel)
+    }
+
+    @Test func geminiStaysSelectableButNotDefault() {
+        #expect(ModelCatalog.curatedFallback.contains("google/gemini-3.8-flash"))
+        #expect(ModelCatalog.curatedFallback.first != "google/gemini-3.8-flash")
     }
 
     @Test func curatedFallbackLeadsWithDefault() {

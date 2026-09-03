@@ -63,10 +63,11 @@ import Foundation
         let secondObject = try #require(try JSONSerialization.jsonObject(with: second) as? NSDictionary)
         #expect(firstObject == secondObject)
 
-        // Exactly the pre-temperature key set — no `temperature`.
+        // Exactly the pre-temperature key set — no `temperature`, no `reasoning`.
         let body = try #require(firstObject as? [String: Any])
         #expect(Set(body.keys) == ["model", "messages", "max_tokens", "provider", "response_format"])
         #expect(body["temperature"] == nil)
+        #expect(body["reasoning"] == nil)
 
         // Explicitly passing nil produces the same request as omitting the parameter.
         let omittedTransport = MockTransport(json: Self.envelope(#"{"ok":true}"#))
@@ -83,6 +84,29 @@ import Foundation
         let explicitNilObject = try #require(try JSONSerialization.jsonObject(with: explicitNilBody) as? NSDictionary)
         #expect(omittedObject == explicitNilObject)
         #expect((omittedObject as? [String: Any])?["temperature"] == nil)
+        #expect((omittedObject as? [String: Any])?["reasoning"] == nil)
+    }
+
+    @Test func reasoningIsEncodedOnlyWhenProvided() async throws {
+        let transport = MockTransport(json: Self.envelope(#"{"ok":true}"#))
+        _ = try await OpenRouterClient(apiKey: "k", transport: transport).complete(
+            messages: [ChatMessage(role: "user", content: "hi")],
+            model: "z-ai/glm-5.3-flash",
+            responseFormat: .jsonObject,
+            maxTokens: 32,
+            reasoning: .low
+        )
+        let data = try #require(transport.recordedRequests.first?.httpBody)
+        let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let reasoning = try #require(body["reasoning"] as? [String: Any])
+        #expect(reasoning["effort"] as? String == "low")
+        // `exclude` is only written when set — the default object is exactly `{effort}`.
+        #expect(reasoning["exclude"] == nil)
+        #expect(reasoning.count == 1)
+
+        let excluded = OpenRouterReasoning(effort: .minimal, exclude: true).bodyValue
+        #expect(excluded["effort"] as? String == "minimal")
+        #expect(excluded["exclude"] as? Bool == true)
     }
 
     @Test func temperatureIsEncodedWhenProvided() async throws {

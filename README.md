@@ -119,13 +119,13 @@ Open **Settings** from the menu bar. Everything here is optional:
   needs the `speech_to_text` permission.
 - **OpenRouter API key** — enables AI summaries and the dictation clean-up pass. Note: if your
   OpenRouter account blocks providers that may train on your data, choose a no-train model (e.g.
-  `google/*`, `deepseek/*`, `z-ai/*`, `meta-llama/*`); accounts that enforce Zero Data Retention may
-  also find `google/*` blocked — pick e.g. `z-ai/glm-5.3-flash` or relax the guardrail at
-  openrouter.ai/settings/privacy.
-- **Summary model** — any OpenRouter model slug. Default: `google/gemini-3.8-flash`.
+  `z-ai/*`, `deepseek/*`, `google/*`, `meta-llama/*`); accounts that enforce Zero Data Retention
+  will also find `google/*` blocked (404 `zdr-violation-by-account`) — the default `z-ai/glm-5.3-flash`
+  works under both guardrails; relax them at openrouter.ai/settings/privacy to use Gemini.
+- **Summary model** — any OpenRouter model slug. Default: `z-ai/glm-5.3-flash`.
 - **Transcription language** — *Auto* (detect per meeting) or pin a specific language.
 - **Dictation** — enable hold-to-talk (fn+shift), pick the polish model (default
-  `google/gemini-3.8-flash`), edit your personal dictionary (one term per line; the first 100 are
+  `z-ai/glm-5.3-flash`), edit your personal dictionary (one term per line; the first 100 are
   sent with each dictation), reset the pill position. Needs an ElevenLabs key; without an
   OpenRouter key the raw transcript is pasted as-is.
 
