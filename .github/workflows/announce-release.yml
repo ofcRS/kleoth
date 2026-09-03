@@ -1,0 +1,37 @@
+# On every published release: notify the shck.dev blog repo (repository_dispatch).
+# The blog then (a) rebuilds /changelog from this repo's releases.atom and (b) opens a
+# draft announcement-post PR. Needs secret BLOG_DISPATCH_TOKEN — a fine-grained PAT scoped to
+# ofcRS/shck.dev with Contents: read+write. If the secret is absent the job logs a ::warning::
+# and exits 0 (fail-soft), so a release never shows a red X for a missing optional notification.
+name: announce-release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-blog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch tool-release to ofcRS/shck.dev
+        env:
+          GH_TOKEN: ${{ secrets.BLOG_DISPATCH_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ github.event.release.name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning title=announce-release skipped::BLOG_DISPATCH_TOKEN secret is not set — skipping blog dispatch for ${TAG}. Add the secret to enable changelog + announcement automation."
+            exit 0
+          fi
+          jq -n \
+            --arg tool "kleoth" \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg tag "$TAG" \
+            --arg name "$NAME" \
+            --arg url "$URL" \
+            --arg body "$BODY" \
+            '{event_type: "tool-release",
+              client_payload: {tool: $tool, repo: $repo, tag: $tag, name: $name, url: $url, body: $body}}' \
+          | gh api repos/ofcRS/shck.dev/dispatches --input -
