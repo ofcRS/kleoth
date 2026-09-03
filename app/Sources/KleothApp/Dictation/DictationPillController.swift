@@ -5,14 +5,17 @@ import KleothCore
 /// Owns the dictation pill's panel: when it is on screen, where it sits, how it
 /// moves between phases, and when it hides itself (design §3.19, §5.6).
 ///
-/// Placement model (reworked 2026-09-03 after the reference bar): the pill has
-/// ONE anchor — the saved placement, else bottom-center of the screen under the
-/// mouse, just above its bottom edge. Every active phase sits on that anchor
-/// (centered on it, so phase-to-phase size changes grow in place). The resting
-/// `.idle` capsule is the same anchor slid into the nearest screen edge until
-/// half of it is off-screen (`PillGeometry.restingOrigin`), and a chord makes
-/// it rise back out to the anchor. Dragging moves the anchor. A pill whose
-/// nearest edge is a side stands up — vertical in every phase.
+/// Placement model (reworked 2026-09-03 after the reference bar): the pill is
+/// DOCKED on one screen edge (bottom by default) and has exactly one degree of
+/// freedom — its position along that edge. The anchor is
+/// `PillGeometry.dockedCenter`: the capsule a fixed inset in from the edge, at
+/// the saved along-axis fraction (else centered). Every active phase sits
+/// centered on that anchor, so phase-to-phase size changes grow in place. The
+/// resting `.idle` capsule is the same anchor slid into its edge until half of
+/// it is off-screen (`PillGeometry.restingOrigin`), and a chord makes it rise
+/// back out. Dragging slides it along the edge; dragging clearly toward
+/// another edge re-docks it there (`PillGeometry.dragEdge`, with hysteresis).
+/// A pill on a side edge stands up — vertical in every phase.
 ///
 /// Motion model: the panel's frame is NEVER animated. Every move is a
 /// `transition(to:phase:)`: the panel is set — instantly — to a *stage* that
@@ -73,6 +76,10 @@ final class DictationPillController: DictationPillPresenting {
     /// completion can never shrink the panel to a rect that is no longer the
     /// destination.
     private var transitionGeneration = 0
+    /// Where along the edge the pointer grabbed the pill, relative to the
+    /// anchor center, so a drag does not snap the pill's center to the cursor.
+    /// Reset to zero when a drag re-docks to an edge with the other axis.
+    private var dragGrabOffset: CGFloat = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -104,7 +111,7 @@ final class DictationPillController: DictationPillPresenting {
         let alreadyUp = panel.isVisible && model.isPresented
         let screen = (alreadyUp ? panelScreen() : nil) ?? anchorScreen()
         currentDisplayId = screen?.kleothDisplayId
-        let edge = restingEdge(on: screen)
+        let edge = dockEdge(on: screen)
         let layout = Self.layout(for: state, edge: edge, on: screen)
         let target = CGRect(origin: origin(for: state, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
 
@@ -200,7 +207,7 @@ final class DictationPillController: DictationPillPresenting {
         defaults.removeObject(forKey: Self.placementDefaultsKey)
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
-        let edge = restingEdge(on: screen)
+        let edge = dockEdge(on: screen)
         let layout = Self.layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
@@ -212,49 +219,69 @@ final class DictationPillController: DictationPillPresenting {
 
     /// Called once at drag start: finishes any in-flight transition (so the
     /// panel is exactly the capsule and the drag moves what the user sees) and
-    /// returns the panel origin the drag deltas are applied to.
-    func beginDrag() -> CGPoint {
+    /// remembers where along the edge the pointer grabbed it.
+    func beginDrag() {
         settle()
-        return panel?.frame.origin ?? .zero
+        guard let screen = panelScreen() ?? defaultScreen() else { return }
+        let mouse = NSEvent.mouseLocation
+        let center = anchorCenter(edge: model.edge, on: screen)
+        dragGrabOffset = model.edge.isVertical ? mouse.y - center.y : mouse.x - center.x
     }
 
-    /// Live drag. The caller computes `origin` from `NSEvent.mouseLocation`
-    /// deltas — never `DragGesture.Value.translation`, which double-counts as
-    /// the window moves under the cursor.
-    func moveDuringDrag(to origin: CGPoint) {
+    /// Live drag, driven by `NSEvent.mouseLocation` (never
+    /// `DragGesture.Value.translation`, which double-counts as the window
+    /// moves under the cursor). The pill slides ALONG its edge only: the
+    /// pointer's along-axis coordinate (minus the grab offset) becomes the
+    /// anchor's, the orthogonal one is the edge's fixed inset. A resting pill
+    /// pops fully on screen while dragged and tucks back on release. Dragging
+    /// clearly toward another edge — past the corner diagonal by
+    /// `PillGeometry.redockHysteresis` — re-docks there, re-laying the panel
+    /// out on the spot (a side edge stands it up).
+    func dragMoved() {
         guard let panel else { return }
-        let screen = screen(containing: CGRect(origin: origin, size: panel.frame.size)) ?? defaultScreen()
-        guard let screen else {
-            panel.setFrameOrigin(origin)
-            return
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
+            ?? panelScreen() ?? defaultScreen() else { return }
+        let edge = PillGeometry.dragEdge(current: model.edge, pointer: mouse, in: screen.frame)
+        if edge != model.edge || screen.kleothDisplayId != currentDisplayId {
+            if edge.isVertical != model.edge.isVertical { dragGrabOffset = 0 }
+            currentDisplayId = screen.kleothDisplayId
+            model.apply(edge: edge)
+            model.apply(labelWidth: Self.layout(for: model.phase, edge: edge, on: screen).labelWidth)
         }
-        // A resting pill pops fully on screen while it is being dragged (the
-        // clamp keeps the whole capsule visible) and tucks back on release.
-        panel.setFrameOrigin(
-            PillGeometry.clamp(origin, panelSize: panel.frame.size, in: Self.bounds(of: screen))
+        let along = (edge.isVertical ? mouse.y : mouse.x) - dragGrabOffset
+        let center = PillGeometry.dockedCenter(
+            edge: edge, along: along, panelSize: Self.referenceSize(edge: edge, on: screen),
+            shadowPadding: Self.shadowPadding, in: Self.bounds(of: screen)
+        )
+        let size = Self.layout(for: model.phase, edge: edge, on: screen).panelSize
+        panel.setFrame(
+            CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height),
+            display: true
         )
     }
 
-    /// Persists where the user dropped the pill, as fractions of the screen it
-    /// landed on (see `PillPlacement`). The drop spot is the new *anchor*; the
-    /// pill then re-lays out for the edge it is now nearest to (a side edge
-    /// stands it up) and, if resting, slides back into that edge.
+    /// Persists where the user dropped the pill: the edge it is docked on and
+    /// its fraction along it (see `PillPlacement`). The pill then springs to
+    /// its phase's spot — tucked into the edge if resting.
     func commitDraggedPlacement() {
         guard let panel else { return }
-        let frame = panel.frame
-        guard let screen = screen(containing: frame) ?? defaultScreen() else { return }
+        guard let screen = panelScreen() ?? defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
-        let placement = PillGeometry.placement(
-            origin: frame.origin,
-            panelSize: frame.size,
+        // The dragged frame is the phase's panel centered on the anchor, so
+        // its center fractions ARE the anchor's.
+        var placement = PillGeometry.placement(
+            origin: panel.frame.origin,
+            panelSize: panel.frame.size,
             in: Self.bounds(of: screen),
             displayId: screen.kleothDisplayId ?? 0,
             displayName: screen.localizedName
         )
+        placement.edge = model.edge
         if let data = try? JSONEncoder().encode(placement) {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
-        let edge = restingEdge(on: screen)
+        let edge = dockEdge(on: screen)
         let layout = Self.layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
@@ -449,7 +476,7 @@ final class DictationPillController: DictationPillPresenting {
         guard let screen = panelScreen() ?? anchorScreen() else { return }
         settle()
         currentDisplayId = screen.kleothDisplayId
-        let edge = restingEdge(on: screen)
+        let edge = dockEdge(on: screen)
         let layout = Self.layout(for: model.phase, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
@@ -474,20 +501,25 @@ final class DictationPillController: DictationPillPresenting {
             : CGSize(width: long.width, height: thick.height)
     }
 
-    /// The anchor's center: the saved placement if its display is still
-    /// around, else bottom-center of the screen **under the mouse**. For an
-    /// `.accessory` app with no key window `NSScreen.main` is whatever screen
-    /// last had one — unreliable — while the mouse is where the user is looking.
+    /// The anchor's center: the reference panel docked on `edge` at the saved
+    /// along-axis fraction (if the saved placement is for this screen), else
+    /// centered on the edge. The screen is the caller's choice — for a fresh
+    /// show that is the placement's display, else the one **under the mouse**
+    /// (for an `.accessory` app with no key window `NSScreen.main` is whatever
+    /// screen last had one — unreliable — while the mouse is where the user
+    /// is looking).
     private func anchorCenter(edge: PillGeometry.Edge, on screen: NSScreen) -> CGPoint {
         let bounds = Self.bounds(of: screen)
         let reference = Self.referenceSize(edge: edge, on: screen)
-        let origin: CGPoint
+        let along: CGFloat
         if let placement = savedPlacement(), self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
-            origin = PillGeometry.origin(for: placement, panelSize: reference, in: bounds)
+            along = PillGeometry.along(for: placement, edge: edge, in: bounds)
         } else {
-            origin = PillGeometry.defaultOrigin(panelSize: reference, shadowPadding: Self.shadowPadding, in: bounds)
+            along = edge.isVertical ? bounds.midY : bounds.midX
         }
-        return CGPoint(x: origin.x + reference.width / 2, y: origin.y + reference.height / 2)
+        return PillGeometry.dockedCenter(
+            edge: edge, along: along, panelSize: reference, shadowPadding: Self.shadowPadding, in: bounds
+        )
     }
 
     /// A phase's active origin: its panel centered on the anchor. Clamping is
@@ -500,12 +532,18 @@ final class DictationPillController: DictationPillPresenting {
         return PillGeometry.clamp(origin, panelSize: size, in: Self.bounds(of: screen))
     }
 
-    /// The edge the pill lives on for `screen`: the one nearest the anchor
-    /// center (resolved with the horizontal reference so that standing the
-    /// pill up for a side edge cannot flip the answer).
-    private func restingEdge(on screen: NSScreen?) -> PillGeometry.Edge {
-        guard let screen else { return .bottom }
-        let center = anchorCenter(edge: .bottom, on: screen)
+    /// The edge the pill is docked on for `screen`: the saved one, or — for a
+    /// placement written before docking existed — the edge nearest its saved
+    /// center; bottom when nothing is saved for this screen.
+    private func dockEdge(on screen: NSScreen?) -> PillGeometry.Edge {
+        guard let screen, let placement = savedPlacement(),
+              self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId else { return .bottom }
+        if let edge = placement.edge { return edge }
+        let bounds = Self.bounds(of: screen)
+        let center = CGPoint(
+            x: bounds.minX + CGFloat(placement.relativeCenterX) * bounds.width,
+            y: bounds.minY + CGFloat(placement.relativeCenterY) * bounds.height
+        )
         return PillGeometry.nearestEdge(ofPanelAt: center, panelSize: .zero, in: screen.frame)
     }
 

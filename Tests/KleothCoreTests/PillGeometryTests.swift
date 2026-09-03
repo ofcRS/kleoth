@@ -247,6 +247,57 @@ import CoreGraphics
         #expect(left.x == screen.minX - panelSize.width / 2)
     }
 
+    @Test func dockedCenterHasOneDegreeOfFreedom() {
+        let bounds = CGRect(x: 0, y: 0, width: 1600, height: 975)
+        // Bottom: y is fixed by the inset, x follows `along` and clamps.
+        let bottom = PillGeometry.dockedCenter(edge: .bottom, along: 300, panelSize: panelSize, shadowPadding: shadowPadding, in: bounds)
+        #expect(bottom.x == 300)
+        #expect(bottom.y == PillGeometry.defaultBottomInset - shadowPadding + panelSize.height / 2)
+        let farLeft = PillGeometry.dockedCenter(edge: .bottom, along: -999, panelSize: panelSize, shadowPadding: shadowPadding, in: bounds)
+        #expect(farLeft.x == PillGeometry.edgeMargin + panelSize.width / 2)
+        #expect(farLeft.y == bottom.y)
+        // The capsule bottom (panel bottom + shadow) sits exactly `defaultBottomInset` up.
+        #expect(bottom.y - panelSize.height / 2 + shadowPadding == PillGeometry.defaultBottomInset)
+        // Right: x is fixed, y follows.
+        let right = PillGeometry.dockedCenter(edge: .right, along: 500, panelSize: panelSize, shadowPadding: shadowPadding, in: bounds)
+        #expect(right.y == 500)
+        #expect(right.x == bounds.maxX - (PillGeometry.defaultBottomInset - shadowPadding) - panelSize.width / 2)
+        let top = PillGeometry.dockedCenter(edge: .top, along: 500, panelSize: panelSize, shadowPadding: shadowPadding, in: bounds)
+        #expect(top.y == bounds.maxY - (PillGeometry.defaultBottomInset - shadowPadding) - panelSize.height / 2)
+        let left = PillGeometry.dockedCenter(edge: .left, along: 5000, panelSize: panelSize, shadowPadding: shadowPadding, in: bounds)
+        #expect(left.y == bounds.maxY - PillGeometry.edgeMargin - panelSize.height / 2)
+    }
+
+    @Test func dragEdgeNeedsHysteresisToRedock() {
+        let frame = CGRect(x: 0, y: 0, width: 1600, height: 1000)
+        // Sliding along the bottom: still bottom just past the corner diagonal.
+        #expect(PillGeometry.dragEdge(current: .bottom, pointer: CGPoint(x: 60, y: 80), in: frame) == .bottom)
+        // Clearly closer to the left edge → re-dock.
+        #expect(PillGeometry.dragEdge(current: .bottom, pointer: CGPoint(x: 20, y: 300), in: frame) == .left)
+        // From the right edge dragged down to the bottom.
+        #expect(PillGeometry.dragEdge(current: .right, pointer: CGPoint(x: 1400, y: 10), in: frame) == .bottom)
+        // Nearer the current edge than any other: stay put.
+        #expect(PillGeometry.dragEdge(current: .right, pointer: CGPoint(x: 1300, y: 500), in: frame) == .right)
+        // Dead center: the nearest edge wins once it is clearly nearer.
+        #expect(PillGeometry.dragEdge(current: .right, pointer: CGPoint(x: 800, y: 500), in: frame) == .bottom)
+        #expect(PillGeometry.distance(from: CGPoint(x: 10, y: 990), to: .top, in: frame) == 10)
+    }
+
+    @Test func placementEdgeRoundTripsAndOldBlobsDecode() throws {
+        let placement = PillPlacement(
+            displayId: 1, displayName: "Main", visibleWidth: 1600, visibleHeight: 975,
+            relativeCenterX: 0.25, relativeCenterY: 0.5, edge: .right
+        )
+        let data = try JSONEncoder().encode(placement)
+        #expect(try JSONDecoder().decode(PillPlacement.self, from: data) == placement)
+        let old = Data(#"{"displayId":1,"displayName":"Main","visibleWidth":1600,"visibleHeight":975,"relativeCenterX":0.25,"relativeCenterY":0.5}"#.utf8)
+        let decoded = try JSONDecoder().decode(PillPlacement.self, from: old)
+        #expect(decoded.edge == nil)
+        let bounds = CGRect(x: 0, y: 0, width: 1600, height: 975)
+        #expect(PillGeometry.along(for: placement, edge: .right, in: bounds) == 487.5)
+        #expect(PillGeometry.along(for: placement, edge: .bottom, in: bounds) == 400)
+    }
+
     @Test func smoothLevelAttackFasterThanRelease() {
         let rising = PillGeometry.smoothLevel(previous: 0, target: 1)
         let falling = PillGeometry.smoothLevel(previous: 1, target: 0)

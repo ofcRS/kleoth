@@ -348,6 +348,16 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   that ends last AND actually changes state (a no-op `withAnimation` body completes immediately) —
   plus a `.phaseAnimator` squash-and-stretch on the capsule (x 1.06 / y 0.88 in its own space,
   0.2 s out, 0.45 s back) triggered by every phase change as anticipation.
+  Fourth follow-up (user: "don't allow free drag — one axis along the edge, orthogonal axis fixed"):
+  the pill is DOCKED. `PillGeometry.Edge` is now `String, Codable` and stored in `PillPlacement.edge`
+  (optional; older blobs → nearest edge of the saved center). Anchor = `PillGeometry.dockedCenter`
+  (capsule `defaultBottomInset` in from the edge, at the saved along-axis fraction, clamped; tested).
+  Drag: `beginDrag()` records the grab offset along the axis, `dragMoved()` reads
+  `NSEvent.mouseLocation`, picks the edge via `PillGeometry.dragEdge` (re-dock only when the pointer is
+  ≥`redockHysteresis` 48 pt closer to another edge — tested), re-lays the panel out on an edge flip
+  (side edge = stands up), and docks the phase's panel centered on the reference anchor;
+  `commitDraggedPlacement` stores edge + fraction and transitions (tucks if idle). The view's drag
+  gesture no longer computes origins. `defaultOrigin` is now test-only. 247 tests.
 - **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
   then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
   the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]

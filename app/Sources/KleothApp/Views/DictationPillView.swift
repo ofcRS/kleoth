@@ -35,9 +35,8 @@ struct DictationPillView: View {
     @EnvironmentObject private var model: DictationPillModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Drag anchors, captured from `NSEvent.mouseLocation` at drag start.
-    @State private var dragStartMouse: CGPoint?
-    @State private var dragStartOrigin: CGPoint = .zero
+    /// True between the first `onChanged` and `onEnded` of a drag.
+    @State private var dragging = false
 
     init(controller: DictationPillController) {
         self.controller = controller
@@ -211,38 +210,24 @@ struct DictationPillView: View {
             .frame(width: model.labelWidth, alignment: .leading)
     }
 
-    /// Moving the panel from a `DragGesture` has one trap: `value.translation`
-    /// is measured against a coordinate space that moves with the window, so it
-    /// double-counts and the pill runs away from the cursor. Screen-absolute
-    /// `NSEvent.mouseLocation` deltas against the origin captured at drag start
-    /// track 1:1. `minimumDistance: 3` leaves the buttons clickable.
+    /// The pill slides along its edge (and re-docks when dragged clearly
+    /// toward another one); the controller reads `NSEvent.mouseLocation`
+    /// itself — `value.translation` is measured against a coordinate space
+    /// that moves with the window, so it double-counts and the pill runs away
+    /// from the cursor. `minimumDistance: 3` leaves the buttons clickable.
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { _ in
-                let mouse = NSEvent.mouseLocation
-                if dragStartMouse == nil {
-                    dragStartMouse = mouse
-                    dragStartOrigin = controller.beginDrag()
+                if !dragging {
+                    dragging = true
+                    controller.beginDrag()
                 }
-                guard let start = dragStartMouse else { return }
-                controller.moveDuringDrag(
-                    to: CGPoint(
-                        x: dragStartOrigin.x + (mouse.x - start.x),
-                        y: dragStartOrigin.y + (mouse.y - start.y)
-                    )
-                )
+                controller.dragMoved()
             }
             .onEnded { _ in
-                if let start = dragStartMouse {
-                    let mouse = NSEvent.mouseLocation
-                    controller.moveDuringDrag(
-                        to: CGPoint(
-                            x: dragStartOrigin.x + (mouse.x - start.x),
-                            y: dragStartOrigin.y + (mouse.y - start.y)
-                        )
-                    )
-                }
-                dragStartMouse = nil
+                guard dragging else { return }
+                controller.dragMoved()
+                dragging = false
                 controller.commitDraggedPlacement()
             }
     }

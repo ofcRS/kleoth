@@ -28,6 +28,11 @@ public struct PillPlacement: Codable, Equatable, Sendable {
     /// Panel center as a fraction of `visibleFrame` height, **0 = bottom**
     /// (Cocoa's y-up screen coordinates).
     public var relativeCenterY: Double
+    /// The screen edge the pill is docked on. Only the fraction ALONG that
+    /// edge matters for placement (the other one is derived from the edge —
+    /// `PillGeometry.dockedCenter`); both are kept so a blob written before
+    /// docking existed (nil edge) still restores by nearest edge.
+    public var edge: PillGeometry.Edge?
 
     public init(
         displayId: UInt32,
@@ -35,7 +40,8 @@ public struct PillPlacement: Codable, Equatable, Sendable {
         visibleWidth: Double,
         visibleHeight: Double,
         relativeCenterX: Double,
-        relativeCenterY: Double
+        relativeCenterY: Double,
+        edge: PillGeometry.Edge? = nil
     ) {
         self.displayId = displayId
         self.displayName = displayName
@@ -43,6 +49,7 @@ public struct PillPlacement: Codable, Equatable, Sendable {
         self.visibleHeight = visibleHeight
         self.relativeCenterX = relativeCenterX
         self.relativeCenterY = relativeCenterY
+        self.edge = edge
     }
 }
 
@@ -67,10 +74,19 @@ public enum PillGeometry {
     /// `clamp` lets the capsule sit to the edge.
     public static let defaultBottomInset: CGFloat = 26
 
-    /// The screen edge a resting pill tucks into.
-    public enum Edge: Equatable, Sendable {
+    /// The screen edge the pill is docked on. Stored in `PillPlacement` by its
+    /// raw value (acronym-free, per the stored-key rule).
+    public enum Edge: String, Codable, Equatable, Sendable {
         case bottom, top, left, right
+
+        /// Left/right: the pill stands vertically and slides along y.
+        public var isVertical: Bool { self == .left || self == .right }
     }
+    /// How much closer (in points) the pointer must be to another edge than
+    /// to the current one before a drag re-docks the pill there. Without
+    /// this a drag along the bottom would flip to a side edge the moment the
+    /// pointer crossed the corner diagonal and flip back a pixel later.
+    public static let redockHysteresis: CGFloat = 48
     /// Meter shaping exponent. > 1 so room tone near the −55 dBFS floor stays
     /// visually quiet and speech still swings the bars.
     public static let levelGamma: Double = 1.4
@@ -113,6 +129,64 @@ public enum PillGeometry {
             best = candidate
         }
         return best.0
+    }
+
+    /// Distance from `point` to `edge` of `frame` (negative once past it).
+    public static func distance(from point: CGPoint, to edge: Edge, in frame: CGRect) -> CGFloat {
+        switch edge {
+        case .bottom: return point.y - frame.minY
+        case .top: return frame.maxY - point.y
+        case .left: return point.x - frame.minX
+        case .right: return frame.maxX - point.x
+        }
+    }
+
+    /// The edge a drag should dock on: stays on `current` unless the pointer
+    /// is at least `redockHysteresis` closer to another edge.
+    public static func dragEdge(current: Edge, pointer: CGPoint, in frame: CGRect) -> Edge {
+        let candidate = nearestEdge(ofPanelAt: pointer, panelSize: .zero, in: frame)
+        guard candidate != current else { return current }
+        let currentDistance = distance(from: pointer, to: current, in: frame)
+        let candidateDistance = distance(from: pointer, to: candidate, in: frame)
+        guard currentDistance.isFinite, candidateDistance.isFinite else { return current }
+        return candidateDistance + redockHysteresis < currentDistance ? candidate : current
+    }
+
+    // MARK: Docking
+
+    /// The center of a panel docked on `edge` of `bounds`: its capsule sits
+    /// `defaultBottomInset` in from that edge (`shadowPadding` is the panel's
+    /// transparent margin around the capsule) and its center lies at `along`
+    /// on the edge's axis — x for bottom/top, y for the sides — clamped so the
+    /// whole panel stays inside `bounds` with `edgeMargin` to spare. This is
+    /// the one degree of freedom a drag has.
+    public static func dockedCenter(
+        edge: Edge, along: CGFloat, panelSize: CGSize, shadowPadding: CGFloat, in bounds: CGRect
+    ) -> CGPoint {
+        let inset = defaultBottomInset - shadowPadding
+        switch edge {
+        case .bottom, .top:
+            let y = edge == .bottom
+                ? bounds.minY + inset + panelSize.height / 2
+                : bounds.maxY - inset - panelSize.height / 2
+            let x = pin(along, lower: bounds.minX + edgeMargin + panelSize.width / 2,
+                        upper: bounds.maxX - edgeMargin - panelSize.width / 2)
+            return CGPoint(x: x, y: y)
+        case .left, .right:
+            let x = edge == .left
+                ? bounds.minX + inset + panelSize.width / 2
+                : bounds.maxX - inset - panelSize.width / 2
+            let y = pin(along, lower: bounds.minY + edgeMargin + panelSize.height / 2,
+                        upper: bounds.maxY - edgeMargin - panelSize.height / 2)
+            return CGPoint(x: x, y: y)
+        }
+    }
+
+    /// The along-axis coordinate a saved placement encodes for `edge`.
+    public static func along(for placement: PillPlacement, edge: Edge, in bounds: CGRect) -> CGFloat {
+        edge.isVertical
+            ? bounds.minY + CGFloat(sanitizedFraction(placement.relativeCenterY)) * bounds.height
+            : bounds.minX + CGFloat(sanitizedFraction(placement.relativeCenterX)) * bounds.width
     }
 
     /// Where the pill rests between dictations: the *active* panel rect slid
