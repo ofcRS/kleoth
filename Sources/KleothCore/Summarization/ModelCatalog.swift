@@ -68,6 +68,7 @@ public struct ModelCatalog: Sendable {
     /// ``migrating(_:)`` maps away).
     public static let curatedFallback: [String] = [
         defaultModel,                      // z-ai/glm-5.3-flash
+        "google/gemini-3.5-flash-lite",    // DictationDefaults.polishModel
         "google/gemini-3.8-flash",         // selectable, not default (ZDR-blocked on some accounts)
         "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",

@@ -3,26 +3,41 @@ import Foundation
 /// Single source of truth for every dictation constant. Nothing else may
 /// redefine these numbers.
 public enum DictationDefaults {
-    /// Verified live 2026-09-03: 200 with strict `json_schema` + `temperature`, Russian preserved,
-    /// fillers removed. Chosen over `google/gemini-3.8-flash` because, on this account, that slug
-    /// 404s (`zdr-violation-by-account`) whenever the body carries `temperature` under
-    /// `require_parameters: true` — the polish call's first attempt — so every dictation on it
-    /// would pay an extra round trip for `OpenRouterClient.complete`'s relaxed retry. It is NOT
-    /// "every Google endpoint": the same body without `temperature` returns 200, and
-    /// `gemini-3.5-flash` / `gemini-3.1-pro-preview` accept schema + temperature (measured
-    /// 2026-09-03). See CLAUDE.md.
-    public static let polishModel = "z-ai/glm-5.3-flash"
-    /// Models whose polish request carries `reasoning: {effort: "low"}`
-    /// (`OpenRouterReasoning.low`). The cap is model-specific, NOT a general
-    /// speed-up — measured live 2026-09-03 under `require_parameters: true`:
-    /// on `z-ai/glm-5.3-flash` it drops ~100–360 reasoning tokens to 0 and
-    /// mean latency 8.4 s → 3.4 s with identical output; on
-    /// `meta-llama/llama-3.3-70b-instruct` the same body **404s** ("No
-    /// endpoints found that can handle the requested parameters" — the client's
-    /// relaxed retry recovers, at the price of a round trip); on
-    /// `deepseek/deepseek-v4-flash` it *enables* reasoning (0 → 216 tokens,
-    /// 4.9 s → 9.5 s). Add a slug here only after measuring it.
-    public static let reasoningCappedModels: Set<String> = ["z-ai/glm-5.3-flash"]
+    /// Polish model. Benchmarked live 2026-09-03 through the real `DictationPolisher`
+    /// (`dictate --text … --runs 4`, RU + EN samples, strict `json_schema`, `temperature 0.2`,
+    /// `require_parameters: true`): `google/gemini-3.5-flash-lite` median **0.85–1.05 s**
+    /// ($0.0006/dictation, RU preserved, self-corrections applied, spoken lists rendered);
+    /// `google/gemini-3.8-flash` + `reasoning low` 1.45 s; `z-ai/glm-5.3-flash` + `reasoning low`
+    /// 3.6–4.1 s; `deepseek-v4-flash` / `qwen3.7-flash` time out at 8 s (uncapped reasoning).
+    /// Latency is what the user feels between releasing the key and the paste, so the fastest
+    /// correct model wins. Needs Google reachable on the account (ZDR toggle off — see CLAUDE.md);
+    /// when it is not, the polisher falls through to `fallbackPolishModel`.
+    public static let polishModel = "google/gemini-3.5-flash-lite"
+    /// Second model tried when the primary fails with an HTTP error (routing 404 under an
+    /// account guardrail, 429, 5xx) and enough of `polishTimeout` is left. Chosen because it is
+    /// reachable under every OpenRouter privacy setting seen on this account (ZDR on or off) and
+    /// verified live (200, RU preserved). Set to nil to disable the second attempt.
+    public static let fallbackPolishModel: String? = "z-ai/glm-5.3-flash"
+    /// Minimum remaining budget worth spending on the fallback attempt.
+    public static let minimumFallbackBudget: TimeInterval = 2
+    /// Per-model `reasoning` caps sent with the polish request. Model-specific, NOT a general
+    /// speed-up — measured live 2026-09-03 under `require_parameters: true`: on
+    /// `z-ai/glm-5.3-flash` `low` drops ~100–360 reasoning tokens to 0 (mean 8.4 s → 3.4 s,
+    /// identical output); on `google/gemini-3.8-flash` `low` turns cut-off/timeout fallbacks into
+    /// 1.2–1.6 s successes; `minimal` measured fine on the other Gemini Flash models. On
+    /// `meta-llama/llama-3.3-70b-instruct` the key **404s** ("No endpoints found that can handle
+    /// the requested parameters" — the client's relaxed retry recovers, at the price of a round
+    /// trip); on `deepseek/deepseek-v4-flash` it *enables* reasoning (0 → 216 tokens, 4.9 → 9.5 s).
+    /// Add a slug here only after measuring it with `dictate --text … --reasoning <effort>`.
+    public static let reasoningCaps: [String: OpenRouterReasoning.Effort] = [
+        "z-ai/glm-5.3-flash": .low,
+        "google/gemini-3.8-flash": .low,
+        "google/gemini-3.7-flash": .minimal,
+        "google/gemini-3.5-flash": .minimal,
+        "google/gemini-3.5-flash-lite": .minimal,
+    ]
+    /// The slugs in `reasoningCaps`.
+    public static var reasoningCappedModels: Set<String> { Set(reasoningCaps.keys) }
     public static let transcriptionModel = "scribe_v2"
     public static let hotkeyDescription = "fn + shift"
     /// A chord held shorter than this (with no double-tap) is discarded.

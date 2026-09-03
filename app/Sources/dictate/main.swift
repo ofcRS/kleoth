@@ -12,6 +12,7 @@ import KleothCore
 /// unless `--model` overrides it. Key values are never printed.
 ///
 ///     dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish]
+///     dictate --text "<raw transcript>" [--language rus] [--runs N] [--model <slug>]   // polish-only benchmark
 ///
 /// A future `--transcriber realtime` slots in at `makeTranscriber` below first;
 /// the rest of the pipeline is engine-agnostic.
@@ -26,6 +27,42 @@ struct DictateMain {
         let credentials = Credentials.resolve()
         let settings = Settings.load()
         let model = arguments.model ?? settings.dictationModel
+
+        // Polish-only benchmark: skip capture + STT and time the real polisher.
+        if let text = arguments.text {
+            guard let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty else {
+                fail("no OpenRouter key")
+            }
+            let terms = Keyterms.sanitize(PersonalDictionaryStore().load())
+            let context = DictationContext(
+                appBundleId: arguments.bundleId, appName: nil,
+                languageCode: arguments.language, dictionary: terms
+            )
+            let reasoning = arguments.reasoning.map { OpenRouterReasoning(effort: $0) }
+            let polisher = DictationPolisher(
+                client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
+                model: model,
+                reasoningOverride: reasoning
+            )
+            print("model     : \(model)  reasoning \(arguments.reasoning?.rawValue ?? "<allowlist>")  (\(arguments.runs) run(s), \(text.count) chars, language \(arguments.language ?? "<nil>"))")
+            var times: [Double] = []
+            for run in 1...arguments.runs {
+                let started = Date()
+                let result = await polisher.polish(rawText: text, context: context)
+                let seconds = Date().timeIntervalSince(started)
+                times.append(seconds)
+                switch result {
+                case .polished(let out, let language, let cost):
+                    print("run \(run)     : ok \(format(seconds)) s, lang \(language ?? "<nil>"), $\(String(format: "%.6f", cost))")
+                    if run == 1 { print("polished  : \(out)") }
+                case .raw(_, let reason, _):
+                    print("run \(run)     : FELL BACK after \(format(seconds)) s — \(reason)")
+                }
+            }
+            let sorted = times.sorted()
+            print("summary   : min \(format(sorted.first!)) s, median \(format(sorted[sorted.count / 2])) s, max \(format(sorted.last!)) s")
+            return
+        }
 
         guard let elevenLabsKey = credentials.elevenLabsKey, !elevenLabsKey.isEmpty else {
             fail("no ElevenLabs API key (set ELEVEN_API_KEY, a .env, or ~/.config/kleoth/config.json)")
@@ -185,6 +222,10 @@ struct DictateMain {
         var model: String?
         var bundleId: String?
         var polish = true
+        var text: String?
+        var language: String?
+        var runs = 1
+        var reasoning: OpenRouterReasoning.Effort?
     }
 
     static func parse(_ args: ArraySlice<String>) -> Arguments {
@@ -203,6 +244,18 @@ struct DictateMain {
                 parsed.bundleId = value
             case "--no-polish":
                 parsed.polish = false
+            case "--text":
+                guard let value = iterator.next() else { usage() }
+                parsed.text = value
+            case "--language":
+                guard let value = iterator.next() else { usage() }
+                parsed.language = value
+            case "--reasoning":
+                guard let value = iterator.next(), let effort = OpenRouterReasoning.Effort(rawValue: value) else { usage() }
+                parsed.reasoning = effort
+            case "--runs":
+                guard let value = iterator.next(), let runs = Int(value), runs > 0 else { usage() }
+                parsed.runs = runs
             case "-h", "--help":
                 usage()
             default:
@@ -215,7 +268,7 @@ struct DictateMain {
 
     static func usage() -> Never {
         FileHandle.standardError.write(Data(
-            "usage: dictate [seconds] [--transcriber scribe] [--model <openrouter-slug>] [--app <bundle-id>] [--no-polish]\n".utf8
+            "usage: dictate [seconds] [--transcriber scribe] [--model <openrouter-slug>] [--app <bundle-id>] [--no-polish]\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n".utf8
         ))
         exit(2)
     }

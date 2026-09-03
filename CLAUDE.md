@@ -144,8 +144,10 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
 
 ## Summarization
 - OpenRouter chat-completions. **Default model: `z-ai/glm-5.3-flash`** = `ModelCatalog.defaultModel`
-  (the ONE place the literal lives; `Settings.load`, `Summarizer.init` read it;
-  `DictationDefaults.polishModel` repeats the same slug — a test pins them equal). **Verified live
+  (the ONE place the literal lives; `Settings.load`, `Summarizer.init` read it).
+  `DictationDefaults.polishModel` is DIFFERENT since the latency pass: `google/gemini-3.5-flash-lite`
+  (median 0.85–1.05 s per polish) with `fallbackPolishModel` = `ModelCatalog.defaultModel` (a test
+  pins that equality) — see the 2026-09-03 latency bullet. **Verified live
   2026-09-03** (200 with strict `json_schema`, RU preserved). Chosen over `google/gemini-3.8-flash`
   because this account's ZDR guardrail 404s every `google/*` endpoint — see the data-policy note
   below; Gemini 3.8 stays selectable in `curatedFallback`. Was `google/gemini-3-flash-preview`
@@ -284,6 +286,25 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   content under the strict dictation schema (reasoning eats the 1024-token cap, 17–28 s) — poor
   polish picks; they stay in `curatedFallback` for summaries (8192-token budget) untested.
   `polishTimeout` stays 8 s (max capped run 4.9 s). Probe scripts were scratch-only (not committed).
+- **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
+  then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
+  the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]
+  [--runs N] [--model <slug>] [--reasoning minimal|low|medium|high]` — that times the REAL
+  `DictationPolisher` (`reasoningOverride` init param). Medians over 4 runs, RU sample, strict schema:
+  **`google/gemini-3.5-flash-lite` 0.85–1.05 s** ($0.0006, correct) · `gemini-3.8-flash` + low 1.45 s
+  (uncapped: cut off / 8 s timeout — it thinks) · `gemini-3.7-flash` + minimal 1.55 s · `gemini-3.5-flash`
+  + minimal 1.85 s (uncapped 6.5 s) · `z-ai/glm-5.3` 1.75 s · **`z-ai/glm-5.3-flash` + low 3.6–4.1 s
+  (the previous default — what the user felt)** · `deepseek-v4-flash-0731`, `qwen3.7-flash` → 8 s
+  timeout every run. Shipped: `DictationDefaults.polishModel = google/gemini-3.5-flash-lite`;
+  `fallbackPolishModel = z-ai/glm-5.3-flash` (+ `minimumFallbackBudget` 2 s) — `DictationPolisher`
+  tries it once when the primary fails with an HTTP error (guardrail 404 after the client-side relaxed
+  retry, 429, 5xx) and ≥2 s of the 8 s budget remain; never after a timeout/cancel/bad answer
+  (tests: `httpFailureOnThePrimaryFallsThroughToTheFallbackModel`, `fallbackIsNotTried…` ×2);
+  `reasoningCappedModels: Set` → `reasoningCaps: [slug: Effort]` (glm-5.3-flash low, gemini-3.8-flash
+  low, gemini-3.7/3.5/3.5-lite minimal; `reasoningCappedModels` kept as a computed Set);
+  `ModelCatalog.curatedFallback` gained the lite slug. Summary default unchanged (glm works under
+  every privacy setting; no latency pressure). Live after the change: default 0.76–1.29 s over 5 runs;
+  bogus primary → glm fallback 2.3 s (one glm run then hit the remaining-budget timeout — glm variance).
 - **Review pass (same day, 5-dimension multi-agent review — concurrency / macOS APIs / pipeline / UI /
   compliance; every finding adversarially verified):** 19 findings confirmed (5 medium, 14 low) and
   ~50 suspected items checked and found CORRECT (recorded in the review brief; e.g. `shared` is set

@@ -88,15 +88,28 @@ public struct DictationPolisher: Sendable {
     public let client: OpenRouterClient
     public var model: String
     public var timeout: TimeInterval
+    /// Explicit `reasoning` cap for this polisher; nil → the per-model
+    /// allowlist in `DictationDefaults.reasoningCappedModels` decides.
+    /// Used by the `dictate` benchmark to measure a cap on any model.
+    public var reasoningOverride: OpenRouterReasoning?
+    /// Model tried once more when `model` fails with an HTTP error and at
+    /// least `DictationDefaults.minimumFallbackBudget` of `timeout` remains.
+    /// nil disables the second attempt. Never used after a timeout (the
+    /// budget is spent) or a cancellation.
+    public var fallbackModel: String?
 
     public init(
         client: OpenRouterClient,
         model: String = DictationDefaults.polishModel,
-        timeout: TimeInterval = DictationDefaults.polishTimeout
+        timeout: TimeInterval = DictationDefaults.polishTimeout,
+        reasoningOverride: OpenRouterReasoning? = nil,
+        fallbackModel: String? = DictationDefaults.fallbackPolishModel
     ) {
         self.client = client
         self.model = model
         self.timeout = timeout
+        self.reasoningOverride = reasoningOverride
+        self.fallbackModel = fallbackModel
     }
 
     /// Cleans up `rawText`. Never throws: any failure returns
@@ -119,10 +132,32 @@ public struct DictationPolisher: Sendable {
         // characters rather than by an assumed 4-chars-per-token ratio.
         let maxTokens = min(8192, max(1024, raw.count / 2 + 512))
 
+        let started = ContinuousClock.now
+        let primary = await attempt(model: model, raw: raw, context: context, messages: messages, maxTokens: maxTokens, budget: timeout)
+        guard primary.httpFailure,
+              let fallback = fallbackModel, fallback != model else {
+            return primary.result
+        }
+        // The primary died fast with an HTTP error (guardrail 404, 429, 5xx):
+        // spend what is left of the budget on the fallback model rather than
+        // pasting raw text. Nothing was billed for the failed attempt.
+        let elapsed = started.duration(to: .now)
+        let remaining = timeout - Double(elapsed.components.seconds)
+            - Double(elapsed.components.attoseconds) / 1e18
+        guard remaining >= DictationDefaults.minimumFallbackBudget else { return primary.result }
+        let second = await attempt(model: fallback, raw: raw, context: context, messages: messages, maxTokens: maxTokens, budget: remaining)
+        return second.result
+    }
+
+    /// One polish request against `model`. `httpFailure` is true only when the
+    /// request itself failed with an `OpenRouterError.httpError` (after the
+    /// client's own relaxed retry) — the one case a different model can rescue.
+    private func attempt(
+        model: String, raw: String, context: DictationContext, messages: [ChatMessage], maxTokens: Int, budget: TimeInterval
+    ) async -> (result: DictationPolishResult, httpFailure: Bool) {
         let client = self.client
-        let model = self.model
         do {
-            let response = try await withTimeout(seconds: timeout) {
+            let response = try await withTimeout(seconds: budget) {
                 try await client.complete(
                     messages: messages,
                     model: model,
@@ -132,7 +167,7 @@ public struct DictationPolisher: Sendable {
                     ),
                     maxTokens: maxTokens,
                     temperature: 0.2,
-                    reasoning: Self.reasoning(for: model)
+                    reasoning: reasoningOverride ?? Self.reasoning(for: model)
                 )
             }
 
@@ -141,14 +176,14 @@ public struct DictationPolisher: Sendable {
             let billed = response.usage?.cost ?? 0
 
             if Summarizer.isTruncated(response.finishReason) {
-                return .raw(text: raw, reason: "Polish was cut off — pasted the raw transcript.", cost: billed)
+                return (.raw(text: raw, reason: "Polish was cut off — pasted the raw transcript.", cost: billed), false)
             }
             guard let decoded = Self.decode(response.content) else {
-                return .raw(
+                return (.raw(
                     text: raw,
                     reason: "Polish returned unusable output — pasted the raw transcript.",
                     cost: billed
-                )
+                ), false)
             }
             let polished = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -156,7 +191,7 @@ public struct DictationPolisher: Sendable {
             // reshape. Anything wildly longer is the model having written an
             // email instead of cleaning one up.
             guard !polished.isEmpty, polished.count <= raw.count * 3 + 200 else {
-                return .raw(text: raw, reason: "Polish output looked wrong — pasted the raw transcript.", cost: billed)
+                return (.raw(text: raw, reason: "Polish output looked wrong — pasted the raw transcript.", cost: billed), false)
             }
 
             // Translation guard — the reason the schema asks for `language` at
@@ -167,19 +202,21 @@ public struct DictationPolisher: Sendable {
             if let spoken = Summarizer.languageName(for: context.languageCode),
                let written = Summarizer.languageName(for: decoded.language),
                spoken != written {
-                return .raw(text: raw, reason: "Polish changed the language — pasted the raw transcript.", cost: billed)
+                return (.raw(text: raw, reason: "Polish changed the language — pasted the raw transcript.", cost: billed), false)
             }
 
-            return .polished(text: polished, language: decoded.language, cost: billed)
+            return (.polished(text: polished, language: decoded.language, cost: billed), false)
         } catch is KleothTimeoutError {
-            return .raw(text: raw, reason: "Polish timed out — pasted the raw transcript.")
+            return (.raw(text: raw, reason: "Polish timed out — pasted the raw transcript."), false)
         } catch is CancellationError {
-            return .raw(text: raw, reason: "Cancelled.")
+            return (.raw(text: raw, reason: "Cancelled."), false)
         } catch {
-            return .raw(
+            let isHTTP: Bool
+            if case OpenRouterError.httpError = error { isHTTP = true } else { isHTTP = false }
+            return (.raw(
                 text: raw,
                 reason: "Polish failed (\(Self.shortDescription(of: error))) — pasted the raw transcript."
-            )
+            ), isHTTP)
         }
     }
 
@@ -212,7 +249,7 @@ public struct DictationPolisher: Sendable {
     /// retries without it, costing a round trip) — see the measurements on
     /// `reasoningCappedModels`.
     static func reasoning(for model: String) -> OpenRouterReasoning? {
-        DictationDefaults.reasoningCappedModels.contains(model) ? .low : nil
+        DictationDefaults.reasoningCaps[model].map { OpenRouterReasoning(effort: $0) }
     }
 
     // MARK: - Response parsing

@@ -43,7 +43,9 @@ All notable changes to Kleoth are documented here. The format is based on
 ### Changed
 
 - **Default summary model is now `z-ai/glm-5.3-flash`** (was the retired
-  `google/gemini-3-flash-preview`); the dictation polish model defaults to the same slug. A stored
+  `google/gemini-3-flash-preview`). The dictation polish model defaults to
+  `google/gemini-3.5-flash-lite` (median ~0.9 s per dictation in live measurements, vs 3–4 s on
+  GLM) and falls through to `z-ai/glm-5.3-flash` when the primary is unreachable. A stored
   retired slug is migrated in memory on every launch and rewritten in the Keychain the first time
   Settings opens. Why not Gemini: accounts whose OpenRouter privacy settings enforce Zero Data
   Retention find every `google/*` model blocked (404 `zdr-violation-by-account`), while GLM works

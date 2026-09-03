@@ -136,7 +136,9 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
 
     @Test func http500FallsBackToRaw() async {
         let transport = MockTransport(json: "{\"error\":\"boom\"}", statusCode: 500)
-        let result = await Self.polisher(transport).polish(rawText: "hello there", context: DictationContext())
+        var polisher = Self.polisher(transport)
+        polisher.fallbackModel = nil   // the second-model path has its own tests below
+        let result = await polisher.polish(rawText: "hello there", context: DictationContext())
 
         #expect(result.usedRawFallback)
         #expect(result.text == "hello there")
@@ -157,7 +159,9 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
             .success(Data(body.utf8), MockTransport.httpResponse(url: url, statusCode: 404)),
         ])
 
-        let result = await Self.polisher(transport).polish(rawText: "hello there", context: DictationContext())
+        var polisher = Self.polisher(transport)
+        polisher.fallbackModel = nil   // the second-model path has its own tests below
+        let result = await polisher.polish(rawText: "hello there", context: DictationContext())
 
         #expect(result == .raw(text: "hello there", reason: "Polish failed (OpenRouter returned HTTP 404) — pasted the raw transcript."))
         #expect(transport.callCount == 2)
@@ -280,12 +284,12 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
 
         let body = try Self.requestBody(transport)
         #expect(body["model"] as? String == DictationDefaults.polishModel)
-        #expect(body["model"] as? String == "z-ai/glm-5.3-flash")
+        #expect(body["model"] as? String == "google/gemini-3.5-flash-lite")
         #expect(body["temperature"] as? Double == 0.2)
-        // The default model is a reasoning model: the polish call caps its
-        // thinking (latency). The summarizer never sends this key.
+        // The default model can think: the polish call caps its reasoning
+        // (latency). The summarizer never sends this key.
         let reasoning = try #require(body["reasoning"] as? [String: Any])
-        #expect(reasoning["effort"] as? String == "low")
+        #expect(reasoning["effort"] as? String == "minimal")
         #expect(DictationDefaults.reasoningCappedModels.contains(DictationDefaults.polishModel))
 
         let provider = try #require(body["provider"] as? [String: Any])
@@ -325,7 +329,72 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
         #expect(body["model"] as? String == "meta-llama/llama-3.3-70b-instruct")
         #expect(body["reasoning"] == nil)
         #expect(DictationPolisher.reasoning(for: "meta-llama/llama-3.3-70b-instruct") == nil)
-        #expect(DictationPolisher.reasoning(for: DictationDefaults.polishModel) == .low)
+        #expect(DictationPolisher.reasoning(for: DictationDefaults.polishModel) == OpenRouterReasoning(effort: .minimal))
+        #expect(DictationPolisher.reasoning(for: "z-ai/glm-5.3-flash") == .low)
+        #expect(DictationPolisher.reasoning(for: "google/gemini-3.8-flash") == .low)
+    }
+
+    // MARK: - Fallback model
+
+    @Test func httpFailureOnThePrimaryFallsThroughToTheFallbackModel() async throws {
+        // Live shape: an account whose OpenRouter privacy settings block
+        // google/* — the primary 404s (and the client's relaxed retry 404s
+        // again); the fallback model must still deliver polished text.
+        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        let guardrail = Data("{\"error\":{\"message\":\"0 endpoints out of 1 requested are available matching your guardrail restrictions and data policy.\",\"code\":404}}".utf8)
+        let transport = MockTransport(outcomes: [
+            .success(guardrail, MockTransport.httpResponse(url: url, statusCode: 404)),
+            .success(guardrail, MockTransport.httpResponse(url: url, statusCode: 404)),
+            .success(Data(Self.envelope(content: #"{"text":"Ship it.","language":"en"}"#, cost: 0.0002).utf8),
+                     MockTransport.httpResponse(url: url, statusCode: 200)),
+        ])
+        let result = await Self.polisher(transport).polish(rawText: "uh ship it", context: DictationContext(languageCode: "eng"))
+
+        #expect(result == .polished(text: "Ship it.", language: "en", cost: 0.0002))
+        #expect(transport.callCount == 3)
+        #expect(try Self.requestBody(transport, at: 0)["model"] as? String == DictationDefaults.polishModel)
+        #expect(try Self.requestBody(transport, at: 1)["model"] as? String == DictationDefaults.polishModel)
+        let third = try Self.requestBody(transport, at: 2)
+        #expect(third["model"] as? String == DictationDefaults.fallbackPolishModel)
+        // The fallback gets its own reasoning cap, not the primary's.
+        #expect((third["reasoning"] as? [String: Any])?["effort"] as? String == "low")
+    }
+
+    @Test func fallbackIsNotTriedWhenItIsTheSameModelOrDisabled() async {
+        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        let failing = { MockTransport(outcomes: [
+            .success(Data("{}".utf8), MockTransport.httpResponse(url: url, statusCode: 500)),
+            .success(Data("{}".utf8), MockTransport.httpResponse(url: url, statusCode: 500)),
+            .success(Data("{}".utf8), MockTransport.httpResponse(url: url, statusCode: 500)),
+        ]) }
+
+        let same = failing()
+        var samePolisher = Self.polisher(same)
+        samePolisher.model = "z-ai/glm-5.3-flash"
+        samePolisher.fallbackModel = "z-ai/glm-5.3-flash"
+        let a = await samePolisher.polish(rawText: "uh ship it", context: DictationContext())
+        #expect(a.usedRawFallback)
+        #expect(same.callCount == 1)   // 500 is not retried by the client; no second model
+
+        let disabled = failing()
+        var disabledPolisher = Self.polisher(disabled)
+        disabledPolisher.fallbackModel = nil
+        let b = await disabledPolisher.polish(rawText: "uh ship it", context: DictationContext())
+        #expect(b.usedRawFallback)
+        #expect(disabled.callCount == 1)
+    }
+
+    @Test func fallbackIsNotTriedAfterATimeoutOrABadAnswer() async {
+        // A timeout has spent the budget; a 200 with unusable content is a
+        // model answer, not a routing failure — neither gets a second model.
+        let slow = SlowMockTransport(delay: 5)
+        let timedOut = await Self.polisher(slow, timeout: 0.2).polish(rawText: "uh ship it", context: DictationContext())
+        #expect(timedOut.fallbackReason?.contains("timed out") == true)
+
+        let prose = MockTransport(json: Self.envelope(content: "Sure! Here is the text."))
+        let bad = await Self.polisher(prose).polish(rawText: "uh ship it", context: DictationContext())
+        #expect(bad.usedRawFallback)
+        #expect(prose.callCount == 1)
     }
 
     @Test func stalledTransportTimesOutPromptly() async {

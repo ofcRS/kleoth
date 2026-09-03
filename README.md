@@ -125,7 +125,8 @@ Open **Settings** from the menu bar. Everything here is optional:
 - **Summary model** — any OpenRouter model slug. Default: `z-ai/glm-5.3-flash`.
 - **Transcription language** — *Auto* (detect per meeting) or pin a specific language.
 - **Dictation** — enable hold-to-talk (fn+shift), pick the polish model (default
-  `z-ai/glm-5.3-flash`), edit your personal dictionary (one term per line; the first 100 are
+  `google/gemini-3.5-flash-lite`, the fastest correct one measured — ~0.9 s; if your account blocks
+  Google the polish falls through to `z-ai/glm-5.3-flash`), edit your personal dictionary (one term per line; the first 100 are
   sent with each dictation), reset the pill position. Needs an ElevenLabs key; without an
   OpenRouter key the raw transcript is pasted as-is.
 

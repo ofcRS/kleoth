@@ -106,7 +106,13 @@ import Testing
     @Test func defaultModelIsGLM53Flash() {
         // Not `google/*`: this account's ZDR guardrail 404s every Google endpoint (2026-09-03).
         #expect(ModelCatalog.defaultModel == "z-ai/glm-5.3-flash")
-        #expect(DictationDefaults.polishModel == ModelCatalog.defaultModel)
+        // Dictation polishes on the fastest correct model, summaries on the
+        // one reachable under every privacy setting; both must be real,
+        // non-retired slugs the offline picker offers.
+        #expect(DictationDefaults.polishModel == "google/gemini-3.5-flash-lite")
+        #expect(DictationDefaults.fallbackPolishModel == ModelCatalog.defaultModel)
+        #expect(ModelCatalog.migrating(DictationDefaults.polishModel) == DictationDefaults.polishModel)
+        #expect(ModelCatalog.curatedFallback.contains(DictationDefaults.polishModel))
     }
 
     @Test func geminiStaysSelectableButNotDefault() {
