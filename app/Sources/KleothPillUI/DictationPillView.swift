@@ -105,8 +105,8 @@ struct DictationPillView: View {
             // an edge of something, not a smudge; active phases keep the hairline.
             Capsule(style: .continuous)
                 .strokeBorder(
-                    model.phase == .idle ? PillStyle.restingRim : PillStyle.rim,
-                    lineWidth: model.phase == .idle ? 1 : PillStyle.hairline
+                    (model.phase == .idle || model.phase == .armed) ? PillStyle.restingRim : PillStyle.rim,
+                    lineWidth: (model.phase == .idle || model.phase == .armed) ? 1 : PillStyle.hairline
                 )
         )
         .overlay {
@@ -142,41 +142,41 @@ struct DictationPillView: View {
             KeyframeTrack(\.along) {
                 switch pose.kind {
                 case .rise:
-                    CubicKeyframe(0.82, duration: 0.07)   // anticipation: squat in the edge
-                    SpringKeyframe(1.32, duration: 0.2, spring: .snappy)   // stretch on the way up
-                    SpringKeyframe(0.9, duration: 0.18, spring: .snappy)   // land: squash
-                    SpringKeyframe(1.0, duration: 0.35, spring: .bouncy)
+                    CubicKeyframe(0.82, duration: 0.05)   // anticipation: squat in the edge
+                    SpringKeyframe(1.32, duration: 0.12, spring: .snappy)   // stretch on the way up
+                    SpringKeyframe(0.9, duration: 0.1, spring: .snappy)   // land: squash
+                    SpringKeyframe(1.0, duration: 0.25, spring: .bouncy)
                 case .sink:
-                    CubicKeyframe(1.18, duration: 0.08)   // lift before the dive
-                    SpringKeyframe(0.8, duration: 0.24, spring: .snappy)   // flatten into the edge
-                    SpringKeyframe(1.0, duration: 0.3, spring: .smooth)
+                    CubicKeyframe(1.18, duration: 0.06)   // lift before the dive
+                    SpringKeyframe(0.8, duration: 0.16, spring: .snappy)   // flatten into the edge
+                    SpringKeyframe(1.0, duration: 0.22, spring: .smooth)
                 case .peek:
-                    CubicKeyframe(0.9, duration: 0.06)
-                    SpringKeyframe(1.16, duration: 0.18, spring: .snappy)
-                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                    CubicKeyframe(0.9, duration: 0.04)
+                    SpringKeyframe(1.16, duration: 0.12, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.22, spring: .bouncy)
                 case .morph:
-                    CubicKeyframe(0.94, duration: 0.08)
-                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                    CubicKeyframe(0.94, duration: 0.06)
+                    SpringKeyframe(1.0, duration: 0.22, spring: .bouncy)
                 }
             }
             KeyframeTrack(\.across) {
                 switch pose.kind {
                 case .rise:
-                    CubicKeyframe(1.14, duration: 0.07)
-                    SpringKeyframe(0.9, duration: 0.2, spring: .snappy)
-                    SpringKeyframe(1.07, duration: 0.18, spring: .snappy)
-                    SpringKeyframe(1.0, duration: 0.35, spring: .bouncy)
+                    CubicKeyframe(1.14, duration: 0.05)
+                    SpringKeyframe(0.9, duration: 0.12, spring: .snappy)
+                    SpringKeyframe(1.07, duration: 0.1, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.25, spring: .bouncy)
                 case .sink:
-                    CubicKeyframe(0.94, duration: 0.08)
-                    SpringKeyframe(1.12, duration: 0.24, spring: .snappy)
-                    SpringKeyframe(1.0, duration: 0.3, spring: .smooth)
+                    CubicKeyframe(0.94, duration: 0.06)
+                    SpringKeyframe(1.12, duration: 0.16, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.22, spring: .smooth)
                 case .peek:
-                    CubicKeyframe(1.06, duration: 0.06)
-                    SpringKeyframe(0.94, duration: 0.18, spring: .snappy)
-                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                    CubicKeyframe(1.06, duration: 0.04)
+                    SpringKeyframe(0.94, duration: 0.12, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.22, spring: .bouncy)
                 case .morph:
-                    CubicKeyframe(1.05, duration: 0.08)
-                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                    CubicKeyframe(1.05, duration: 0.06)
+                    SpringKeyframe(1.0, duration: 0.22, spring: .bouncy)
                 }
             }
         }
@@ -207,13 +207,14 @@ struct DictationPillView: View {
         switch model.phase {
         case .hidden:
             EmptyView()
-        case .idle:
+        case .idle, .armed:
             // Nothing when tucked (anything centered would be cut in half);
-            // a mic glyph fades in while the pointer holds it fully on screen.
+            // a mic glyph fades in while the capsule is fully on screen —
+            // under the pointer, or on the chord's first frame (`.armed`).
             ZStack {
                 Color.clear
                     .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
-                if model.peeking {
+                if model.peeking || model.phase == .armed {
                     Image(systemName: "mic.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(PillStyle.ink)
@@ -334,10 +335,10 @@ private struct ContentReveal: ViewModifier {
                 KeyframeTrack(\.opacity) {
                     switch reveal.kind {
                     case .rise:
-                        CubicKeyframe(0.0, duration: 0.14)
-                        CubicKeyframe(1.0, duration: 0.22)
+                        CubicKeyframe(0.0, duration: 0.08)
+                        CubicKeyframe(1.0, duration: 0.16)
                     case .sink:
-                        CubicKeyframe(0.0, duration: 0.12)
+                        CubicKeyframe(0.0, duration: 0.1)
                     case .morph, .peek:
                         CubicKeyframe(1.0, duration: 0.01)
                     }
@@ -345,10 +346,10 @@ private struct ContentReveal: ViewModifier {
                 KeyframeTrack(\.scale) {
                     switch reveal.kind {
                     case .rise:
-                        CubicKeyframe(0.6, duration: 0.14)
-                        SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                        CubicKeyframe(0.6, duration: 0.08)
+                        SpringKeyframe(1.0, duration: 0.22, spring: .bouncy)
                     case .sink:
-                        CubicKeyframe(0.7, duration: 0.12)
+                        CubicKeyframe(0.7, duration: 0.1)
                     case .morph, .peek:
                         CubicKeyframe(1.0, duration: 0.01)
                     }

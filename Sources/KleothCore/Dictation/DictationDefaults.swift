@@ -46,8 +46,10 @@ public enum DictationDefaults {
     public static let minimumWordsToPolish = 24
     public static let transcriptionModel = "scribe_v2"
     public static let hotkeyDescription = "fn + shift"
-    /// A chord held shorter than this (with no double-tap) is discarded.
-    public static let minHold: TimeInterval = 0.30
+    /// A chord held shorter than this (with no double-tap) is discarded. Only
+    /// has to outlast a reflex tap — the pill already acknowledges the press
+    /// at key-down (`.armed`), so this is when the bars appear, not the pill.
+    public static let minHold: TimeInterval = 0.20
     /// A second chord-down within this window after a short tap = hands-free.
     public static let doubleTapWindow: TimeInterval = 0.40
     /// Clips shorter than this never reach Scribe (no spend, no log row).

@@ -10,6 +10,9 @@ All notable changes to Kleoth are documented here. The format is based on
 
 - **The resting pill reacts to the pointer.** Hovering the half-tucked capsule pulls it fully on
   screen with a mic glyph; it tucks back shortly after the pointer leaves.
+- **The pill answers the hotkey on the first frame.** Pressing fn+shift now hops the resting
+  capsule out of its edge immediately (mic on, mic glyph); the waveform grows out of it once the
+  hold is confirmed, which now takes 0.2 s instead of 0.3 s. A short tap sinks it back.
 - **`pillsandbox` (dev tool).** `swift run --package-path app pillsandbox` opens a control window
   that drives the real pill through every phase, edge and mic level with no signing, Keychain or
   Accessibility involved; `--film <dir>` renders a transition to PNG frames plus a contact sheet

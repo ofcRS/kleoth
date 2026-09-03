@@ -225,6 +225,9 @@ final class DictationController: ObservableObject {
             capture.cancel()
             phase = .idle
             target = nil
+            armedDismissTask?.cancel()
+            armedDismissTask = nil
+            pill.dismiss()
         case .listening:
             capture.cancel()
             pill.dismiss()
@@ -410,11 +413,23 @@ final class DictationController: ObservableObject {
             return
         }
         phase = .armed
+        // Acknowledge the press on its first frame: the resting capsule hops
+        // out of its edge (no words, no bars). `.listening` grows out of it at
+        // `minHold`; a discarded tap sinks it back (`handleCancelled`).
+        armedDismissTask?.cancel()
+        armedDismissTask = nil
+        pill.show(.armed)
     }
+
+    /// Set by a too-short tap: the armed capsule stays out for the double-tap
+    /// window, so a hands-free double-tap does not see it sink and rise again.
+    private var armedDismissTask: Task<Void, Never>?
 
     /// `.began` (push-to-talk confirmed) / `.toggledOn` (hands-free): the pill appears.
     private func beginListening(handsFree: Bool) {
         guard phase == .armed else { return }
+        armedDismissTask?.cancel()
+        armedDismissTask = nil
         phase = .listening(handsFree: handsFree)
         monitor.escapeCancels = true
         isSessionActive = true
@@ -455,6 +470,20 @@ final class DictationController: ObservableObject {
             capture.cancel()
             phase = .idle
             target = nil
+            armedDismissTask?.cancel()
+            if reason == .tooShort {
+                // May still become a double-tap: hold the peeked capsule
+                // through the window, then sink it.
+                armedDismissTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(DictationDefaults.doubleTapWindow))
+                    guard !Task.isCancelled, let self, self.phase == .idle else { return }
+                    self.armedDismissTask = nil
+                    self.pill.dismiss()
+                }
+            } else {
+                armedDismissTask = nil
+                pill.dismiss()
+            }
         case .listening:
             capture.cancel()
             pill.dismiss()

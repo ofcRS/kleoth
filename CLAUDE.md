@@ -97,7 +97,7 @@ Design doc = `docs/plans/2026-09-03-dictation.md` (single source of truth; §3 i
 interface contract, §5.10 the controller design, §7 the error matrix, §8.2 the manual checklist).
 - **Flow:** hold **fn+shift** → `DictationHotkeyMonitor` (NSEvent global+local monitors, needs
   `AXIsProcessTrusted()`) feeds the pure, tested `DictationChordMachine` (KleothCore) → `.armed`
-  (mic on at key-down, no UI) → `.began` at 0.30 s (pill appears; double-tap within 0.40 s =
+  (mic on at key-down; the resting pill hops out as `.armed`) → `.began` at 0.20 s (bars appear; double-tap within 0.40 s =
   hands-free `.toggledOn`) → release `.ended` → `DictationCapture.stop(min 0.5 s)` → off-main
   `prepareForUpload` (`ChannelAudio.mixToMono` with a nonexistent 2nd channel = mono + loudness
   + peak normalize, 64 kbps) → **`any Transcriber`** (`ScribeClient`, `ScribeOptions.dictation`:
@@ -518,6 +518,21 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   right edges (rise: squat → plain stretched blob → bars bloom → settle; peek/unpeek; sink). Not
   wired: click on the peeking pill (candidate: start hands-free) — needs a controller path that keeps
   the chord machine in sync. Rise ~0.55 s (`moveSpring` 0.55/0.32, `shapeSpring` 0.5/0.22).
+- **Responsiveness pass (same day; user: "the delay between the hotkey and the pill, and between hover
+  and the active state — intended, or a macOS thing? it can be more responsive"):** both were ours.
+  (1) New pill state **`.armed`** — `DictationController.handleArmed()` shows it the moment the chord
+  is down and the mic is on: the resting sliver hops fully out of its edge with the mic glyph (the
+  hover-peek look, `peekSpring` 0.22 s / bounce 0.2, cue `.peek`); `.listening` then grows out of it in
+  place at `minHold`. A too-short tap holds the capsule out for the `doubleTapWindow` (0.4 s,
+  `armedDismissTask`) so a double-tap does not sink-and-rise; `.otherKey`/external cancels and
+  `cancel()` sink it at once. `.armed` = resting size, no announcement, `pillText` "Keep holding to
+  dictate"; sandbox has an `armed` button/sequence item and `runCycle` starts with it.
+  (2) **`DictationDefaults.minHold` 0.30 → 0.20 s** (tests use the constant). (3) Springs shortened:
+  `moveSpring` 0.55/0.32 → 0.34/0.25, `shapeSpring` 0.5/0.22 → 0.3/0.18, `stagger` 0.09 → 0.06, every
+  view keyframe (rise/sink/peek/morph + `ContentReveal`) scaled to match. Filmed (bottom + right):
+  press → sliver out in ~0.12 s, bars bloom ~0.2 s after `minHold`, sink 0.32 s, hover peek 0.22 s.
+  If it still feels slow the user's next candidate is dropping the double-tap (then `.armed` could go
+  straight to `.listening` at key-down). ⚠️ Not felt by a human yet — verify in the real app.
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

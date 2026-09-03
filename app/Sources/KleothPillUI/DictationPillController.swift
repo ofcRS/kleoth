@@ -46,12 +46,17 @@ public final class DictationPillController: DictationPillPresenting {
     /// shrink first, then slide into the edge. The view adds a short
     /// squash-and-stretch on every phase change (`DictationPillView`), which
     /// lands during the stagger as anticipation.
-    static let moveSpring: Animation = .spring(duration: 0.55, bounce: 0.32)
-    static let shapeSpring: Animation = .spring(duration: 0.5, bounce: 0.22)
-    static let stagger: TimeInterval = 0.09
+    /// Tuned short (was 0.55 / 0.5 s): the user reads anything slower as lag
+    /// between the key press and the pill.
+    static let moveSpring: Animation = .spring(duration: 0.34, bounce: 0.25)
+    static let shapeSpring: Animation = .spring(duration: 0.3, bounce: 0.18)
+    /// A peek (hover, or the chord's first frame) is a short hop out of the
+    /// edge and back: quicker and tighter than a rise.
+    static let peekSpring: Animation = .spring(duration: 0.22, bounce: 0.2)
+    static let stagger: TimeInterval = 0.06
     /// Nominal durations of the two springs, for picking the beat that ends last.
-    static let moveDuration: TimeInterval = 0.55
-    static let shapeDuration: TimeInterval = 0.5
+    static let moveDuration: TimeInterval = 0.34
+    static let shapeDuration: TimeInterval = 0.3
 
     /// What the SwiftUI content renders.
     let model = DictationPillModel()
@@ -545,7 +550,8 @@ public final class DictationPillController: DictationPillPresenting {
             // keyframes start on the same frame.
             let wasResting = self.model.phase == .idle
             let cue: MotionBeat.Kind = moves
-                ? (phase == .idle ? (wasResting ? .peek : .sink) : (wasResting ? .rise : .morph))
+                ? (phase == .idle ? (wasResting ? .peek : .sink)
+                    : (wasResting ? (phase == .armed ? .peek : .rise) : .morph))
                 : .morph
             self.model.apply(beat: cue)
             // Sinking to rest: shape first, then move (it shrinks, then
@@ -556,7 +562,8 @@ public final class DictationPillController: DictationPillPresenting {
             // since a no-op body completes immediately and would settle
             // mid-flight.
             let shapeFirst = phase == .idle
-            let moveAnimation = shapeFirst ? Self.moveSpring.delay(Self.stagger) : Self.moveSpring
+            let moveAnimation = cue == .peek ? Self.peekSpring
+                : (shapeFirst ? Self.moveSpring.delay(Self.stagger) : Self.moveSpring)
             let shapeAnimation = Self.shapeSpring
             let completeOnMove = moves && (shapeFirst || !reshapes || (Self.moveDuration >= Self.shapeDuration))
             let settleWhenDone: () -> Void = { [weak self] in
@@ -777,7 +784,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// text phases the old label height.
     static func capsuleHeight(for state: DictationPillState) -> CGFloat {
         switch state {
-        case .idle: return PillStyle.restingHeight
+        case .idle, .armed: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
         case .warning, .failed: return 38
         }
@@ -817,7 +824,7 @@ public final class DictationPillController: DictationPillPresenting {
         var length: CGFloat
         var labelWidth: CGFloat?
         switch state {
-        case .hidden, .idle:
+        case .hidden, .idle, .armed:
             length = PillStyle.restingWidth
         case .listening(let handsFree):
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
@@ -866,7 +873,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// The pill is not a key window, so VoiceOver never focuses it: each phase
     /// has to be spoken explicitly.
     private func announce(_ state: DictationPillState) {
-        guard state != .idle else { return }
+        guard state != .idle, state != .armed else { return }
         NSAccessibility.post(
             element: NSApp as Any,
             notification: .announcementRequested,
@@ -886,6 +893,7 @@ extension DictationPillState {
         switch self {
         case .hidden: return ""
         case .idle: return "Dictation ready — hold \(DictationDefaults.hotkeyDescription) to speak"
+        case .armed: return "Keep holding to dictate"
         case .listening(let handsFree):
             return handsFree ? "Listening — tap \(DictationDefaults.hotkeyDescription) to stop" : "Listening…"
         case .transcribing: return "Transcribing…"
@@ -899,7 +907,7 @@ extension DictationPillState {
     /// Leading SF Symbol, or `nil` for `.listening` (which shows the meter).
     public var symbolName: String? {
         switch self {
-        case .hidden, .idle, .listening: return nil
+        case .hidden, .idle, .armed, .listening: return nil
         case .transcribing: return "waveform"
         case .polishing: return "sparkles"
         case .done: return "checkmark.circle.fill"

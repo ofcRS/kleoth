@@ -60,6 +60,7 @@ struct Arguments {
 func pillState(named name: String) -> DictationPillState? {
     switch name.lowercased() {
     case "idle": return .idle
+    case "armed": return .armed
     case "listening": return .listening(handsFree: false)
     case "handsfree", "hands-free": return .listening(handsFree: true)
     case "transcribing": return .transcribing
@@ -76,6 +77,7 @@ func phaseName(_ state: DictationPillState) -> String {
     switch state {
     case .hidden: return "hidden"
     case .idle: return "idle"
+    case .armed: return "armed"
     case .listening(let h): return h ? "hands-free" : "listening"
     case .transcribing: return "transcribing"
     case .polishing: return "polishing"
@@ -116,7 +118,7 @@ final class SandboxDriver: ObservableObject {
         cycleTask?.cancel()
         cycleTask = Task { [weak self] in
             guard let self else { return }
-            for (name, seconds) in [("listening", 2.0), ("transcribing", 1.0), ("polishing", 1.0), ("done", 0)] {
+            for (name, seconds) in [("armed", DictationDefaults.minHold), ("listening", 2.0), ("transcribing", 1.0), ("polishing", 1.0), ("done", 0)] {
                 guard !Task.isCancelled, let state = pillState(named: name) else { return }
                 controller.show(state)
                 phase = name
@@ -169,7 +171,7 @@ struct ControlPanel: View {
             }
             Section("Phase — \(driver.phase)") {
                 HStack {
-                    ForEach(["idle", "listening", "handsfree", "transcribing"], id: \.self) { name in
+                    ForEach(["idle", "armed", "listening", "handsfree", "transcribing"], id: \.self) { name in
                         Button(name) { driver.show(pillState(named: name)!) }
                     }
                 }

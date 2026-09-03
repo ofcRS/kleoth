@@ -14,6 +14,11 @@ public enum DictationPillState: Equatable, Sendable {
     /// hotkey is armed (dictation enabled + Accessibility trusted). The pill
     /// collapses back to this after every session instead of disappearing.
     case idle
+    /// Chord down, mic on, not yet confirmed as a hold: the resting capsule
+    /// pulled fully out of its edge (the hover-peek look) so the press is
+    /// acknowledged on the first frame. `.listening` grows out of it at
+    /// `DictationDefaults.minHold`; a discarded tap sinks it back.
+    case armed
     case listening(handsFree: Bool)
     case transcribing
     case polishing
@@ -28,7 +33,7 @@ public enum DictationPillState: Equatable, Sendable {
         switch self {
         case .done: return .seconds(1)
         case .warning: return .seconds(3)
-        case .hidden, .idle, .listening, .transcribing, .polishing, .failed: return nil
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .failed: return nil
         }
     }
 
@@ -36,7 +41,7 @@ public enum DictationPillState: Equatable, Sendable {
     public var showsText: Bool {
         switch self {
         case .warning, .failed: return true
-        case .hidden, .idle, .listening, .transcribing, .polishing, .done: return false
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done: return false
         }
     }
 }
