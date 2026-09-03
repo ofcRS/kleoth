@@ -336,6 +336,18 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   settles first; `finishHide` resets. The capsule is `.fixedSize()` (the stage / a side panel is not its
   size) and the text label gets an explicit `labelWidth` (measured + capped at 60% of the screen axis)
   so long messages still truncate. Reduce Motion → the panel just jumps.
+  Third follow-up (user: "on the RIGHT edge it levitates / goes straight up, freezes, goes down" +
+  "make the shape change less linear, more interesting"): root cause = each phase clamped its OWN
+  panel size against the bounds, so near a corner the taller listening panel got a different clamped
+  origin than the resting one → the center shifted by the size difference per phase (vertical on a
+  side edge). Fix: `anchorCenter(edge:on:)` resolves + clamps the anchor ONCE with a
+  `referenceSize` (longest motion phase × text thickness) and every phase is centered on it
+  (`activeOrigin(panelSize:edge:on:)`); `restingEdge` = nearest edge to that center. Motion is now
+  two staggered beats — `moveSpring` (0.55 s, bounce 0.3) and `shapeSpring` (0.5 s, bounce 0.25),
+  `stagger` 0.09 s: rise = move then bloom, sink = shrink then slide; the completion rides the beat
+  that ends last AND actually changes state (a no-op `withAnimation` body completes immediately) —
+  plus a `.phaseAnimator` squash-and-stretch on the capsule (x 1.06 / y 0.88 in its own space,
+  0.2 s out, 0.45 s back) triggered by every phase change as anticipation.
 - **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
   then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
   the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]

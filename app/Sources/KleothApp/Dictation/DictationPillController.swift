@@ -36,10 +36,16 @@ final class DictationPillController: DictationPillPresenting {
     /// the Keychain: the Keychain blob is a once-per-launch credential read and
     /// this is rewritten on every drag.
     static let placementDefaultsKey = "dev.kleoth.dictation.pillPlacement"
-    /// The one spring every pill move rides (rise, sink, grow, walk home).
-    /// Duration/bounce form (macOS 14): perceptual duration with a little
-    /// overshoot, so the rise out of the edge lands like a spring, not a slide.
-    static let transitionSpring: Animation = .spring(duration: 0.45, bounce: 0.22)
+    /// Motion is choreographed in two beats on two springs (duration/bounce
+    /// form, macOS 14): the capsule MOVES on `moveSpring` and changes SHAPE on
+    /// `shapeSpring`, one of them starting `stagger` after the other. Rising
+    /// out of the edge: move first, then bloom into the bar. Sinking back:
+    /// shrink first, then slide into the edge. The view adds a short
+    /// squash-and-stretch on every phase change (`DictationPillView`), which
+    /// lands during the stagger as anticipation.
+    static let moveSpring: Animation = .spring(duration: 0.55, bounce: 0.3)
+    static let shapeSpring: Animation = .spring(duration: 0.5, bounce: 0.25)
+    static let stagger: TimeInterval = 0.09
 
     /// What the SwiftUI content renders.
     let model = DictationPillModel()
@@ -367,18 +373,47 @@ final class DictationPillController: DictationPillPresenting {
         }
 
         let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
-        // The animated change goes out on the NEXT main-queue callout so
+        // The animated changes go out on the NEXT main-queue callout so
         // SwiftUI has committed the re-expressed start position first; a
         // change in the same turn would spring from the previous graph value,
         // which is a different point on the new stage.
         Task { @MainActor [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
-            withAnimation(Self.transitionSpring, completionCriteria: .logicallyComplete) {
-                self.model.apply(offset: destination)
-                self.model.apply(phase: phase)
-            } completion: { [weak self] in
+            let moves = self.model.offset != destination
+            let reshapes = self.model.phase != phase
+            guard moves || reshapes else {
+                self.settle()
+                return
+            }
+            // Sinking to rest: shape first, then move. Everything else: move
+            // first, then shape. The completion rides whichever beat ends
+            // last — and only a beat that actually changes state, since a
+            // no-op body completes immediately and would settle mid-flight.
+            let shapeFirst = phase == .idle
+            let moveAnimation = shapeFirst ? Self.moveSpring.delay(Self.stagger) : Self.moveSpring
+            let shapeAnimation = shapeFirst ? Self.shapeSpring : Self.shapeSpring.delay(Self.stagger)
+            let completeOnMove = moves && (shapeFirst || !reshapes)
+            let settleWhenDone: () -> Void = { [weak self] in
                 guard let self, self.transitionGeneration == generation else { return }
                 self.settle()
+            }
+            if moves {
+                if completeOnMove {
+                    withAnimation(moveAnimation, completionCriteria: .logicallyComplete) {
+                        self.model.apply(offset: destination)
+                    } completion: { settleWhenDone() }
+                } else {
+                    withAnimation(moveAnimation) { self.model.apply(offset: destination) }
+                }
+            }
+            if reshapes {
+                if completeOnMove {
+                    withAnimation(shapeAnimation) { self.model.apply(phase: phase) }
+                } else {
+                    withAnimation(shapeAnimation, completionCriteria: .logicallyComplete) {
+                        self.model.apply(phase: phase)
+                    } completion: { settleWhenDone() }
+                }
             }
         }
     }
@@ -424,27 +459,54 @@ final class DictationPillController: DictationPillPresenting {
 
     // MARK: Placement
 
-    /// The anchor: the saved placement if its display is still around, else
-    /// bottom-center of the screen **under the mouse**. For an `.accessory` app
-    /// with no key window `NSScreen.main` is whatever screen last had one —
-    /// unreliable — while the mouse is where the user is looking.
-    private func activeOrigin(panelSize size: CGSize, on screen: NSScreen?) -> CGPoint {
-        guard let screen else { return .zero }
-        let bounds = Self.bounds(of: screen)
-        if let placement = savedPlacement(), self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
-            return PillGeometry.origin(for: placement, panelSize: size, in: bounds)
-        }
-        return PillGeometry.defaultOrigin(panelSize: size, shadowPadding: Self.shadowPadding, in: bounds)
+    /// The panel size the anchor is resolved against: as long as the longest
+    /// motion phase and as thick as a text phase. Resolving (and clamping)
+    /// the anchor ONCE with this size, then centering every phase on it, is
+    /// what keeps a pill parked near a corner from creeping: clamping each
+    /// phase's own size shifted the center by the size difference, so a pill
+    /// on the right edge near the bottom rose while growing and sank while
+    /// shrinking — the "levitating" the user saw.
+    private static func referenceSize(edge: PillGeometry.Edge, on screen: NSScreen?) -> CGSize {
+        let long = layout(for: .listening(handsFree: true), edge: edge, on: screen).panelSize
+        let thick = layout(for: .warning(""), edge: edge, on: screen).panelSize
+        return (edge == .left || edge == .right)
+            ? CGSize(width: thick.width, height: long.height)
+            : CGSize(width: long.width, height: thick.height)
     }
 
-    /// The edge the pill lives on for `screen`: the one nearest the anchor.
-    /// Decided from the horizontal resting size so that standing the pill up
-    /// for a side edge cannot flip the answer.
+    /// The anchor's center: the saved placement if its display is still
+    /// around, else bottom-center of the screen **under the mouse**. For an
+    /// `.accessory` app with no key window `NSScreen.main` is whatever screen
+    /// last had one — unreliable — while the mouse is where the user is looking.
+    private func anchorCenter(edge: PillGeometry.Edge, on screen: NSScreen) -> CGPoint {
+        let bounds = Self.bounds(of: screen)
+        let reference = Self.referenceSize(edge: edge, on: screen)
+        let origin: CGPoint
+        if let placement = savedPlacement(), self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
+            origin = PillGeometry.origin(for: placement, panelSize: reference, in: bounds)
+        } else {
+            origin = PillGeometry.defaultOrigin(panelSize: reference, shadowPadding: Self.shadowPadding, in: bounds)
+        }
+        return CGPoint(x: origin.x + reference.width / 2, y: origin.y + reference.height / 2)
+    }
+
+    /// A phase's active origin: its panel centered on the anchor. Clamping is
+    /// a no-op for anything no larger than the reference size; only an
+    /// over-long text pill can still be nudged.
+    private func activeOrigin(panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?) -> CGPoint {
+        guard let screen else { return .zero }
+        let center = anchorCenter(edge: edge, on: screen)
+        let origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+        return PillGeometry.clamp(origin, panelSize: size, in: Self.bounds(of: screen))
+    }
+
+    /// The edge the pill lives on for `screen`: the one nearest the anchor
+    /// center (resolved with the horizontal reference so that standing the
+    /// pill up for a side edge cannot flip the answer).
     private func restingEdge(on screen: NSScreen?) -> PillGeometry.Edge {
         guard let screen else { return .bottom }
-        let size = Self.layout(for: .idle, edge: .bottom, on: screen).panelSize
-        let active = activeOrigin(panelSize: size, on: screen)
-        return PillGeometry.nearestEdge(ofPanelAt: active, panelSize: size, in: screen.frame)
+        let center = anchorCenter(edge: .bottom, on: screen)
+        return PillGeometry.nearestEdge(ofPanelAt: center, panelSize: .zero, in: screen.frame)
     }
 
     /// The anchor slid into `edge` of `screen` until half the panel is
@@ -460,7 +522,7 @@ final class DictationPillController: DictationPillPresenting {
     private func origin(
         for state: DictationPillState, panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?
     ) -> CGPoint {
-        let active = activeOrigin(panelSize: size, on: screen)
+        let active = activeOrigin(panelSize: size, edge: edge, on: screen)
         guard state == .idle else { return active }
         return restingOrigin(activeOrigin: active, panelSize: size, edge: edge, on: screen)
     }

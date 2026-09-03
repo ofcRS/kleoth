@@ -101,7 +101,26 @@ struct DictationPillView: View {
         // indicator, not a window.
         .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
         .shadow(color: .black.opacity(model.phase == .idle ? 0.18 : 0.28), radius: 10, y: 3)
+        // Squash-and-stretch on every phase change: a quick stretch along the
+        // pill's length that springs back, timed to land during the
+        // controller's stagger before the shape beat — the anticipation that
+        // makes the bloom read as elastic rather than a resize. Applied in the
+        // capsule's own (un-rotated) space so a vertical pill stretches
+        // vertically. No-op under Reduce Motion.
+        .phaseAnimator([Squash.rest, .stretch], trigger: model.phase) { content, squash in
+            content.scaleEffect(
+                x: !reduceMotion && squash == .stretch ? 1.06 : 1,
+                y: !reduceMotion && squash == .stretch ? 0.88 : 1
+            )
+        } animation: { squash in
+            switch squash {
+            case .stretch: .spring(duration: 0.2, bounce: 0.3)
+            case .rest: .spring(duration: 0.45, bounce: 0.4)
+            }
+        }
     }
+
+    private enum Squash { case rest, stretch }
 
     /// Horizontal on the bottom and top edges; on a side edge the pill stands
     /// up in every phase, turned so text reads the way a spine label does —
