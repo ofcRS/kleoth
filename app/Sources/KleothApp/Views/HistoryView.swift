@@ -83,19 +83,31 @@ struct HistoryView: View {
         // (.accessory) app's windows don't show in the ⌘-Tab switcher.
         .onAppear { AppActivation.shared.windowOpened() }
         .onDisappear { AppActivation.shared.windowClosed() }
+        // The popover's deep links live up here too, NOT on the meetings
+        // branch: that branch isn't mounted while the scope is Dictations, so
+        // a row click in the popover would bring the window forward still
+        // showing dictations and select nothing. Both observers force the
+        // scope; the request counter also covers "Show all meetings…" (no id)
+        // and a repeat click on the already-selected meeting (no id change).
+        .onChange(of: controller.meetingsHistoryRequest) { _, _ in
+            scope = .meetings
+            if let id = controller.selectedMeetingID { selection = [id] }
+        }
+        .onChange(of: controller.selectedMeetingID) { _, newValue in
+            guard let newValue else { return }
+            scope = .meetings
+            selection = [newValue]
+        }
     }
 
-    /// The meetings scope, unchanged. Its three `.onChange` handlers stay here:
-    /// they observe controller state rather than window lifecycle, and none of
-    /// them fires on mount, so a scope flip costs nothing.
+    /// The meetings scope, unchanged. Its two remaining `.onChange` handlers
+    /// stay here: they maintain meetings-only state (selection validity, the
+    /// rename field), and neither fires on mount, so a scope flip costs nothing.
     private var meetingsScope: some View {
         NavigationSplitView {
             sidebar
         } detail: {
             detail
-        }
-        .onChange(of: controller.selectedMeetingID) { _, newValue in
-            if let newValue { selection = [newValue] }
         }
         .onChange(of: controller.recentMeetings) { _, meetings in
             // Keep selection valid as the list reloads (e.g. after a delete or a

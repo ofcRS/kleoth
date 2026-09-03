@@ -122,6 +122,27 @@ public enum PillGeometry {
         )
     }
 
+    /// Smallest panel width the cap will ever return, so a pathological
+    /// `visibleFrame` cannot collapse the pill to nothing.
+    public static let minPanelWidth: CGFloat = 120
+
+    /// The widest a panel may be on a screen: `visibleFrame` minus the edge
+    /// margin on both sides. The controller caps the measured width here so an
+    /// unbounded message (a raw API error body) truncates inside the capsule
+    /// instead of pushing the pill's ✕ off the right edge — without this,
+    /// `clamp` degenerates to its `return lower` branch and the panel is
+    /// pinned at the left edge running off-screen.
+    public static func maxPanelWidth(in visibleFrame: CGRect) -> CGFloat {
+        guard visibleFrame.width.isFinite else { return minPanelWidth }
+        return max(minPanelWidth, visibleFrame.width - 2 * edgeMargin)
+    }
+
+    /// `min(width, maxPanelWidth(in:))`, never below `minPanelWidth`.
+    public static func cappedPanelWidth(_ width: CGFloat, in visibleFrame: CGRect) -> CGFloat {
+        guard width.isFinite else { return minPanelWidth }
+        return max(minPanelWidth, min(width, maxPanelWidth(in: visibleFrame)))
+    }
+
     /// Keeps the whole panel inside `visibleFrame` with `edgeMargin` to spare.
     /// Idempotent; when the panel is larger than the available area it pins to
     /// the lower-left bound rather than producing an inverted range.

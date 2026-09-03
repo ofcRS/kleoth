@@ -12,7 +12,7 @@ Hold **fn+shift** anywhere on the Mac, speak, release → Kleoth records the mic
 
 ### 1.2 End-to-end flow (press → paste)
 
-1. **Chord down.** `DictationHotkeyMonitor` (NSEvent global + local `.flagsChanged`/`.keyDown` monitors, installed only while `dictation_enabled && AXIsProcessTrusted()`) derives `chordIsDown = flags ⊇ [.function, .shift]` and feeds `.chordDown` into the pure `DictationChordMachine`, which emits `.armed`.
+1. **Chord down.** `DictationHotkeyMonitor` (NSEvent global + local `.flagsChanged`/`.keyDown` monitors, installed only while `dictation_enabled && AXIsProcessTrusted()`) derives chord-down as the five real modifiers being *exactly* `[.function, .shift]` (via `ChordEdgeDetector`, KleothCore) and feeds `.chordDown` into the pure `DictationChordMachine`, which emits `.armed`.
 2. **Armed → mic on, no UI.** `DictationController` preflights (enabled, trusted, ElevenLabs key present, mic authorized, `IsSecureEventInputEnabled() == false`), samples `DictationTarget.frontmost()` (bundle id + name), and calls `DictationCapture.start()` — a second, independent `AVAudioEngine` input tap writing 64 kbps AAC to `$TMPDIR/kleoth-dictation/dictation-<uuid>.m4a`. The pill is NOT shown yet: a tap under 0.3 s may still be discarded.
 3. **Confirmed.** At 0.30 s the machine emits `.began` (push-to-talk) — or, for a tap + second tap within 0.40 s, `.toggledOn` (hands-free). The pill appears in `.listening(handsFree:)`; the controller polls `capture.currentLevel` at 20 Hz → `PillGeometry.normalizedLevel` → `pill.setLevel`.
 4. **Release / tap / cancel.** `.ended` / `.toggledOff` → `capture.stop(minimumSeconds: 0.5)`; under 0.5 s → delete, hide pill, idle (no spend, no log row). `.cancelled(_)` (too-short tap, another key pressed while the chord is held, Esc, disable) → `capture.cancel()`, hide, idle.
@@ -135,7 +135,7 @@ Package: app/ (macOS 14.4)
     │                               ▼
     │                       handsFreeArming ──chordUp──▶ handsFree ──chordDown → .toggledOff──▶ handsFreeEnding ──chordUp──▶ idle
     │                                                       ▲ otherKey ignored (user may type)
-    └──── abort (Esc / disable / capture error) from any capturing state → blocked, emits .cancelled(.external)
+    └──── abort (Esc / disable / capture error) from any capturing state → blocked (handsFree → idle: keys already up), emits .cancelled(.external)
 ```
 
 **DictationController (app):**
@@ -960,7 +960,8 @@ Not touched: `app/bundle/Info.plist` (Accessibility has no usage-description key
 | handsFree | chordDown | `[.toggledOff]` | handsFreeEnding |
 | handsFreeEnding | chordUp | `[]` | idle |
 | handsFree* | otherKey | `[]` | (same) |
-| any capturing | abort | `[.cancelled(.external)]` | blocked |
+| any capturing except handsFree | abort | `[.cancelled(.external)]` | blocked |
+| handsFree | abort | `[.cancelled(.external)]` | idle (the keys are already up — no release to swallow; the next press must arm, not `.toggledOff`) |
 | non-capturing | abort | `[]` | blocked if chord down, else idle |
 | anything else | — | `[]` | (same) |
 
@@ -985,7 +986,7 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
     private var globalMonitor: Any?, localMonitor: Any?
     private var deadlineTask: Task<Void, Never>?
     private var healthTimer: Timer?
-    private var chordIsDown = false
+    private var edges = ChordEdgeDetector(chord: Self.chord)   // KleothCore, tested: debounce + superset-release suppression
     private(set) var isRunning = false
     var escapeCancels = false
 
@@ -1005,7 +1006,7 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         isRunning = true; startHealthTimer(); return true
     }
 
-    func stop() { /* remove both monitors, cancel deadline + health timer, chordIsDown = false,
+    func stop() { /* remove both monitors, cancel deadline + health timer, edges.reset(),
                      emit(machine.handle(.abort, at: now())), isRunning = false.
                      Deliberately does NOT `continuation.finish()`: start() reuses the stream after a
                      Settings off→on; the controller ends its `for await` by cancelling `eventTask`. */ }
@@ -1018,20 +1019,21 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
             // Derive from THIS event's flags, never keyCode: order-independent, release-symmetric.
             // EXACT match on the five real modifiers (caps lock and numeric-pad/help bits ignored):
             // fn+shift+⌘ / +⌥ / +⌃ are NOT the chord — they are someone's real shortcut — so they
-            // never arm the mic. Adding a modifier mid-hold reads as chordUp (→ .ended / .tooShort),
-            // the same outcome as `.otherKey` for the user. (A superset test would start a capture
-            // on fn+shift+⌘ and rely on the following keyDown to cancel it — and a bare 0.5 s hold
-            // of fn+shift+⌘ would have become a dictation.)
+            // never arm the mic. Adding a modifier mid-hold reads as chordUp — NOT the same as
+            // `.otherKey`: from `holding` the machine commits (.ended, §8.2 #7b by design), from
+            // `pressed` it discards (.tooShort). Releasing that third modifier off fn+shift+⌘ is
+            // SUPPRESSED (`ChordEdgeDetector`, KleothCore, tested): fn+shift never moved, so it is
+            // not a chordDown — otherwise it would arm, or from tapWindow start hands-free. (A
+            // superset test would start a capture on fn+shift+⌘ and rely on the following keyDown
+            // to cancel it — and a bare 0.5 s hold of fn+shift+⌘ would have become a dictation.)
             let relevant = event.modifierFlags.intersection(Self.relevantModifiers)   // [.function, .shift, .command, .option, .control]
-            let down = relevant == Self.chord
-            guard down != chordIsDown else { return }               // debounce non-transitions
-            chordIsDown = down
-            log.debug("chord \(down ? "down" : "up") flags=\(event.modifierFlags.rawValue) t=\(now)")
-            emit(machine.handle(down ? .chordDown : .chordUp, at: now))
+            guard let signal = edges.ingest(relevant) else { return }   // debounce + superset-release suppression
+            log.debug("chord \(signal == .chordDown ? "down" : "up") flags=\(relevant.rawValue) t=\(now)")
+            emit(machine.handle(signal, at: now))
         case .keyDown:
             // Only the FACT of a keypress while the chord is held (fn+shift+arrow is
             // shift+PageUp/Home — yield to it), plus keyCode == 53 for Escape when asked.
-            if chordIsDown { emit(machine.handle(.otherKey, at: now)) }
+            if edges.chordIsDown { emit(machine.handle(.otherKey, at: now)) }
             else if escapeCancels, event.keyCode == Self.escapeKeyCode { continuation.yield(.escapePressed) }
         default: break
         }
@@ -1446,7 +1448,10 @@ private func run(clip: DictationCaptureResult, target: DictationTarget?) async {
 /// `localizedDescription` is "The operation couldn't be completed. (KleothCore.ScribeError error 1.)".
 private static func userFacing(_ error: any Error) -> String {
     switch error {
-    case let e as ScribeError:        return "Transcription failed: \(e.description)"
+    case let e as ScribeError:
+        // §7: status only — the raw body (up to 512 bytes of JSON) is logged, never shown.
+        if case .httpError(let status, _) = e { return "Transcription failed (HTTP \(status))." }
+        return "Transcription failed: \(e.description)"
     case is KleothTimeoutError:       return "Transcription timed out."
     case let e as URLError:           return "Network error: \(e.localizedDescription)"
     case let e as LocalizedError:     return e.errorDescription ?? String(describing: e)
@@ -1606,6 +1611,8 @@ Hotkey / permission:
 6. Double-tap → hands-free pill stays; single tap ends; a third tap starts a fresh session.
 7. fn+shift+← with the caret mid-line → line selected, no dictation, no pill.
 7b. Hold fn+shift+⌘ for 1 s, release → nothing (no pill, no temp file, no log line saying "chord down"). Hold fn+shift ~1 s then add ⌘ → the dictation ends normally at the ⌘ press (transcribes what was said).
+7c. Press fn+shift+⌘ (⌘ first, then fn+shift), release ⌘ FIRST while keeping fn+shift down, then release fn+shift → nothing: no pill, no capture, no "chord down" line (the superset-release edge is suppressed). Repeat with fn+shift first, then ⌘, then ⌘ released first → the short tap may log `.cancelled(.tooShort)` but releasing ⌘ must NOT log "chord down" / start a hands-free session.
+8b. Double-tap into hands-free → Esc → a single fn+shift hold must arm immediately (pill on the FIRST press, not the second). Repeat with the pill ✕ instead of Esc. Then double-tap twice while a dictation is transcribing → the first press after the pipeline settles arms (the machine was aborted at the refusal).
 8. Esc mid-listening (hands-free) and mid-transcribing → pill hides, nothing pasted, temp dir empty.
 9. Existing `toggleRecording` shortcut still works; start a meeting recording, dictate mid-meeting → both work, `mic.m4a` intact (words also appear in the meeting — documented).
 10. `bash app/make-app.sh release`, relaunch → chord still works with no re-grant. Then `tccutil reset Accessibility dev.kleoth.app` → fresh-grant flow again.

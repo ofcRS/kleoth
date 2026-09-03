@@ -89,6 +89,12 @@ public final class RecordingController: ObservableObject {
 
     /// Set by the popover to deep-link the History window to a specific meeting.
     @Published public var selectedMeetingID: RecentMeeting.ID?
+    /// Bumped by the popover every time it opens History *for meetings* (a row
+    /// click or "Show all meetings…"). The History window observes it to flip
+    /// its scope back to Meetings: `selectedMeetingID` alone cannot carry that
+    /// — `onChange` never fires when the same meeting is clicked twice, and
+    /// "Show all" sets it to nil.
+    @Published public var meetingsHistoryRequest: Int = 0
     @Published public var consentAcknowledged: Bool = false
 
     /// The user's display name, used to label their own voice (`speaker_0`) in

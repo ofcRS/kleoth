@@ -30,6 +30,8 @@ struct DictationsListView: View {
     /// Trash and can be dragged back), deleting a dictation rewrites a JSON file
     /// in place — there is nothing to undo, so it asks first.
     @State private var pendingDeletion: Set<DictationLogEntry.ID>?
+    /// A failed day-file rewrite, shown as an alert (there is no pill here).
+    @State private var deletionError: String?
 
     var body: some View {
         NavigationSplitView {
@@ -48,6 +50,17 @@ struct DictationsListView: View {
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
         } message: {
             Text("Dictations aren't moved to the Trash — this rewrites the day file and can't be undone.")
+        }
+        .alert(
+            "Couldn't delete",
+            isPresented: Binding(
+                get: { deletionError != nil },
+                set: { if !$0 { deletionError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { deletionError = nil }
+        } message: {
+            Text(deletionError ?? "")
         }
     }
 
@@ -245,7 +258,17 @@ struct DictationsListView: View {
     private func confirmDeletion() {
         guard let ids = pendingDeletion else { return }
         pendingDeletion = nil
-        Task { try? await dictation.deleteDictations(ids: ids) }
+        Task {
+            do {
+                try await dictation.deleteDictations(ids: ids)
+            } catch {
+                // `delete` walks day files one at a time, so a throw partway
+                // can leave earlier days already rewritten; the controller
+                // bumps `logRevision` regardless, so the list reloads to what
+                // is actually on disk — but the user has to hear about it.
+                deletionError = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -327,8 +350,9 @@ enum DictationFormat {
         return formatter.string(from: date)
     }
 
-    /// "3:14 PM · Slack · 8s", dropping whichever pieces are unknown.
-    static func timeAppDuration(_ entry: DictationLogEntry) -> String? {
+    /// "3:14 PM · Slack · 8s", dropping whichever pieces are unknown. The
+    /// detail header passes `includingApp: false` — its title IS the app.
+    static func timeAppDuration(_ entry: DictationLogEntry, includingApp: Bool = true) -> String? {
         var parts: [String] = []
         if let date = entry.date {
             let formatter = DateFormatter()
@@ -336,7 +360,7 @@ enum DictationFormat {
             formatter.timeStyle = .short
             parts.append(formatter.string(from: date))
         }
-        if let app = entry.appName, !app.isEmpty {
+        if includingApp, let app = entry.appName, !app.isEmpty {
             parts.append(app)
         }
         if let seconds = entry.durationSeconds, seconds > 0 {

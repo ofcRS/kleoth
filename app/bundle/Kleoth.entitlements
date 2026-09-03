@@ -2,8 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Microphone / audio input. Not sandboxed initially: the Core Audio
-         process-tap + aggregate-device path is impractical under App Sandbox. -->
+    <!-- Microphone / audio input. NOT sandboxed, and this must stay so:
+         (1) the Core Audio process-tap + aggregate-device path is impractical
+             under App Sandbox;
+         (2) dictation's synthetic ⌘V is `CGEvent.post(tap: .cgSessionEventTap)`
+             (TextInserter.swift), which the App Sandbox blocks with NO
+             re-enabling entitlement — the pill would still say "Pasted" while
+             nothing lands. Never add com.apple.security.app-sandbox here. -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
 </dict>

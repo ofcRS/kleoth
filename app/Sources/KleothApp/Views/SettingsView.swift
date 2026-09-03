@@ -32,6 +32,12 @@ struct SettingsView: View {
     /// so `refreshModels` can pin the slug in the catalog.
     @State private var dictationModel: String = ""
     @State private var dictionaryText: String = ""
+    /// What the editor showed when the window opened. `commitAll()` writes the
+    /// dictionary only when the text changed: `PersonalDictionaryStore.load()`
+    /// is fail-soft (a malformed `dictionary.json` reads as empty), so an
+    /// unconditional write on close would replace the user's unreadable file
+    /// with `[]` — every term gone, no Trash, no undo.
+    @State private var loadedDictionaryText: String = ""
 
     /// The live, filtered summarization-model catalog backing the picker. Seeded
     /// synchronously from ``ModelCatalog/curatedFallback`` for first paint /
@@ -584,6 +590,7 @@ struct SettingsView: View {
         autoTranscribe = controller.settings.autoTranscribe
         dictationModel = dictation.dictationModel
         dictionaryText = PersonalDictionaryStore.render(dictation.dictionaryTerms())
+        loadedDictionaryText = dictionaryText
 
         // Migrate a stored model whose provider 404s under this account's
         // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") or that has
@@ -626,8 +633,11 @@ struct SettingsView: View {
         controller.updateOutputDir(outputDirPath)
         controller.updateDefaultModel(selectedModel)
         dictation.setDictationModel(dictationModel)
-        // Flushes whatever the dictionary editor's 0.5 s debounce hasn't written.
-        dictation.saveDictionaryTerms(PersonalDictionaryStore.parse(text: dictionaryText))
+        // Flushes whatever the dictionary editor's 0.5 s debounce hasn't written —
+        // but only if the user actually edited it (see `loadedDictionaryText`).
+        if dictionaryText != loadedDictionaryText {
+            dictation.saveDictionaryTerms(PersonalDictionaryStore.parse(text: dictionaryText))
+        }
     }
 
     private func chooseFolder() {

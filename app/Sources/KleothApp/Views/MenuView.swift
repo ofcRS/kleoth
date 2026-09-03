@@ -308,8 +308,14 @@ struct MenuView: View {
         }
     }
 
+    /// Opens History on the Meetings scope. The popover's entry points are all
+    /// about meetings (a recent row, "Show all N meetings…", the footer button
+    /// whose help text says "browse all meetings"), so an already-open window
+    /// left on Dictations is switched back — otherwise a row click would
+    /// silently land on the dictation list.
     private func openHistory(select id: RecentMeeting.ID?) {
         controller.selectedMeetingID = id
+        controller.meetingsHistoryRequest += 1
         NSApplication.shared.activate(ignoringOtherApps: true)
         openWindow(id: "kleoth-history")
     }

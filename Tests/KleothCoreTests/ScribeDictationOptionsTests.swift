@@ -38,6 +38,20 @@ import Foundation
         }
     }
 
+    @Test func modelIdentifierIsTheModelIdActuallySent() async throws {
+        let client = ScribeClient(apiKey: "test-key-not-a-secret", transport: MockTransport(json: Self.cannedResponse))
+        #expect(client.modelIdentifier(for: .dictation(keyterms: [])) == "scribe_v2")
+        #expect(client.modelIdentifier(for: ScribeOptions(modelId: "scribe_v1")) == "scribe_v1")
+        // A non-Scribe engine falls back to its type name, never to a Scribe slug.
+        struct FakeEngine: Transcriber {
+            var usdPerHour: Double { 0 }
+            func transcribe(fileURL: URL, options: ScribeOptions) async throws -> ScribeResponse {
+                throw CancellationError()
+            }
+        }
+        #expect(FakeEngine().modelIdentifier(for: .dictation(keyterms: [])) == "FakeEngine")
+    }
+
     @Test func dictationOptionsSendNoVerbatimTrue() async throws {
         let sent = try await send(options: .dictation(keyterms: []))
         #expect(partValues(named: "no_verbatim", in: sent.body) == ["true"])

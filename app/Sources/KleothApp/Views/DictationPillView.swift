@@ -25,19 +25,26 @@ struct DictationPillView: View {
     }
 
     var body: some View {
+        // The hit shape is the CAPSULE, not the panel rect: the 18 pt transparent
+        // shadow margin around it must stay non-interactive, or a `.statusBar`-
+        // level panel would swallow clicks aimed at the app underneath (and a
+        // click on "empty" space next to a failed pill would dismiss it).
         capsule
-            .scaleEffect(model.isPresented ? 1 : 0.92, anchor: .center)
-            .opacity(model.isPresented ? 1 : 0)
-            .padding(DictationPillController.shadowPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
+            .contentShape(Capsule(style: .continuous))
             .gesture(dragGesture)
             .onTapGesture {
                 // A click anywhere on a failed pill dismisses it (the ✕ is the
                 // discoverable affordance; the whole capsule is the target).
                 if model.phase.isSticky { controller.dismissFromUser() }
             }
+            .help(model.phase.pillText)
+            .scaleEffect(model.isPresented ? 1 : 0.92, anchor: .center)
+            .opacity(model.isPresented ? 1 : 0)
+            .padding(DictationPillController.shadowPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityElement(children: .contain)
+            // The full, untruncated text — VoiceOver reads all of it even when
+            // the capsule shows a tail-truncated line.
             .accessibilityLabel(Text(model.phase.pillText))
     }
 
@@ -45,10 +52,15 @@ struct DictationPillView: View {
         HStack(spacing: KleothMetrics.spacingS) {
             leading
 
+            // No `.fixedSize()`: the panel width is capped to the screen
+            // (`PillGeometry.maxPanelWidth`), so an over-long message truncates
+            // here instead of forcing the HStack — and the ✕ — off-screen. The
+            // measured panel width carries `widthSlack`, so the fixed-length
+            // phase strings never truncate in practice.
             Text(model.phase.pillText)
                 .font(.callout.weight(.medium))
                 .lineLimit(1)
-                .fixedSize()
+                .truncationMode(.tail)
 
             if let action = model.phase.fault?.action {
                 Button(action.title) { controller.perform(action) }

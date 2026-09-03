@@ -110,13 +110,17 @@ final class SendableAudioFileBox: @unchecked Sendable {
 /// A lock-free, single-word `Float` slot holding the most recent RMS level
 /// measured on the audio render thread.
 ///
-/// Same rationale as ``RenderFlag``: the value lives in a heap word so a
-/// `@Sendable` real-time callback can store into it without boxing or
-/// allocating, and `@unchecked Sendable` is sound because the single writer is
-/// the render/IO thread while the only reader is the owning control thread
-/// (the `@MainActor` dictation controller), which reads a single aligned word.
-/// A torn read is impossible for a naturally-aligned 32-bit store, and a
-/// slightly stale level is inconsequential for a meter.
+/// The heap word lets a `@Sendable` real-time callback store into it without
+/// boxing or allocating, as with ``RenderFlag`` — but the *safety argument is
+/// different*. `RenderFlag`/`RenderCounter` are read only after `engine.stop()`
+/// (a real happens-before edge). This slot is read at 20 Hz by the `@MainActor`
+/// level poll **while the render thread is storing into it**: there is no
+/// synchronization edge, so this is a deliberate, benign data race, not a
+/// synchronized read. It is tolerated because a naturally-aligned 32-bit
+/// store does not tear on arm64/x86_64 and a stale or momentarily odd meter
+/// value is inconsequential — but a ThreadSanitizer build WILL report it.
+/// The proper fix is a relaxed atomic (`Atomic<UInt32>` + `bitPattern`, macOS
+/// 15+, or a stdatomic shim) once the package floor allows it.
 final class RenderLevel: @unchecked Sendable {
     private let pointer = UnsafeMutablePointer<Float>.allocate(capacity: 1)
 

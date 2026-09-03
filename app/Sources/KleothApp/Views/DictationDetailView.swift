@@ -50,20 +50,27 @@ struct DictationDetailView: View {
             VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
                 Text(entry.appName ?? "Dictation")
                     .font(.headline)
-                if let subtitle = DictationFormat.timeAppDuration(entry) {
+                // The app name is already the title above; repeating it here
+                // (next to the app's icon) would print it three times over.
+                if let subtitle = DictationFormat.timeAppDuration(entry, includingApp: false) {
                     Text(subtitle)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+                // Product voice, not engine slugs (the same rule as the meeting
+                // tier badges — "On-device"/"Cloud", never "Local"/"SOTA"); the
+                // exact model hangs off the tooltip for the curious.
                 KleothFlowLayout(spacing: KleothMetrics.spacingXS) {
                     if let language = DictationFormat.languageLabel(entry.language) {
                         KleothPill(language, systemImage: "character.bubble")
                     }
                     if let model = entry.transcriptionModel, !model.isEmpty {
-                        KleothPill(model, systemImage: "waveform")
+                        KleothPill("Cloud transcription", systemImage: "waveform")
+                            .help("Transcribed with \(model)")
                     }
                     if !entry.usedRawFallback, let model = entry.polishModel, !model.isEmpty {
-                        KleothPill(model, systemImage: "sparkles")
+                        KleothPill("Cleaned up", systemImage: "sparkles")
+                            .help("Polished with \(model)")
                     }
                     if entry.usedRawFallback {
                         KleothPill("Raw", systemImage: "exclamationmark.triangle", tint: KleothPalette.pendingTint)

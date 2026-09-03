@@ -154,6 +154,25 @@ import CoreGraphics
         }
     }
 
+    @Test func panelWidthCapKeepsRightEdgeOnScreen() {
+        // A raw 512-byte API body measured to ~3000 pt.
+        let measured: CGFloat = 3000
+        let capped = PillGeometry.cappedPanelWidth(measured, in: mainVisible)
+        #expect(capped == mainVisible.width - 2 * PillGeometry.edgeMargin)
+        // With the capped width, clamp no longer degenerates: the panel fits
+        // with the margin on both sides.
+        let size = CGSize(width: capped, height: 60)
+        let origin = PillGeometry.clamp(CGPoint(x: -500, y: 100), panelSize: size, in: mainVisible)
+        #expect(origin.x == mainVisible.minX + PillGeometry.edgeMargin)
+        #expect(origin.x + size.width <= mainVisible.maxX - PillGeometry.edgeMargin)
+        // An ordinary width passes through unchanged; garbage never collapses it.
+        #expect(PillGeometry.cappedPanelWidth(240, in: mainVisible) == 240)
+        #expect(PillGeometry.cappedPanelWidth(.nan, in: mainVisible) == PillGeometry.minPanelWidth)
+        #expect(PillGeometry.cappedPanelWidth(3000, in: CGRect(x: 0, y: 0, width: 50, height: 50)) == PillGeometry.minPanelWidth)
+        // Off-origin screens cap by width, not by maxX.
+        #expect(PillGeometry.maxPanelWidth(in: offOriginVisible) == offOriginVisible.width - 2 * PillGeometry.edgeMargin)
+    }
+
     @Test func smoothLevelAttackFasterThanRelease() {
         let rising = PillGeometry.smoothLevel(previous: 0, target: 1)
         let falling = PillGeometry.smoothLevel(previous: 1, target: 0)

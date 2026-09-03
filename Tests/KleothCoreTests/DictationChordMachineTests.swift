@@ -160,6 +160,51 @@ import Foundation
         #expect(machine.handle(.chordDown, at: t0 + 2) == [.armed])
     }
 
+    @Test func abortWhileHoldingStillBlocksUntilRelease() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        _ = machine.handle(.abort, at: t0 + 1)
+        // Keys are still physically down: a second abort (e.g. `stop()` right
+        // after `cancel()`) and a stray deadline keep it blocked; a chordDown
+        // is impossible here, but it must not arm either.
+        #expect(machine.handle(.abort, at: t0 + 1.01) == [])
+        #expect(machine.handle(.chordDown, at: t0 + 1.02) == [])
+        #expect(machine.isCapturing == false)
+        #expect(machine.handle(.chordUp, at: t0 + 1.1) == [])
+        #expect(machine.handle(.chordDown, at: t0 + 2) == [.armed])
+    }
+
+    @Test func abortWhileHandsFreeReturnsToIdleAndNextPressArms() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.chordUp, at: t0 + 0.1)
+        _ = machine.handle(.chordDown, at: t0 + 0.2)              // [.armed, .toggledOn]
+        _ = machine.handle(.chordUp, at: t0 + 0.25)               // handsFree, keys up
+        // Esc / pill ✕ mid hands-free: the controller aborts. The keys are
+        // already up, so there is no release to swallow — the machine must
+        // settle in idle, NOT blocked/handsFree.
+        #expect(machine.handle(.abort, at: t0 + 2) == [.cancelled(.external)])
+        #expect(machine.isCapturing == false)
+        #expect(machine.deadline == nil)
+        // The very next press is a fresh push-to-talk, never `.toggledOff`.
+        #expect(machine.handle(.chordDown, at: t0 + 3) == [.armed])
+        #expect(machine.deadline == t0 + 3 + minHold)
+    }
+
+    @Test func abortWhileHandsFreeArmingBlocksUntilRelease() {
+        // A refused double-tap while the pipeline runs: the second tap's keys
+        // are still down when the controller aborts, so the release is
+        // swallowed and no tap window opens.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.chordUp, at: t0 + 0.1)
+        _ = machine.handle(.chordDown, at: t0 + 0.2)              // handsFreeArming
+        #expect(machine.handle(.abort, at: t0 + 0.21) == [.cancelled(.external)])
+        #expect(machine.handle(.chordUp, at: t0 + 0.3) == [])
+        #expect(machine.handle(.chordDown, at: t0 + 0.35) == [.armed])
+    }
+
     @Test func abortWhileIdleEmitsNothing() {
         var machine = DictationChordMachine()
         #expect(machine.handle(.abort, at: t0) == [])

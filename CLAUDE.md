@@ -113,7 +113,9 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
   (a bare `.warning` would auto-hide mid-run). Esc cancels listening or the in-flight pipeline
   (`pipelineTask.cancel()` + `Task.isCancelled` checks after prepare/STT/polish so a cancelled
   polish never pastes). `.cancelled(.external)` mid-pipeline (trust lost) is a deliberate no-op —
-  the paste then falls back to clipboard-only. Pill `.openSettings` = `NSApp.activate` +
+  the paste then falls back to clipboard-only. **Machine ↔ phase resync:** every controller-side
+  session exit the machine did not drive (`cancel()`, Esc while hands-free, `refuseWhileBusy()`)
+  calls `monitor.abort()` — otherwise the machine parks in `.handsFree` and the next press is eaten. Pill `.openSettings` = `NSApp.activate` +
   `NSApp.sendAction(Selector(("showSettingsWindow:")))` (AppKit panel, no SwiftUI env — don't "fix").
 - **Lifecycle:** `AppDelegate` hooks via `MainActor.assumeIsolated` (never a `Task` hop —
   `applicationWillTerminate` may exit first): `startIfEnabled()` (sweeps stale temp clips, installs
@@ -233,8 +235,9 @@ source of truth for which tiers exist (no new meta key).
 ## Current status (2026-09-03 — dictation v1)
 User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 integration), branch
 `feat/dictation` (NOT merged to main yet). Design doc `docs/plans/2026-09-03-dictation.md`.
-**Shipped (compile-checked, 217 core tests green, both packages build, release app installed):**
-- KleothCore `Dictation/`: `DictationDefaults`, `DictationChordMachine` (15 tests), `Keyterms`,
+**Shipped (compile-checked, 237 core tests green, both packages build, release app installed):**
+- KleothCore `Dictation/`: `DictationDefaults`, `DictationChordMachine` (18 tests),
+  `ChordEdgeDetector` (5 tests), `Keyterms`,
   `DictationPrompt` + `DictationPolisher` (+ `Concurrency/Timeout.swift` `withTimeout`),
   `DictationLogEntry`/`DictationLogStore` (actor) / `PersonalDictionaryStore`, `PillGeometry`,
   `PasteboardPolicy`; `ScribeOptions.noVerbatim/keyterms` + `.dictation(keyterms:)`,
@@ -281,11 +284,45 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   content under the strict dictation schema (reasoning eats the 1024-token cap, 17–28 s) — poor
   polish picks; they stay in `curatedFallback` for summaries (8192-token budget) untested.
   `polishTimeout` stays 8 s (max capped run 4.9 s). Probe scripts were scratch-only (not committed).
-- **Known leftovers (small):** `DictationHotkeyMonitor.appEvent(_:)` is now an identity map (the T0
-  placeholder types it bridged are gone) and can be deleted along with the `KleothCore.` qualifier
-  in `emit`; `SettingsDictationSection` spells the send cap as the literal "first 100" instead of
-  `Keyterms.maxTerms`; CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving (from
-  2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
+- **Review pass (same day, 5-dimension multi-agent review — concurrency / macOS APIs / pipeline / UI /
+  compliance; every finding adversarially verified):** 19 findings confirmed (5 medium, 14 low) and
+  ~50 suspected items checked and found CORRECT (recorded in the review brief; e.g. `shared` is set
+  before `applicationDidFinishLaunching`, monitors don't double-fire, `withTimeout` cancels
+  properly, `vDSP_measqv` is already the mean). **All 19 applied** (app fixer, this pass):
+  (1) `monitor.abort()` wired at every controller-side exit the machine didn't drive — `cancel()`
+  listening + pipeline branches, `handleEscape()` listening, `refuseWhileBusy()` — and
+  `DictationChordMachine` `.abort` from `.handsFree` now lands in `.idle` (keys are already up;
+  was `.blocked` → the next press was eaten as `.toggledOff`); (2) new KleothCore
+  `ChordEdgeDetector` (tested): releasing ⌘ off fn+shift+⌘ no longer reads as a chord-down (it
+  armed, or from `tapWindow` started hands-free) — the "add ⌘ mid-hold commits" behavior (§8.2 #7b)
+  is deliberately KEPT; (3) `PasteboardSnapshot.capture` runs off-main on the serial
+  `PasteboardReader` actor under `PasteboardPolicy.captureTimeout` (0.4 s; expiry = "no snapshot to
+  restore"), with a per-item flavor budget (`typesToCapture`, 6 non-preferred + text/url/file-url
+  always) and an early stop at 12 MB — a lazy Photoshop/Figma clipboard no longer freezes the main
+  thread; (4) Scribe HTTP failures show "Transcription failed (HTTP 401)." (body → os.Logger),
+  `DictationPillFault.message` is capped at 140 chars, the panel width is capped to the screen
+  (`PillGeometry.maxPanelWidth`, tested) and the pill label tail-truncates (was `.fixedSize()` →
+  a 512-byte body pushed the ✕ off-screen); (5) popover → History forces the Meetings scope via
+  `RecordingController.meetingsHistoryRequest` (the `selectedMeetingID` observer lived on the
+  unmounted meetings branch while Dictations was showing); lows: Settings writes dictionary.json
+  only if the editor text changed (a malformed file was being overwritten with `[]` on close),
+  `URLError(.cancelled)` from Esc mid-upload dismisses instead of a sticky "Network error", the
+  monitor's health-timer teardown now reports `onTrustLost` → `refreshTrust()` (popover banner
+  appears immediately), pill hit shape is the capsule (the 18 pt shadow margin no longer swallows
+  clicks), `logStore` rebinds when Settings moves the output folder (`syncLogStore()`),
+  `Transcriber.modelIdentifier(for:)` (default = type name; Scribe = `options.modelId`) replaces the
+  hard-coded `scribe_v2` in the log row, detail pills read "Cloud transcription"/"Cleaned up" with
+  the slug in `.help`, header no longer repeats the app name, dictionary caption interpolates
+  `Keyterms.maxTerms` and drops the "20% surcharge" figure, dictation delete failures alert + always
+  reload (`logRevision` bumped in a `defer`), `appEvent` identity map deleted, `RenderLevel` doc now
+  says "deliberate benign race" (a relaxed atomic needs macOS 15), entitlements comment names
+  `CGEvent.post`. NOT done: wiring `isMonitoring`/`isSessionActive` into a view (still unread
+  published state — harmless). 237 core tests green; both packages build; `dictate 3` on the default
+  model → Scribe `rus` + polish OK in 2.25 s, temp dir empty; release app reinstalled (running
+  instance NOT killed). Gotcha: adding a KleothCore source file is invisible to a warm
+  `app/.build` until `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
+- **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
+  (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —
   the hotkey monitor live (chord detection, fn/🌐 double-tap emoji-picker caveat, trust-loss
   teardown, local monitor while a Kleoth window is key), the real ⌘V paste into real apps,
@@ -297,7 +334,10 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   reinstalled but the RUNNING instance was not killed — relaunch to pick it up.
 - **TODO for the user — §8.2 manual checklist (unchecked; record pass/fail here):**
   prereq `bash app/setup-signing.sh` once, `bash app/make-app.sh release`, `pkill -x Kleoth; open -a
-  Kleoth`, `codesign -dv` shows "Kleoth Self-Signed".
+  Kleoth`, `codesign -dv` shows "Kleoth Self-Signed". Added by the review pass (§8.2 #7c/#8b):
+  fn+shift+⌘ with ⌘ released FIRST must not arm/start hands-free; hands-free → Esc (and → pill ✕)
+  → the next single hold must arm on the FIRST press; double-tap twice mid-pipeline → the first
+  press after it settles arms.
   1. Settings → Dictation toggle on before granting → system prompt; row "needs access"; popover button; chord dead.
   2. Grant in System Settings, return → row flips green without relaunch; chord works (else relaunch + note here).
   3. `log stream --predicate 'subsystem == "dev.kleoth" AND category == "DictationHotkey"'`: fn-then-shift and shift-then-fn both reach chord down; either release → up; no emoji/dictation picker on tap/double-tap; events arrive while a Kleoth window is key; external-keyboard fn emits nothing.

@@ -40,6 +40,35 @@ import Foundation
         #expect(PasteboardPolicy.shouldCapture(type: "org.nspasteboard.TransientType"))
     }
 
+    @Test func typesToCaptureKeepsPreferredAndBudgetsTheRest() {
+        // An image-heavy item: the promise type is dropped, every preferred
+        // type survives regardless of position, and only the first
+        // `maxTypesPerItem` other flavors are read — in declared order.
+        var declared = ["com.apple.pasteboard.promised-file-url", "public.tiff"]
+        declared += (0..<10).map { "com.example.flavor-\($0)" }
+        declared += ["public.utf8-plain-text", "public.file-url"]
+        let chosen = PasteboardPolicy.typesToCapture(from: declared)
+        #expect(!chosen.contains("com.apple.pasteboard.promised-file-url"))
+        #expect(chosen.first == "public.tiff")
+        #expect(chosen.suffix(2) == ["public.utf8-plain-text", "public.file-url"])
+        let others = chosen.filter { !PasteboardPolicy.preferredTypes.contains($0) }
+        #expect(others.count == PasteboardPolicy.maxTypesPerItem)
+        #expect(others == ["public.tiff"] + (0..<5).map { "com.example.flavor-\($0)" })
+        // A plain text item is untouched.
+        #expect(PasteboardPolicy.typesToCapture(from: ["public.utf8-plain-text", "public.rtf"]) == ["public.utf8-plain-text", "public.rtf"])
+    }
+
+    @Test func shouldReadStopsEarlyForNonPreferredTypesOnly() {
+        #expect(PasteboardPolicy.earlyStopBytes < PasteboardPolicy.maxBytes)
+        #expect(PasteboardPolicy.shouldRead(type: "public.tiff", byteCountSoFar: 0))
+        #expect(PasteboardPolicy.shouldRead(type: "public.tiff", byteCountSoFar: PasteboardPolicy.earlyStopBytes - 1))
+        #expect(!PasteboardPolicy.shouldRead(type: "public.tiff", byteCountSoFar: PasteboardPolicy.earlyStopBytes))
+        // Text flavors are still read past the early-stop line (they are what
+        // the restore most needs and they are tiny).
+        #expect(PasteboardPolicy.shouldRead(type: "public.utf8-plain-text", byteCountSoFar: PasteboardPolicy.maxBytes))
+        #expect(PasteboardPolicy.captureTimeout > 0 && PasteboardPolicy.captureTimeout <= 0.5)
+    }
+
     @Test func withinCapIsInclusiveAtBoundary() {
         #expect(PasteboardPolicy.maxBytes == 24 * 1024 * 1024)
         #expect(PasteboardPolicy.withinCap(byteCount: 0))

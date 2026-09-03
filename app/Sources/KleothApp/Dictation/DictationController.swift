@@ -30,7 +30,12 @@ final class DictationController: ObservableObject {
     /// Bumped AFTER `await logStore.append` returns (the row is on disk); DictationsListView reloads on change.
     @Published private(set) var logRevision: Int = 0
 
-    let logStore: DictationLogStore
+    /// Rebound whenever Settings moves the output folder (`syncLogStore()`),
+    /// so dictations never keep landing in — or being listed from — the old
+    /// `~/Kleoth/dictations` after the user picks a new location.
+    @Published private(set) var logStore: DictationLogStore
+    /// False when a probe/test injected its own store: then it is never rebound.
+    private let logStoreFollowsSettings: Bool
 
     private let monitor: any DictationHotkeyMonitoring
     private let pill: any DictationPillPresenting
@@ -101,7 +106,8 @@ final class DictationController: ObservableObject {
             inserter: TextInserter.shared,
             logStore: DictationLogStore(outputDir: settings.outputDir),
             dictionary: PersonalDictionaryStore(),
-            transcriber: nil
+            transcriber: nil,
+            logStoreFollowsSettings: true
         )
         Self.shared = self
     }
@@ -115,13 +121,15 @@ final class DictationController: ObservableObject {
         inserter: any TextInserting,
         logStore: DictationLogStore,
         dictionary: PersonalDictionaryStore,
-        transcriber: (any Transcriber)? = nil
+        transcriber: (any Transcriber)? = nil,
+        logStoreFollowsSettings: Bool = false
     ) {
         let settings = AppConfig.settings()
         self.monitor = monitor
         self.pill = pill
         self.inserter = inserter
         self.logStore = logStore
+        self.logStoreFollowsSettings = logStoreFollowsSettings
         self.dictionary = dictionary
         self.injectedTranscriber = transcriber
         self.isEnabled = settings.dictationEnabled
@@ -131,6 +139,11 @@ final class DictationController: ObservableObject {
 
         pill.onAction = { [weak self] action in self?.handlePillAction(action) }
         pill.onDismiss = { [weak self] in self?.handlePillDismiss() }
+        // The monitor's 30 s health timer removes the monitors on its own when
+        // trust is lost (bundle replaced by a rebuild); mirror that into the
+        // published flags now, so the popover's "needs access" line appears
+        // without waiting for the app to become active.
+        monitor.onTrustLost = { [weak self] in self?.refreshTrust() }
     }
 
     /// Default engine factory; the only place `ScribeClient` is named in this file.
@@ -174,6 +187,14 @@ final class DictationController: ObservableObject {
     /// Esc / pill ✕ / external. Drops whatever is live: an armed or listening
     /// capture is cancelled (clip deleted), an in-flight pipeline is cancelled
     /// (its `defer` deletes the clips and resets the flags).
+    ///
+    /// Every exit here that the chord machine did not drive also calls
+    /// `monitor.abort()`, so the machine and `phase` never disagree: without it
+    /// a cancelled hands-free session leaves the machine parked in
+    /// `.handsFree`, and the user's next fn+shift press is read as
+    /// `.toggledOff` — swallowed by `finishListening()`'s guard, no pill, no
+    /// mic. `.abort` emits `.cancelled(.external)`, which `handleCancelled`
+    /// no-ops in every phase we can be in afterwards.
     func cancel() {
         refusalTask?.cancel()
         refusalTask = nil
@@ -188,9 +209,11 @@ final class DictationController: ObservableObject {
             capture.cancel()
             pill.dismiss()
             endSession()
+            monitor.abort()
         case .transcribing, .polishing, .inserting:
             pipelineTask?.cancel()
             pill.dismiss()
+            monitor.abort()
         }
     }
 
@@ -247,13 +270,31 @@ final class DictationController: ObservableObject {
 
     /// Sync: nonisolated store reads.
     func loadDictations(limit: Int = 500) -> [DictationLogEntry] {
-        logStore.loadAll(limit: limit)
+        syncLogStore()
+        return logStore.loadAll(limit: limit)
     }
 
-    /// Hops to the store actor; bumps logRevision.
+    /// Hops to the store actor; bumps logRevision — even on failure, since
+    /// `delete` walks day files one at a time and a throw partway leaves
+    /// earlier days already rewritten (the list must reload to what is on disk).
     func deleteDictations(ids: Set<String>) async throws {
+        syncLogStore()
+        defer { logRevision += 1 }
         _ = try await logStore.delete(ids: ids)
-        logRevision += 1
+    }
+
+    /// Rebinds `logStore` if Settings moved the output folder since the last
+    /// use. `RecordingController` mutates `outputDir` live; every other config
+    /// value the pipeline needs is re-read per run, and this keeps the store
+    /// from being the one stale binding. Cheap: `AppConfig.settings()` reads
+    /// the in-memory Keychain cache.
+    private func syncLogStore(to settings: Settings? = nil) {
+        guard logStoreFollowsSettings else { return }
+        let outputDir = (settings ?? AppConfig.settings()).outputDir
+        let expected = DictationLogStore(outputDir: outputDir)
+        guard expected.baseDir.standardizedFileURL != logStore.baseDir.standardizedFileURL else { return }
+        log.notice("dictation log store rebound to \(expected.baseDir.path, privacy: .public)")
+        logStore = expected
     }
 
     // MARK: - Monitor plumbing
@@ -402,12 +443,17 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// `.escapePressed` only arrives while the chord is UP, so the listening
+    /// case is hands-free (push-to-talk Esc reaches the machine as
+    /// `.otherKey` instead): the machine sits in `.handsFree` and must be
+    /// aborted back to idle, or the next press would be a `.toggledOff`.
     private func handleEscape() {
         switch phase {
         case .listening:
             capture.cancel()
             pill.dismiss()
             endSession()
+            monitor.abort()
         case .transcribing, .polishing, .inserting:
             pipelineTask?.cancel()
             pill.dismiss()
@@ -428,9 +474,16 @@ final class DictationController: ObservableObject {
     /// A chord press while steps 5–8 are in flight: refuse, but say so. The
     /// warning is shown for 1 s and then the phase's own pill state returns —
     /// a bare `.warning` would auto-hide the pill after 3 s while the pipeline
-    /// is still running. The machine goes on to emit `.began`/`.ended` for this
-    /// press; both are ignored because `phase` is not `.armed`/`.listening`.
+    /// is still running.
+    ///
+    /// The machine is aborted while the refused chord is still down, so the
+    /// release is swallowed and no tap window opens. Without this a refused
+    /// double-tap would walk the machine `tapWindow → handsFreeArming →
+    /// handsFree` behind the controller's back, and the first press after the
+    /// pipeline settled would be eaten as `.toggledOff`. The abort emits
+    /// `.cancelled(.external)`, a no-op in every pipeline phase (and in idle).
     private func refuseWhileBusy() {
+        monitor.abort()
         refusalTask?.cancel()
         pill.show(.warning("Finishing the previous dictation…"))
         refusalTask = Task { [weak self] in
@@ -491,6 +544,7 @@ final class DictationController: ObservableObject {
 
         let credentials = AppConfig.credentials()
         let settings = AppConfig.settings()
+        syncLogStore(to: settings)
         guard let key = credentials.elevenLabsKey, !key.isEmpty else {
             pill.show(.failed(.missingElevenLabsKey))   // also checked at `armed`
             return
@@ -516,19 +570,30 @@ final class DictationController: ObservableObject {
 
         // 6. Transcribe through the `Transcriber` seam.
         let terms = Keyterms.sanitize(dictionary.load())
+        let options = ScribeOptions.dictation(keyterms: terms)
         let transcriber: any Transcriber = injectedTranscriber ?? makeTranscriber(elevenLabsKey: key)
         pill.show(.transcribing)
         let response: ScribeResponse
         do {
             response = try await withTimeout(seconds: DictationDefaults.scribeTimeout) {
-                try await transcriber.transcribe(fileURL: uploadURL, options: .dictation(keyterms: terms))
+                try await transcriber.transcribe(fileURL: uploadURL, options: options)
             }
             try Task.checkCancellation()
         } catch is CancellationError {
             pill.dismiss()
             return
+        } catch let url as URLError where url.code == .cancelled {
+            // Esc during the upload: `withTimeout` races the sleep (which
+            // throws `CancellationError`) against URLSession (which reports
+            // task cancellation as `URLError(.cancelled)`); whichever child
+            // wins the race is the error that lands here. Both mean "the user
+            // cancelled" — never a sticky red "Network error: cancelled." pill.
+            pill.dismiss()
+            return
         } catch {
-            log.error("transcription failed: \(Self.userFacing(error), privacy: .public)")
+            // The full error (a Scribe HTTP body can be 512 bytes of JSON)
+            // belongs in the log; the pill gets the short form.
+            log.error("transcription failed: \(String(describing: error), privacy: .public)")
             pill.show(.failed(.message(Self.userFacing(error))))   // NO log row
             return
         }
@@ -589,7 +654,7 @@ final class DictationController: ObservableObject {
             polishedText: polish.text,
             usedRawFallback: polish.usedRawFallback,
             fallbackReason: polish.fallbackReason,
-            transcriptionModel: DictationDefaults.transcriptionModel,
+            transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
             polishModel: polish.usedRawFallback ? nil : settings.dictationModel,
             durationSeconds: clip.durationSeconds,
             insertMethod: method,
@@ -637,6 +702,11 @@ final class DictationController: ObservableObject {
     private static func userFacing(_ error: any Error) -> String {
         switch error {
         case let scribe as ScribeError:
+            // §7: status only — the raw body is logged, never shown (it would
+            // size the pill wider than the screen).
+            if case .httpError(let status, _) = scribe {
+                return "Transcription failed (HTTP \(status))."
+            }
             return "Transcription failed: \(scribe.description)"
         case is KleothTimeoutError:
             return "Transcription timed out."

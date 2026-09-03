@@ -40,12 +40,20 @@ enum DictationPillFault: Equatable, Sendable {
     case secureInput
     case message(String)
 
+    /// Belt and braces for `.message`: no state may carry an unbounded line
+    /// into the pill (the panel width follows this text). The controller
+    /// already shortens known error shapes at the source.
+    static let maxMessageLength = 140
+
     var text: String {
         switch self {
         case .missingElevenLabsKey: return "Add an ElevenLabs key to dictate"
         case .needsAccessibility: return "Kleoth needs Accessibility access"
         case .secureInput: return "The focused field blocks dictation"
-        case .message(let message): return message
+        case .message(let message):
+            let single = message.replacingOccurrences(of: "\n", with: " ")
+            guard single.count > Self.maxMessageLength else { return single }
+            return String(single.prefix(Self.maxMessageLength)) + "…"
         }
     }
 
@@ -97,6 +105,12 @@ protocol DictationHotkeyMonitoring: AnyObject {
     /// `.began` / `.toggledOn` (the moment the pill appears) and back to false only in
     /// `endSession()` (§2.3) — listening cancel paths and `run()`'s single `defer`.
     var escapeCancels: Bool { get set }
+    /// Fired (main actor) when the monitor's own health timer tears the
+    /// monitors down because Accessibility trust was lost — the controller
+    /// mirrors `isRunning`/trust into its published flags right away instead
+    /// of waiting for the next `refreshTrust()`. NOT fired by a `stop()` the
+    /// controller itself requested.
+    var onTrustLost: (() -> Void)? { get set }
     /// false (and installs nothing) when !AXIsProcessTrusted().
     @discardableResult
     func start() -> Bool

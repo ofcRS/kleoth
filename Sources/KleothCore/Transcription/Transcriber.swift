@@ -19,6 +19,18 @@ public protocol Transcriber: Sendable {
     /// of state captured at construction; `fileURL` remains the single-file
     /// fallback for imported audio.
     func transcribe(fileURL: URL, options: ScribeOptions) async throws -> ScribeResponse
+
+    /// The engine/model name to record alongside a transcript produced with
+    /// `options` (e.g. the dictation log's `transcription_model`). Scribe
+    /// answers with the `model_id` it actually sends; the default names the
+    /// conforming type, so an injected engine is never logged as Scribe.
+    func modelIdentifier(for options: ScribeOptions) -> String
+}
+
+public extension Transcriber {
+    func modelIdentifier(for options: ScribeOptions) -> String {
+        String(describing: Self.self)
+    }
 }
 
 // `ScribeClient`'s conformance lives in ScribeClient.swift: because `Transcriber`

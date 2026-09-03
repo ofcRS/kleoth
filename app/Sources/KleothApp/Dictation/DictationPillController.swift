@@ -57,10 +57,14 @@ final class DictationPillController: DictationPillPresenting {
         }
 
         let panel = ensurePanel()
-        let size = Self.panelSize(for: state)
         // "Already up" means visible AND presented — a panel caught mid fade-out
         // is re-anchored and springs in again.
         let alreadyUp = panel.isVisible && model.isPresented
+        // Width is capped to the screen the pill will sit on, so an unbounded
+        // message truncates inside the capsule instead of pushing the ✕ off
+        // the right edge (`PillGeometry.maxPanelWidth`).
+        let screen = (alreadyUp ? self.screen(containing: panel.frame) : nil) ?? anchorScreen()
+        let size = Self.panelSize(for: state, in: screen?.visibleFrame)
 
         model.apply(phase: state)
 
@@ -281,6 +285,15 @@ final class DictationPillController: DictationPillPresenting {
         )
     }
 
+    /// The screen `anchorOrigin` will pick — the saved placement's display if
+    /// it is still around, else the one under the mouse.
+    private func anchorScreen() -> NSScreen? {
+        if let placement = savedPlacement(), let screen = screen(for: placement) {
+            return screen
+        }
+        return defaultScreen()
+    }
+
     private func savedPlacement() -> PillPlacement? {
         guard let data = defaults.data(forKey: Self.placementDefaultsKey) else { return nil }
         // A stale or hand-edited blob simply means "no saved position".
@@ -329,8 +342,9 @@ final class DictationPillController: DictationPillPresenting {
 
     /// Panel size for a phase, measured from the label text. Computed rather
     /// than read from `fittingSize` so the frame is known synchronously, before
-    /// SwiftUI has laid the new phase out.
-    static func panelSize(for state: DictationPillState) -> CGSize {
+    /// SwiftUI has laid the new phase out. When `visibleFrame` is known the
+    /// width is capped to it (the label then truncates — `DictationPillView`).
+    static func panelSize(for state: DictationPillState, in visibleFrame: CGRect? = nil) -> CGSize {
         var width = leadingWidth + KleothMetrics.spacingS + textWidth(state.pillText, style: .callout, weight: .medium)
         if let action = state.fault?.action {
             width += KleothMetrics.spacingM + textWidth(action.title, style: .caption1, weight: .semibold) + 22
@@ -339,7 +353,11 @@ final class DictationPillController: DictationPillPresenting {
             width += KleothMetrics.spacingS + 18
         }
         width += 2 * KleothMetrics.spacingM + 2 * shadowPadding + widthSlack
-        return CGSize(width: ceil(width), height: capsuleHeight + 2 * shadowPadding)
+        width = ceil(width)
+        if let visibleFrame {
+            width = PillGeometry.cappedPanelWidth(width, in: visibleFrame)
+        }
+        return CGSize(width: width, height: capsuleHeight + 2 * shadowPadding)
     }
 
     private static func textWidth(_ text: String, style: NSFont.TextStyle, weight: NSFont.Weight) -> CGFloat {

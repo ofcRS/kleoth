@@ -86,7 +86,23 @@ final class TextInserter: TextInserting {
             throw TextInsertionError.secureInputActive
         }
 
-        let snapshot = pendingSnapshot ?? PasteboardSnapshot.capture(from: pasteboard)
+        // The snapshot is read off the main actor under a wall-clock budget:
+        // reading a foreign item's flavors makes the owning app materialize
+        // them (seconds for a layered image, unbounded for a beachballing
+        // owner). A timeout means "no snapshot to restore" — the text simply
+        // stays on the clipboard, which is the safe outcome.
+        let snapshot: PasteboardSnapshot
+        if let pending = pendingSnapshot {
+            snapshot = pending
+        } else if let captured = await PasteboardSnapshot.capture(
+            pasteboardNamed: pasteboard.name.rawValue,
+            timeout: PasteboardPolicy.captureTimeout
+        ) {
+            snapshot = captured
+        } else {
+            log.notice("Clipboard snapshot timed out after \(PasteboardPolicy.captureTimeout, privacy: .public) s — not restoring.")
+            snapshot = .unavailable
+        }
         cancelPendingRestore()
 
         let owned = writeMarked(text)

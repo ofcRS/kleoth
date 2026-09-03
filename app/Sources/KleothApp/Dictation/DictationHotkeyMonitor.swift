@@ -51,12 +51,14 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
     private var localMonitor: Any?
     private var deadlineTask: Task<Void, Never>?
     private var healthTimer: Timer?
-    /// The last chord state we told the machine about — debounces the
-    /// `.flagsChanged` storm a real keypress produces.
-    private var chordIsDown = false
+    /// Decides chord-down / chord-up edges from each `.flagsChanged` snapshot
+    /// (debounce, exact match, and the "third modifier released off a
+    /// superset" suppression) — pure and tested in KleothCore.
+    private var edges = ChordEdgeDetector(chord: DictationHotkeyMonitor.chord)
 
     private(set) var isRunning = false
     var escapeCancels = false
+    var onTrustLost: (() -> Void)?
 
     init() {
         (events, continuation) = AsyncStream.makeStream(
@@ -89,7 +91,7 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         // A fresh machine: a `stop()` mid-chord leaves the old one blocked
         // until a release it will now never see.
         machine = DictationChordMachine()
-        chordIsDown = false
+        edges.reset()
         isRunning = true
         startHealthTimer()
         log.notice("hotkey monitors installed (\(DictationDefaults.hotkeyDescription, privacy: .public))")
@@ -109,7 +111,7 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         deadlineTask = nil
         healthTimer?.invalidate()
         healthTimer = nil
-        chordIsDown = false
+        edges.reset()
         isRunning = false
         // Cancel anything the machine still thinks is capturing so the
         // controller tears the session down.
@@ -128,17 +130,18 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         switch event.type {
         case .flagsChanged:
             // Derive from THIS event's flags, never from keyCode: order-independent
-            // (fn-then-shift or shift-then-fn) and symmetric on release. An exact
-            // match means adding ⌘/⌥/⌃ mid-hold reads as a chord *up* — the same
-            // outcome for the user as `.otherKey`.
+            // (fn-then-shift or shift-then-fn) and symmetric on release. The
+            // exact match means adding ⌘/⌥/⌃ mid-hold reads as a chord *up* —
+            // NOT the same as `.otherKey`: from `holding` the machine commits
+            // (`.ended`, §8.2 #7b by design), from `pressed` it discards the
+            // tap. Releasing that third modifier off fn+shift+⌘ is suppressed
+            // by the detector: fn+shift never moved, so it must not arm.
             let relevant = event.modifierFlags.intersection(Self.relevantModifiers)
-            let down = relevant == Self.chord
-            guard down != chordIsDown else { return }   // debounce non-transitions
-            chordIsDown = down
-            log.debug("chord \(down ? "down" : "up", privacy: .public) flags=\(relevant.rawValue, privacy: .public) t=\(now, privacy: .public)")
-            emit(machine.handle(down ? .chordDown : .chordUp, at: now))
+            guard let signal = edges.ingest(relevant) else { return }   // debounce + suppression
+            log.debug("chord \(signal == .chordDown ? "down" : "up", privacy: .public) flags=\(relevant.rawValue, privacy: .public) t=\(now, privacy: .public)")
+            emit(machine.handle(signal, at: now))
         case .keyDown:
-            if chordIsDown {
+            if edges.chordIsDown {
                 // Only the FACT of a keypress matters: fn+shift+arrow is a real
                 // system shortcut (shift+PageUp/Home) — yield to it.
                 log.debug("otherKey while chord held keyCode=\(event.keyCode, privacy: .public)")
@@ -152,10 +155,10 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         }
     }
 
-    private func emit(_ produced: [KleothCore.DictationHotkeyEvent]) {
+    private func emit(_ produced: [DictationHotkeyEvent]) {
         for event in produced {
             log.debug("event \(String(describing: event), privacy: .public)")
-            continuation.yield(Self.appEvent(event))
+            continuation.yield(event)
         }
         rescheduleDeadline()
     }
@@ -182,6 +185,10 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
                 guard let self, self.isRunning, !AccessibilityPermission.isTrusted else { return }
                 self.log.notice("Accessibility trust lost — removing monitors")
                 self.stop()
+                // The controller mirrors `isRunning` into its published flags
+                // only on `refreshTrust()`; tell it now so the popover's
+                // "needs access" line appears without waiting for activation.
+                self.onTrustLost?()
             }
         }
         healthTimer = timer
@@ -192,26 +199,4 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
     // MARK: Plumbing
 
     private static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
-
-    /// Identity in every meaningful sense — it exists only because the T0
-    /// controller stub temporarily re-declares `DictationHotkeyEvent` inside
-    /// KleothApp, shadowing KleothCore's. When that placeholder section is
-    /// deleted both types are the same type and this stays a valid (identity)
-    /// mapping, so nothing here needs revisiting.
-    private static func appEvent(_ event: KleothCore.DictationHotkeyEvent) -> DictationHotkeyEvent {
-        switch event {
-        case .armed: return .armed
-        case .began: return .began
-        case .ended: return .ended
-        case .toggledOn: return .toggledOn
-        case .toggledOff: return .toggledOff
-        case .escapePressed: return .escapePressed
-        case .cancelled(let reason):
-            switch reason {
-            case .tooShort: return .cancelled(.tooShort)
-            case .otherKey: return .cancelled(.otherKey)
-            case .external: return .cancelled(.external)
-            }
-        }
-    }
 }

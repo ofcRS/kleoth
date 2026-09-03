@@ -122,9 +122,14 @@ public struct DictationChordMachine: Sendable {
     ) -> [DictationHotkeyEvent] {
         // `abort` is state-independent: it cancels whatever is capturing and then
         // swallows the physical release, so a half-held chord can't resume.
+        // The one capturing state whose keys are already UP is `handsFree`
+        // (the second tap was released long ago): there is no release to
+        // swallow, so it settles in `idle` and the next press arms cleanly
+        // instead of being read as `.toggledOff` against a session the
+        // controller has already torn down.
         if case .abort = signal {
             if isCapturing {
-                state = .blocked
+                state = (state == .handsFree) ? .idle : .blocked
                 return [.cancelled(.external)]
             }
             // Non-capturing: stay blocked while the (cancelled) chord is still

@@ -175,10 +175,10 @@ struct SettingsDictationSection: View {
     private var dictionaryCaption: String {
         let count = PersonalDictionaryStore.parse(text: dictionaryText).count
         let terms = count == 1 ? "1 term" : "\(count) terms"
-        // 100 is `Keyterms.maxTerms` (KleothCore, T3) — spelled out here rather
-        // than referenced so this copy reads as copy; the cap itself is enforced
-        // by the sanitizer, never by this string.
-        return "\(terms) · biases recognition toward your names and jargon. One per line. The first 100 are sent with each dictation (ElevenLabs bills a 20% surcharge when terms are sent)."
+        // The cap is enforced by the sanitizer (`Keyterms.sanitize`), never by
+        // this string — so the number is read from the same constant. No
+        // figures here: Settings → Usage is the app's only money surface.
+        return "\(terms) · biases recognition toward your names and jargon. One per line. The first \(Keyterms.maxTerms) are sent with each dictation, which makes it cost slightly more."
     }
 
     /// Cancel-and-restart debounce: the file is written 0.5 s after the last

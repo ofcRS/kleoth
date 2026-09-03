@@ -1,5 +1,6 @@
 import AppKit
 import KleothCore
+import os
 
 /// A deep copy of everything on a pasteboard — every item, every type, raw
 /// `Data` (design §3.20 / §5.5).
@@ -38,27 +39,79 @@ struct PasteboardSnapshot: Sendable {
 
     var isEmpty: Bool { items.isEmpty }
 
-    /// Reads every item and type off `pasteboard`, skipping promise types and
-    /// bailing out (with `exceededCap`) once the running total passes the cap.
+    /// "No snapshot to restore": the capture timed out (a beachballing owner
+    /// never materialized its flavors) or was never taken. Shares the
+    /// `exceededCap` semantics — never restored, the dictated text just stays
+    /// on the clipboard — because that is exactly the safe outcome.
+    static let unavailable = PasteboardSnapshot(exceededCap: true)
+
+    /// Reads the bounded set of flavors off each item (see
+    /// `PasteboardPolicy.typesToCapture` / `shouldRead`), skipping promise
+    /// types and bailing out (with `exceededCap`) once the running total passes
+    /// the cap. Synchronous: `item.data(forType:)` is an IPC to the owning app
+    /// that makes it *materialize* the flavor, so call this through
+    /// `capture(pasteboardNamed:timeout:)` from the main actor, never inline.
     static func capture(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
         var items: [[Payload]] = []
         var total = 0
         for item in pasteboard.pasteboardItems ?? [] {
             var payloads: [Payload] = []
-            for type in item.types {
-                guard PasteboardPolicy.shouldCapture(type: type.rawValue) else { continue }
-                guard let data = item.data(forType: type) else { continue }
+            for rawType in PasteboardPolicy.typesToCapture(from: item.types.map(\.rawValue)) {
+                guard PasteboardPolicy.shouldRead(type: rawType, byteCountSoFar: total) else { continue }
+                guard let data = item.data(forType: NSPasteboard.PasteboardType(rawType)) else { continue }
                 total += data.count
                 guard PasteboardPolicy.withinCap(byteCount: total) else {
                     return PasteboardSnapshot(items: [], byteCount: total, exceededCap: true)
                 }
-                payloads.append(Payload(type: type.rawValue, data: data))
+                payloads.append(Payload(type: rawType, data: data))
             }
             if !payloads.isEmpty {
                 items.append(payloads)
             }
         }
         return PasteboardSnapshot(items: items, byteCount: total, exceededCap: false)
+    }
+
+    /// Off-main capture under a wall-clock budget. Returns nil when `timeout`
+    /// elapses first — the caller treats that as `unavailable`.
+    ///
+    /// The synchronous read cannot be interrupted mid-`data(forType:)`, so on
+    /// expiry the detached read is *abandoned*, not cancelled: it finishes on
+    /// its own later and its result is dropped (the `PasteboardReader` actor
+    /// serializes it against any later capture). This is what keeps the pill
+    /// animating and Esc working while Photoshop renders a 40 MB TIFF.
+    static func capture(pasteboardNamed name: String, timeout: TimeInterval) async -> PasteboardSnapshot? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<PasteboardSnapshot?, Never>) in
+            let gate = ResumeGate(continuation)
+            Task.detached(priority: .userInitiated) {
+                let snapshot = await PasteboardReader.shared.capture(pasteboardNamed: name)
+                gate.resume(with: snapshot)
+            }
+            Task.detached {
+                try? await Task.sleep(for: .seconds(timeout))
+                gate.resume(with: nil)
+            }
+        }
+    }
+
+    /// Resumes a continuation exactly once, from whichever of the two racing
+    /// tasks gets there first.
+    private final class ResumeGate: @unchecked Sendable {
+        private let lock = OSAllocatedUnfairLock(initialState: false)
+        private let continuation: CheckedContinuation<PasteboardSnapshot?, Never>
+
+        init(_ continuation: CheckedContinuation<PasteboardSnapshot?, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(with value: PasteboardSnapshot?) {
+            let first = lock.withLock { done -> Bool in
+                if done { return false }
+                done = true
+                return true
+            }
+            if first { continuation.resume(returning: value) }
+        }
     }
 
     /// Puts the captured contents back, replacing whatever is there now. The
@@ -81,5 +134,20 @@ struct PasteboardSnapshot: Sendable {
             return item
         }
         return pasteboard.writeObjects(rebuilt)
+    }
+}
+
+/// The one serial executor for pasteboard READS that leave the main actor.
+/// AppKit does not promise `NSPasteboard` thread safety, so every off-main read
+/// is confined here (what clipboard managers do in practice), and every WRITE
+/// (`clearContents` / `writeObjects`) stays on the main actor in
+/// `TextInserter`. The pasteboard is re-resolved by name inside the actor
+/// because `NSPasteboard` is not `Sendable`; `NSPasteboard(name:)` returns the
+/// same underlying pasteboard.
+actor PasteboardReader {
+    static let shared = PasteboardReader()
+
+    func capture(pasteboardNamed name: String) -> PasteboardSnapshot {
+        PasteboardSnapshot.capture(from: NSPasteboard(name: NSPasteboard.Name(name)))
     }
 }

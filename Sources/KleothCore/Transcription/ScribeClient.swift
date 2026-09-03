@@ -222,6 +222,10 @@ extension ScribeClient: Transcriber {
     /// truth lives in `TranscriptTier.scribeUSDPerHour`.
     public var usdPerHour: Double { TranscriptTier.scribeUSDPerHour }
     // `transcribe(fileURL:options:)` already satisfies the protocol requirement.
+
+    /// The `model_id` the request carries comes from `options`, not from the
+    /// client, so this is what actually ran.
+    public func modelIdentifier(for options: ScribeOptions) -> String { options.modelId }
 }
 
 /// Errors surfaced by ``ScribeClient``.
