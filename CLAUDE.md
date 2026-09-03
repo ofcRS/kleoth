@@ -235,8 +235,13 @@ sidecar: tier/model/language/cost) — the six root filenames stay THE active se
 source of truth for which tiers exist (no new meta key).
 
 ## Current status (2026-09-03 — dictation v1)
+✅ **v0.2.0 RELEASED (2026-09-03):** `feat/dictation` fast-forwarded into `main` (29 commits), tag
+`v0.2.0`, https://github.com/ofcRS/kleoth/releases/tag/v0.2.0 — `Kleoth-0.2.0.dmg` (8.2 MB, SHA-256
+`46544836…`) + `.sha256` attached; README download link + Homebrew cask draft point at 0.2.0;
+CHANGELOG `[0.2.0]` cut from `[Unreleased]`. Self-signed tier (right-click → Open). The user
+confirmed dictation works live ("much better than Wispr Flow" on RU/EN code-switching).
 User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 integration), branch
-`feat/dictation` (NOT merged to main yet). Design doc `docs/plans/2026-09-03-dictation.md`.
+`feat/dictation` (now merged). Design doc `docs/plans/2026-09-03-dictation.md`.
 **Shipped (compile-checked, 237 core tests green, both packages build, release app installed):**
 - KleothCore `Dictation/`: `DictationDefaults`, `DictationChordMachine` (18 tests),
   `ChordEdgeDetector` (5 tests), `Keyterms`,
