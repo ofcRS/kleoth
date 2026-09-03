@@ -13,6 +13,10 @@ import KleothCore
 /// only renders.
 enum DictationPillState: Equatable, Sendable {
     case hidden
+    /// Visible but inactive: the compact resting capsule shown whenever the
+    /// hotkey is armed (dictation enabled + Accessibility trusted). The pill
+    /// collapses back to this after every session instead of disappearing.
+    case idle
     case listening(handsFree: Bool)
     case transcribing
     case polishing
@@ -27,7 +31,15 @@ enum DictationPillState: Equatable, Sendable {
         switch self {
         case .done: return .seconds(1)
         case .warning: return .seconds(3)
-        case .hidden, .listening, .transcribing, .polishing, .failed: return nil
+        case .hidden, .idle, .listening, .transcribing, .polishing, .failed: return nil
+        }
+    }
+
+    /// Only warnings and failures carry words; every other phase is motion.
+    var showsText: Bool {
+        switch self {
+        case .warning, .failed: return true
+        case .hidden, .idle, .listening, .transcribing, .polishing, .done: return false
         }
     }
 }
@@ -89,7 +101,13 @@ protocol DictationPillPresenting: AnyObject {
     func show(_ state: DictationPillState)
     /// 0…1, already normalized + smoothed by the caller.
     func setLevel(_ level: Double)
+    /// Ends the active phase. With the resting pill on (`setResting(true)`)
+    /// this collapses to `.idle`; otherwise the panel fades out.
     func dismiss()
+    /// Whether the compact resting capsule stays on screen between sessions.
+    /// The controller mirrors `isMonitoring` into this: armed hotkey → pill
+    /// visible; disabled / untrusted / quitting → gone.
+    func setResting(_ visible: Bool)
     func resetPosition()
 }
 

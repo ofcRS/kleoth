@@ -286,6 +286,19 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   content under the strict dictation schema (reasoning eats the 1024-token cap, 17–28 s) — poor
   polish picks; they stay in `curatedFallback` for summaries (8192-token budget) untested.
   `polishTimeout` stays 8 s (max capped run 4.9 s). Probe scripts were scratch-only (not committed).
+- **Pill redesign (same day; user: "more like Wispr Flow — visible when inactive, animates in on the
+  hotkey, no words"):** `DictationPillState.idle` added — the compact resting capsule (24 pt, five
+  breathing dots) stays on screen whenever the hotkey is armed; `DictationPillPresenting.setResting(_:)`
+  is mirrored from `DictationController.isMonitoring` (`didSet`), and `dismiss()` now collapses to
+  `.idle` instead of hiding (hides fully only when resting is off: disabled / untrusted / quit).
+  Motion phases carry no text: listening = 14-bar live waveform (bell-weighted mic level + slow drift;
+  accent dot = hands-free), transcribing = travelling white wave, polishing = accent-tinted faster
+  wave, done = green check for 1 s. Only `.warning` / `.failed` show words (they need a reason / an
+  action). Surface is a dark capsule (`PillStyle`, white ink) regardless of appearance — NOT the app's
+  material, deliberately. `TimelineView(.animation)` is mounted only in active phases (resting costs
+  nothing); Reduce Motion → static bars/dots. Panel sizes per phase in
+  `DictationPillController.panelSize/capsuleHeight`. Hover `.help` + VoiceOver keep the sentences.
+  ⚠️ Compile-checked only — the user is the visual reviewer (relaunch to see it).
 - **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
   then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
   the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]

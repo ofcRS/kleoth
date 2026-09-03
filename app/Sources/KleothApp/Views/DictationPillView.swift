@@ -2,13 +2,22 @@ import SwiftUI
 import AppKit
 import KleothCore
 
-/// The dictation pill: a small capsule that says what dictation is doing, shows
-/// a live mic meter while listening, and can be dragged anywhere on any screen
-/// (design §5.6).
+/// The dictation pill: a small dark capsule that lives at the bottom of the
+/// screen while dictation is armed and shows what dictation is doing with
+/// motion, not words (design §5.6, reworked 2026-09-03 after the user asked for
+/// a Wispr-Flow-style bar).
 ///
-/// It renders `DictationPillModel` and calls back into `DictationPillController`
-/// for the two things a view cannot do: move the `NSPanel`, and run the pill's
-/// actions.
+/// Phases:
+/// - `.idle` — compact resting capsule, five faint dots breathing slowly.
+/// - `.listening` — expands into a live 14-bar waveform driven by the mic level
+///   (an accent dot marks hands-free mode).
+/// - `.transcribing` / `.polishing` — the bars carry a travelling wave
+///   (polishing is accent-tinted) so "still working" is visible without text.
+/// - `.done` — a green check for a second, then back to resting.
+/// - `.warning` / `.failed` — the only phases with text: the user needs to
+///   know *why* something degraded or failed, and `.failed` carries an action.
+///
+/// Every phase still exposes its sentence through `.help` (hover) and VoiceOver.
 struct DictationPillView: View {
     /// Not owned — the controller owns the hosting view that owns this view.
     private unowned let controller: DictationPillController
@@ -25,92 +34,113 @@ struct DictationPillView: View {
     }
 
     var body: some View {
-        // The hit shape is the CAPSULE, not the panel rect: the 18 pt transparent
+        // The hit shape is the CAPSULE, not the panel rect: the transparent
         // shadow margin around it must stay non-interactive, or a `.statusBar`-
-        // level panel would swallow clicks aimed at the app underneath (and a
-        // click on "empty" space next to a failed pill would dismiss it).
+        // level panel would swallow clicks aimed at the app underneath.
         capsule
             .contentShape(Capsule(style: .continuous))
             .gesture(dragGesture)
             .onTapGesture {
-                // A click anywhere on a failed pill dismisses it (the ✕ is the
-                // discoverable affordance; the whole capsule is the target).
                 if model.phase.isSticky { controller.dismissFromUser() }
             }
             .help(model.phase.pillText)
-            .scaleEffect(model.isPresented ? 1 : 0.92, anchor: .center)
+            .scaleEffect(model.isPresented ? 1 : 0.9, anchor: .center)
             .opacity(model.isPresented ? 1 : 0)
             .padding(DictationPillController.shadowPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityElement(children: .contain)
-            // The full, untruncated text — VoiceOver reads all of it even when
-            // the capsule shows a tail-truncated line.
             .accessibilityLabel(Text(model.phase.pillText))
     }
 
     private var capsule: some View {
         HStack(spacing: KleothMetrics.spacingS) {
-            leading
+            content
+        }
+        .padding(.horizontal, model.phase.showsText ? KleothMetrics.spacingM : PillStyle.compactPadding)
+        .frame(height: DictationPillController.capsuleHeight(for: model.phase))
+        .background(PillStyle.surface, in: Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(PillStyle.rim, lineWidth: KleothMetrics.hairline)
+        )
+        // Resting is quieter than active: lower opacity so it reads as an
+        // indicator, not a window.
+        .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
+        .shadow(color: .black.opacity(model.phase == .idle ? 0.18 : 0.28), radius: 10, y: 3)
+        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: model.phase)
+    }
 
-            // No `.fixedSize()`: the panel width is capped to the screen
-            // (`PillGeometry.maxPanelWidth`), so an over-long message truncates
-            // here instead of forcing the HStack — and the ✕ — off-screen. The
-            // measured panel width carries `widthSlack`, so the fixed-length
-            // phase strings never truncate in practice.
-            Text(model.phase.pillText)
-                .font(.callout.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            if let action = model.phase.fault?.action {
+    @ViewBuilder
+    private var content: some View {
+        switch model.phase {
+        case .hidden:
+            EmptyView()
+        case .idle:
+            RestingDots(reduceMotion: reduceMotion)
+                .transition(.opacity.combined(with: .scale(scale: 0.6)))
+        case .listening(let handsFree):
+            if handsFree {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 6, height: 6)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
+            Waveform(mode: .live(level: model.level), reduceMotion: reduceMotion)
+                .transition(.opacity.combined(with: .scale(scale: 0.7)))
+        case .transcribing:
+            Waveform(mode: .wave(tint: PillStyle.ink, speed: 1.0), reduceMotion: reduceMotion)
+                .transition(.opacity)
+        case .polishing:
+            Waveform(mode: .wave(tint: Color.accentColor, speed: 1.6), reduceMotion: reduceMotion)
+                .transition(.opacity)
+        case .done:
+            Image(systemName: "checkmark")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(KleothPalette.successTint)
+                .transition(.scale(scale: 0.4).combined(with: .opacity))
+                .accessibilityHidden(true)
+        case .warning(let message):
+            Image(systemName: "exclamationmark.triangle.fill")
+                .symbolRenderingMode(.hierarchical)
+                .font(.callout)
+                .foregroundStyle(KleothPalette.pendingTint)
+                .accessibilityHidden(true)
+            label(message)
+        case .failed(let fault):
+            Image(systemName: "xmark.octagon.fill")
+                .symbolRenderingMode(.hierarchical)
+                .font(.callout)
+                .foregroundStyle(KleothPalette.failureTint)
+                .accessibilityHidden(true)
+            label(fault.text)
+            if let action = fault.action {
                 Button(action.title) { controller.perform(action) }
                     .buttonStyle(.borderless)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
             }
-
-            if model.phase.isSticky {
-                Button {
-                    controller.dismissFromUser()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Dismiss")
+            Button {
+                controller.dismissFromUser()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(PillStyle.ink.opacity(0.6))
             }
-        }
-        .padding(.horizontal, KleothMetrics.spacingM)
-        .padding(.vertical, KleothMetrics.spacingS)
-        .kleothPillSurface()
-        // The panel has `hasShadow = false`; this is the pill's only shadow and
-        // it lives inside the transparent `shadowPadding` margin.
-        .shadow(color: .black.opacity(0.22), radius: 10, y: 3)
-    }
-
-    @ViewBuilder
-    private var leading: some View {
-        if case .listening = model.phase {
-            LevelMeter(level: model.level, reduceMotion: reduceMotion)
-        } else if let symbol = model.phase.symbolName {
-            Image(systemName: symbol)
-                .symbolRenderingMode(.hierarchical)
-                .font(.callout)
-                .foregroundStyle(tint)
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss")
         }
     }
 
-    /// Semantic tints from the shared palette — `KleothPalette.*` are statics on
-    /// an `enum`, not `Color` members, so `.successTint` shorthand would not
-    /// compile here.
-    private var tint: Color {
-        switch model.phase {
-        case .done: return KleothPalette.successTint
-        case .warning: return KleothPalette.pendingTint
-        case .failed: return KleothPalette.failureTint
-        case .hidden, .listening, .transcribing, .polishing: return Color.accentColor
-        }
+    /// No `.fixedSize()`: the panel width is capped to the screen
+    /// (`PillGeometry.maxPanelWidth`), so an over-long message truncates here
+    /// instead of forcing the HStack — and the ✕ — off-screen.
+    private func label(_ text: String) -> some View {
+        Text(text)
+            .font(.callout.weight(.medium))
+            .foregroundStyle(PillStyle.ink)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     /// Moving the panel from a `DragGesture` has one trap: `value.translation`
@@ -150,57 +180,140 @@ struct DictationPillView: View {
     }
 }
 
-// MARK: - Level meter
+// MARK: - Style
 
-/// Five bars driven by the smoothed mic level. Under Reduce Motion the bars
-/// hold a static mid-height — the pill still reads as "listening" without
-/// anything moving.
-private struct LevelMeter: View {
-    let level: Double
-    let reduceMotion: Bool
+/// The pill's own look. Deliberately NOT the app's `.regularMaterial`: a
+/// waveform needs a dark, quiet ground to read on top of any document, light or
+/// dark, and Wispr-style bars are what the user asked for. Ink is white-on-dark
+/// regardless of appearance.
+enum PillStyle {
+    static let surface = Color(white: 0.09).opacity(0.86)
+    static let rim = Color.white.opacity(0.12)
+    static let ink = Color.white.opacity(0.92)
+    static let restingInk = Color.white.opacity(0.55)
+    static let restingOpacity: Double = 0.9
+    static let compactPadding: CGFloat = 14
 
-    private static let weights: [Double] = [0.55, 0.82, 1.0, 0.82, 0.55]
-    private static let minHeight: CGFloat = 4
-    private static let maxHeight: CGFloat = 18
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(0..<Self.weights.count, id: \.self) { index in
-                Capsule(style: .continuous)
-                    .fill(Color.accentColor)
-                    .frame(width: 3, height: height(at: index))
-            }
-        }
-        .frame(width: 23, height: Self.maxHeight, alignment: .center)
-        .animation(reduceMotion ? nil : Animation.easeOut(duration: 0.09), value: level)
-        .accessibilityHidden(true)
+    // Waveform geometry — `DictationPillController.contentWidth` mirrors these.
+    static let barCount = 14
+    static let barWidth: CGFloat = 2.5
+    static let barSpacing: CGFloat = 2.5
+    static let barMinHeight: CGFloat = 3
+    static let barMaxHeight: CGFloat = 18
+    static var waveformWidth: CGFloat {
+        CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
     }
 
-    private func height(at index: Int) -> CGFloat {
-        let span = Self.maxHeight - Self.minHeight
-        guard !reduceMotion else { return Self.minHeight + span * 0.5 }
-        let clamped = level.isFinite ? min(max(level, 0), 1) : 0
-        let weighted = clamped * Self.weights[index]
-        return Self.minHeight + span * CGFloat(weighted)
+    // Resting dots.
+    static let dotCount = 5
+    static let dotSize: CGFloat = 3
+    static let dotSpacing: CGFloat = 4
+    static var dotsWidth: CGFloat {
+        CGFloat(dotCount) * dotSize + CGFloat(dotCount - 1) * dotSpacing
     }
 }
 
-// MARK: - Surface
+// MARK: - Resting dots
 
-private extension View {
-    /// The pill's background: the same `.regularMaterial` + hairline vocabulary
-    /// as the rest of the app, in a capsule.
-    ///
-    /// Liquid Glass is deliberately NOT used here — `KleothTheme` reserves glass
-    /// for the single hero element (the record button). Making the pill glass is
-    /// a one-line change in this helper if that ever changes.
-    @ViewBuilder
-    func kleothPillSurface() -> some View {
-        self
-            .background(.regularMaterial, in: Capsule(style: .continuous))
-            .overlay(
+/// Five faint dots that breathe in a slow, staggered ripple — the "I'm here"
+/// state. Static under Reduce Motion.
+private struct RestingDots: View {
+    let reduceMotion: Bool
+    @State private var breathing = false
+
+    var body: some View {
+        HStack(spacing: PillStyle.dotSpacing) {
+            ForEach(0..<PillStyle.dotCount, id: \.self) { index in
+                Circle()
+                    .fill(PillStyle.restingInk)
+                    .frame(width: PillStyle.dotSize, height: PillStyle.dotSize)
+                    .scaleEffect(breathing ? 1.0 : 0.72)
+                    .opacity(breathing ? 1.0 : 0.55)
+                    .animation(
+                        reduceMotion ? nil :
+                            .easeInOut(duration: 1.4)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(index) * 0.16),
+                        value: breathing
+                    )
+            }
+        }
+        .frame(width: PillStyle.dotsWidth, height: PillStyle.barMaxHeight)
+        .onAppear { breathing = true }
+        .onDisappear { breathing = false }
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Waveform
+
+/// Fourteen bars. Live mode follows the mic level with a bell-shaped weight
+/// across the bars plus a slow organic drift so silence still looks alive;
+/// wave mode runs a travelling sine — the "working" animation — with no mic
+/// input. A `TimelineView` is mounted only while this view is, so the resting
+/// pill costs nothing.
+private struct Waveform: View {
+    enum Mode: Equatable {
+        case live(level: Double)
+        case wave(tint: Color, speed: Double)
+    }
+
+    let mode: Mode
+    let reduceMotion: Bool
+
+    private static let weights: [Double] = {
+        (0..<PillStyle.barCount).map { index in
+            let x = (Double(index) - Double(PillStyle.barCount - 1) / 2) / (Double(PillStyle.barCount) / 2)
+            return 0.35 + 0.65 * exp(-2.2 * x * x)
+        }
+    }()
+
+    var body: some View {
+        if reduceMotion {
+            bars(at: 0)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 60)) { context in
+                bars(at: context.date.timeIntervalSinceReferenceDate)
+            }
+        }
+    }
+
+    private func bars(at time: TimeInterval) -> some View {
+        HStack(alignment: .center, spacing: PillStyle.barSpacing) {
+            ForEach(0..<PillStyle.barCount, id: \.self) { index in
                 Capsule(style: .continuous)
-                    .strokeBorder(KleothPalette.hairlineStroke, lineWidth: KleothMetrics.hairline)
-            )
+                    .fill(tint)
+                    .frame(width: PillStyle.barWidth, height: height(index: index, time: time))
+            }
+        }
+        .frame(width: PillStyle.waveformWidth, height: PillStyle.barMaxHeight, alignment: .center)
+        .accessibilityHidden(true)
+    }
+
+    private var tint: Color {
+        switch mode {
+        case .live: return PillStyle.ink
+        case .wave(let tint, _): return tint
+        }
+    }
+
+    private func height(index: Int, time: TimeInterval) -> CGFloat {
+        let span = PillStyle.barMaxHeight - PillStyle.barMinHeight
+        let unit: Double
+        switch mode {
+        case .live(let level):
+            guard !reduceMotion else { unit = 0.45 * Self.weights[index]; break }
+            let clamped = level.isFinite ? min(max(level, 0), 1) : 0
+            // Organic drift: two slow sines per bar, small enough that silence
+            // is a soft shimmer and speech is clearly the mic.
+            let drift = 0.5 + 0.5 * sin(time * 2.1 + Double(index) * 0.8) * sin(time * 0.9 + Double(index) * 0.35)
+            let floor = 0.06 + 0.10 * drift
+            unit = floor + (1 - floor) * clamped * Self.weights[index] * (0.8 + 0.2 * drift)
+        case .wave(_, let speed):
+            guard !reduceMotion else { unit = 0.45 * Self.weights[index]; break }
+            let phase = time * 2.6 * speed - Double(index) * 0.55
+            unit = 0.18 + 0.62 * (0.5 + 0.5 * sin(phase)) * Self.weights[index]
+        }
+        return PillStyle.barMinHeight + span * CGFloat(min(max(unit, 0), 1))
     }
 }

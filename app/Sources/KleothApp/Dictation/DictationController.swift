@@ -23,7 +23,11 @@ final class DictationController: ObservableObject {
 
     @Published private(set) var isEnabled: Bool
     @Published private(set) var isTrusted: Bool
-    @Published private(set) var isMonitoring: Bool
+    @Published private(set) var isMonitoring: Bool {
+        // The resting pill is the visible face of "armed": up exactly while
+        // the hotkey monitors are running, gone when disabled/untrusted/quit.
+        didSet { if isMonitoring != oldValue { pill.setResting(isMonitoring) } }
+    }
     @Published private(set) var dictationModel: String
     /// True from `.began`/`.toggledOn` until `endSession()` (listening or pipeline in flight).
     @Published private(set) var isSessionActive: Bool = false

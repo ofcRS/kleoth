@@ -31,6 +31,9 @@ final class DictationPillController: DictationPillPresenting {
     /// the fade. Cancel-and-restart: one slot, cancelled by every `show`.
     private var hideTask: Task<Void, Never>?
     private var screenObserver: (any NSObjectProtocol)?
+    /// `setResting(true)`: the compact capsule stays up between sessions and
+    /// `dismiss()` collapses to it instead of hiding the panel.
+    private var restingVisible = false
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -92,6 +95,33 @@ final class DictationPillController: DictationPillPresenting {
         hideTask?.cancel()
         hideTask = nil
 
+        if restingVisible {
+            collapseToResting()
+            return
+        }
+        hideCompletely()
+    }
+
+    func setResting(_ visible: Bool) {
+        guard restingVisible != visible else { return }
+        restingVisible = visible
+        if visible {
+            // Only take over an empty or already-resting panel — never
+            // interrupt a live phase; `dismiss()` lands on `.idle` later.
+            if model.phase == .hidden || model.phase == .idle { show(.idle) }
+        } else if model.phase == .idle {
+            hideCompletely()
+        }
+    }
+
+    /// Phase → `.idle` on the visible panel (shrinks around the current
+    /// center), or a fresh spring-in if the panel is down.
+    private func collapseToResting() {
+        if model.phase == .idle, panel?.isVisible == true, model.isPresented { return }
+        show(.idle)
+    }
+
+    private func hideCompletely() {
         guard let panel, panel.isVisible else {
             model.isPresented = false
             model.apply(phase: .hidden)
@@ -185,7 +215,7 @@ final class DictationPillController: DictationPillPresenting {
 
     private func ensurePanel() -> DictationPanel {
         if let panel { return panel }
-        let size = Self.panelSize(for: .listening(handsFree: false))
+        let size = Self.panelSize(for: .idle)
         let panel = DictationPanel(contentRect: CGRect(origin: .zero, size: size))
         let hosting = DictationPillHostingView(
             rootView: AnyView(DictationPillView(controller: self).environmentObject(model))
@@ -236,8 +266,8 @@ final class DictationPillController: DictationPillPresenting {
         guard target != current else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
                 panel.animator().setFrame(target, display: true)
             }
         } else {
@@ -331,33 +361,55 @@ final class DictationPillController: DictationPillPresenting {
     // MARK: Sizing
 
     private static let fadeOutDuration: Double = 0.18
-    /// Capsule height; the panel adds `shadowPadding` above and below.
-    private static let capsuleHeight: CGFloat = 38
-    /// Leading element (the 5-bar meter or a phase glyph).
-    private static let leadingWidth: CGFloat = 26
+    /// Capsule heights per phase; the panel adds `shadowPadding` above and
+    /// below. Resting is a sliver, motion phases a short bar, text phases the
+    /// old label height.
+    static func capsuleHeight(for state: DictationPillState) -> CGFloat {
+        switch state {
+        case .idle: return 24
+        case .hidden, .listening, .transcribing, .polishing, .done: return 32
+        case .warning, .failed: return 38
+        }
+    }
     /// Slack so a font or locale wider than measured never clips: the capsule
     /// sizes itself to its content, the panel just has to be big enough to hold
     /// it (extra width is transparent margin).
     private static let widthSlack: CGFloat = 20
 
-    /// Panel size for a phase, measured from the label text. Computed rather
-    /// than read from `fittingSize` so the frame is known synchronously, before
-    /// SwiftUI has laid the new phase out. When `visibleFrame` is known the
-    /// width is capped to it (the label then truncates — `DictationPillView`).
+    /// Panel size for a phase. Motion phases have fixed content widths that
+    /// mirror `PillStyle`; text phases are measured from the label. Computed
+    /// rather than read from `fittingSize` so the frame is known synchronously,
+    /// before SwiftUI has laid the new phase out. When `visibleFrame` is known
+    /// the width is capped to it (the label then truncates — `DictationPillView`).
     static func panelSize(for state: DictationPillState, in visibleFrame: CGRect? = nil) -> CGSize {
-        var width = leadingWidth + KleothMetrics.spacingS + textWidth(state.pillText, style: .callout, weight: .medium)
-        if let action = state.fault?.action {
-            width += KleothMetrics.spacingM + textWidth(action.title, style: .caption1, weight: .semibold) + 22
+        var width: CGFloat
+        switch state {
+        case .hidden, .idle:
+            width = PillStyle.dotsWidth + 2 * PillStyle.compactPadding
+        case .listening(let handsFree):
+            width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
+                + (handsFree ? 6 + KleothMetrics.spacingS : 0)
+        case .transcribing, .polishing:
+            width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
+        case .done:
+            // Keep the bar's width so the check appears in place of the wave.
+            width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
+        case .warning, .failed:
+            width = 20 + KleothMetrics.spacingS + textWidth(state.pillText, style: .callout, weight: .medium)
+            if let action = state.fault?.action {
+                width += KleothMetrics.spacingS + textWidth(action.title, style: .caption1, weight: .semibold) + 22
+            }
+            if state.isSticky {
+                width += KleothMetrics.spacingS + 18
+            }
+            width += 2 * KleothMetrics.spacingM
         }
-        if state.isSticky {
-            width += KleothMetrics.spacingS + 18
-        }
-        width += 2 * KleothMetrics.spacingM + 2 * shadowPadding + widthSlack
+        width += 2 * shadowPadding + widthSlack
         width = ceil(width)
         if let visibleFrame {
             width = PillGeometry.cappedPanelWidth(width, in: visibleFrame)
         }
-        return CGSize(width: width, height: capsuleHeight + 2 * shadowPadding)
+        return CGSize(width: width, height: capsuleHeight(for: state) + 2 * shadowPadding)
     }
 
     private static func textWidth(_ text: String, style: NSFont.TextStyle, weight: NSFont.Weight) -> CGFloat {
@@ -377,6 +429,7 @@ final class DictationPillController: DictationPillPresenting {
     /// The pill is not a key window, so VoiceOver never focuses it: each phase
     /// has to be spoken explicitly.
     private func announce(_ state: DictationPillState) {
+        guard state != .idle else { return }
         NSAccessibility.post(
             element: NSApp as Any,
             notification: .announcementRequested,
@@ -395,6 +448,7 @@ extension DictationPillState {
     var pillText: String {
         switch self {
         case .hidden: return ""
+        case .idle: return "Dictation ready — hold \(DictationDefaults.hotkeyDescription) to speak"
         case .listening(let handsFree):
             return handsFree ? "Listening — tap \(DictationDefaults.hotkeyDescription) to stop" : "Listening…"
         case .transcribing: return "Transcribing…"
@@ -408,7 +462,7 @@ extension DictationPillState {
     /// Leading SF Symbol, or `nil` for `.listening` (which shows the meter).
     var symbolName: String? {
         switch self {
-        case .hidden, .listening: return nil
+        case .hidden, .idle, .listening: return nil
         case .transcribing: return "waveform"
         case .polishing: return "sparkles"
         case .done: return "checkmark.circle.fill"
