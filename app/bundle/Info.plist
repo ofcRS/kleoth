@@ -23,9 +23,9 @@
     <key>NSHumanReadableCopyright</key>
     <string>Kleoth is open source. See the project repository for license terms.</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.4</string>
     <!-- Menu-bar agent: no Dock icon, no main window. -->

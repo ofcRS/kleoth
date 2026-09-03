@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-03
+
 ### Added
 
 - **Dictation (hold fn+shift, speak, release).** System-wide voice typing: the utterance is
@@ -14,12 +16,22 @@ All notable changes to Kleoth are documented here. The format is based on
   never translated — falls back to the raw transcript within 8 s if the model is slow, blocked, or
   changes the language), and pasted into whatever app has keyboard focus via the clipboard + a
   synthetic ⌘V; your previous clipboard is restored 0.5 s later. Double-tap for hands-free, tap
-  once to stop, Esc cancels. A floating, draggable pill shows listening / transcribing /
-  polishing / done / warnings. Text-only history lands in `~/Kleoth/dictations/<day>.json` and is
+  once to stop, Esc cancels. A small dark pill rests half-tucked into a screen edge (bottom by
+  default; drag it along the edge, or toward another edge to dock it there — side edges stand it
+  up) and springs out while you speak: a live waveform while listening, a travelling wave while
+  transcribing and polishing, a check when the text has landed, words only for warnings and
+  errors. Silence just puts it back. Text-only history lands in `~/Kleoth/dictations/<day>.json` and is
   browsable from the new **Dictations** scope in the History window; a personal dictionary lives
   in `~/.config/kleoth/dictionary.json` (Settings → Dictation). Audio is never kept. Opt-in
   (Settings → Dictation) and requires the **Accessibility** permission (for the hotkey and the
   paste); `dictate` is a headless CLI probe for the pipeline.
+- **Polish adapts to where you're typing.** In composition surfaces — AI chats (Claude, ChatGPT,
+  Cursor…), editors, notes, documents, mail, browsers — the polish step restructures spoken
+  brainstorming into the text you would have typed: ideas reordered, fragments merged, spoken
+  lists rendered as lists, the word you settled on kept, thinking-out-loud dropped, every point
+  preserved and nothing invented. Messaging apps get a light touch that keeps your sentence order
+  and voice; terminals get plain single-line text. The spoken language is always kept, including
+  Russian sentences with English technical terms.
 
 - **Choose the engine per meeting.** An untranscribed recording's detail pane now offers
   both **Transcribe** (free, on-device) and **Transcribe in cloud** (ElevenLabs Scribe, your
@@ -130,4 +142,5 @@ First public release. A local-first, bot-free macOS meeting recorder.
   metadata extractor); the URL scheme and hotkey work regardless.
 - No Whisper model-size picker yet; the default model is used.
 
+[0.2.0]: ../../releases/tag/v0.2.0
 [0.1.0]: ../../releases/tag/v0.1.0
