@@ -31,7 +31,7 @@ import KleothCore
 /// callbacks. All pure math lives in `PillGeometry` (KleothCore) so it can be
 /// unit-tested — the app package has no test target.
 @MainActor
-final class DictationPillController: DictationPillPresenting {
+public final class DictationPillController: DictationPillPresenting {
     /// Transparent margin around the capsule. The SwiftUI content draws its
     /// shadow inside this, which is why the panel itself has `hasShadow = false`.
     static let shadowPadding: CGFloat = 18
@@ -46,15 +46,18 @@ final class DictationPillController: DictationPillPresenting {
     /// shrink first, then slide into the edge. The view adds a short
     /// squash-and-stretch on every phase change (`DictationPillView`), which
     /// lands during the stagger as anticipation.
-    static let moveSpring: Animation = .spring(duration: 0.55, bounce: 0.3)
-    static let shapeSpring: Animation = .spring(duration: 0.5, bounce: 0.25)
+    static let moveSpring: Animation = .spring(duration: 0.55, bounce: 0.32)
+    static let shapeSpring: Animation = .spring(duration: 0.5, bounce: 0.22)
     static let stagger: TimeInterval = 0.09
+    /// Nominal durations of the two springs, for picking the beat that ends last.
+    static let moveDuration: TimeInterval = 0.55
+    static let shapeDuration: TimeInterval = 0.5
 
     /// What the SwiftUI content renders.
     let model = DictationPillModel()
 
-    var onAction: ((DictationPillAction) -> Void)?
-    var onDismiss: (() -> Void)?
+    public var onAction: ((DictationPillAction) -> Void)?
+    public var onDismiss: (() -> Void)?
 
     private let defaults: UserDefaults
     private var panel: DictationPanel?
@@ -81,7 +84,7 @@ final class DictationPillController: DictationPillPresenting {
     /// Reset to zero when a drag re-docks to an edge with the other axis.
     private var dragGrabOffset: CGFloat = 0
 
-    init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         // Re-anchor when a display is added, removed, or resized so the pill can
         // never be stranded off-screen while it is up.
@@ -96,9 +99,14 @@ final class DictationPillController: DictationPillPresenting {
 
     // MARK: DictationPillPresenting
 
-    func show(_ state: DictationPillState) {
+    public func show(_ state: DictationPillState) {
         hideTask?.cancel()
         hideTask = nil
+        if state != .idle, peeking {
+            peekTask?.cancel()
+            peeking = false
+            model.apply(peeking: false)
+        }
 
         guard state != .hidden else {
             dismiss()
@@ -121,7 +129,7 @@ final class DictationPillController: DictationPillPresenting {
         model.apply(labelWidth: layout.labelWidth)
 
         if alreadyUp {
-            transition(to: target, phase: state)
+            transition(to: target, phase: state, capsule: layout.capsuleSize)
         } else {
             // A fresh show starts from the tucked spot and emerges, so even the
             // first pill of the day comes in from the edge rather than popping.
@@ -132,10 +140,11 @@ final class DictationPillController: DictationPillPresenting {
             )
             panel.setFrame(tucked, display: false)
             model.apply(phase: state)
+            model.apply(capsuleSize: layout.capsuleSize)
             panel.orderFrontRegardless()
             present()
             if target != tucked {
-                transition(to: target, phase: state)
+                transition(to: target, phase: state, capsule: layout.capsuleSize)
             }
         }
 
@@ -143,12 +152,12 @@ final class DictationPillController: DictationPillPresenting {
         scheduleAutoHide(for: state)
     }
 
-    func setLevel(_ level: Double) {
+    public func setLevel(_ level: Double) {
         guard panel?.isVisible == true else { return }
         model.apply(level: level)
     }
 
-    func dismiss() {
+    public func dismiss() {
         hideTask?.cancel()
         hideTask = nil
 
@@ -159,7 +168,7 @@ final class DictationPillController: DictationPillPresenting {
         hideCompletely()
     }
 
-    func setResting(_ visible: Bool) {
+    public func setResting(_ visible: Bool) {
         guard restingVisible != visible else { return }
         restingVisible = visible
         if visible {
@@ -203,7 +212,7 @@ final class DictationPillController: DictationPillPresenting {
     /// Forgets the saved placement and, if the pill is up, walks it back to the
     /// default bottom-center spot (tucked, if it is resting). Settings →
     /// "Reset pill position".
-    func resetPosition() {
+    public func resetPosition() {
         defaults.removeObject(forKey: Self.placementDefaultsKey)
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
@@ -212,7 +221,7 @@ final class DictationPillController: DictationPillPresenting {
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
-        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize)
     }
 
     // MARK: View-facing API (DictationPillView)
@@ -286,7 +295,7 @@ final class DictationPillController: DictationPillPresenting {
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
-        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize)
     }
 
     /// The pill's action button. The handler lives in `DictationController`;
@@ -323,10 +332,123 @@ final class DictationPillController: DictationPillPresenting {
         // alone did NOT stop the window from growing on a side edge — see the
         // root-view note in `DictationPillView.body` for the fix that did.
         hosting.sizingOptions = []
+        hosting.onHoverChange = { [weak self] hovering in self?.handleHover(hovering) }
         panel.contentView = hosting
         self.panel = panel
         return panel
     }
+
+    // MARK: Hover (resting pill peeks out)
+
+    /// Delay before a resting pill tucks back in after the pointer leaves —
+    /// long enough that a pointer skimming past does not make it flicker.
+    static let peekLinger: Duration = .milliseconds(450)
+    private var peekTask: Task<Void, Never>?
+    /// True while the resting capsule is pulled fully on screen because the
+    /// pointer is over it. Only meaningful in `.idle`.
+    private(set) var peeking = false
+
+    /// What the tracking area reports, exposed for the sandbox's film mode
+    /// (there is no pointer to move in a headless run).
+    public func setHovered(_ hovering: Bool) {
+        handleHover(hovering)
+    }
+
+    private func handleHover(_ hovering: Bool) {
+        peekTask?.cancel()
+        peekTask = nil
+        model.apply(hovered: hovering)
+        guard model.phase == .idle else { return }
+        if hovering {
+            setPeeking(true)
+        } else {
+            peekTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.peekLinger)
+                guard !Task.isCancelled, let self else { return }
+                self.setPeeking(false)
+            }
+        }
+    }
+
+    private func setPeeking(_ on: Bool) {
+        guard peeking != on else { return }
+        peeking = on
+        model.apply(peeking: on)
+        if model.phase == .idle, panel?.isVisible == true { show(.idle) }
+    }
+
+    // MARK: Programmatic placement (Settings / sandbox)
+
+    /// Docks the pill on `edge` at `fraction` (0…1) along it, on the screen
+    /// under the mouse (or the current one), persisting the placement exactly
+    /// like a drag would, and springs a visible pill there.
+    public func dock(edge: PillGeometry.Edge, fraction: Double) {
+        guard let screen = panelScreen() ?? defaultScreen() else { return }
+        let bounds = Self.bounds(of: screen)
+        let f = min(max(fraction, 0), 1)
+        var placement = PillPlacement(
+            displayId: screen.kleothDisplayId ?? 0,
+            displayName: screen.localizedName,
+            visibleWidth: Double(bounds.width),
+            visibleHeight: Double(bounds.height),
+            relativeCenterX: edge.isVertical ? 0.5 : f,
+            relativeCenterY: edge.isVertical ? f : 0.5
+        )
+        placement.edge = edge
+        if let data = try? JSONEncoder().encode(placement) {
+            defaults.set(data, forKey: Self.placementDefaultsKey)
+        }
+        guard let panel, panel.isVisible else { return }
+        currentDisplayId = screen.kleothDisplayId
+        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
+        model.apply(edge: edge)
+        model.apply(labelWidth: layout.labelWidth)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize)
+    }
+
+    // MARK: Film (sandbox)
+
+    /// One rendered frame of the panel's content, with where it was on screen.
+    public struct Frame: Sendable {
+        public let image: CGImage
+        public let panelFrame: CGRect
+        public let screenFrame: CGRect
+        public let phase: DictationPillState
+    }
+
+    /// Renders the panel's content view as it is RIGHT NOW (mid-animation
+    /// included) without any screen-recording permission — the sandbox's
+    /// filmstrip. `nil` when the panel is down.
+    public func captureFrame() -> Frame? {
+        guard let panel, panel.isVisible, let view = panel.contentView, let layer = view.layer else { return nil }
+        let screen = panelScreen()?.frame ?? .zero
+        // What the window server has on screen for THIS window — springs
+        // mid-flight included. Capturing one's own window needs no
+        // screen-recording permission.
+        if let composited = CGWindowListCreateImage(
+            .null, .optionIncludingWindow, CGWindowID(panel.windowNumber), [.boundsIgnoreFraming, .bestResolution]
+        ), composited.width > 1 {
+            return Frame(image: composited, panelFrame: panel.frame, screenFrame: screen, phase: model.phase)
+        }
+        let scale = panel.backingScaleFactor
+        let size = view.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        guard let ctx = CGContext(
+            data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        // `cacheDisplay` renders SwiftUI's MODEL state (the animation target);
+        // the presentation tree is what is actually on screen mid-spring.
+        (layer.presentation() ?? layer).render(in: ctx)
+        guard let cg = ctx.makeImage() else { return nil }
+        return Frame(image: cg, panelFrame: panel.frame, screenFrame: screen, phase: model.phase)
+    }
+
+    /// The panel's current frame in screen coordinates (sandbox / tests).
+    public var panelFrame: CGRect? { panel?.frame }
 
     private func present() {
         guard !Self.reduceMotion else {
@@ -364,7 +486,7 @@ final class DictationPillController: DictationPillPresenting {
     /// Moves the capsule to `target` (a panel rect: capsule + shadow margin)
     /// and switches it to `phase`, on one spring. See the type comment for the
     /// stage technique. Under Reduce Motion the panel simply jumps.
-    private func transition(to target: CGRect, phase: DictationPillState) {
+    private func transition(to target: CGRect, phase: DictationPillState, capsule: CGSize) {
         guard let panel else { return }
         transitionGeneration += 1
         let generation = transitionGeneration
@@ -373,6 +495,7 @@ final class DictationPillController: DictationPillPresenting {
             pendingFrame = nil
             model.apply(offset: .zero)
             model.apply(phase: phase)
+            model.apply(capsuleSize: capsule)
             panel.setFrame(target, display: true)
             return
         }
@@ -412,22 +535,37 @@ final class DictationPillController: DictationPillPresenting {
         Task { @MainActor [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
             let moves = self.model.offset != destination
-            let reshapes = self.model.phase != phase
+            let reshapes = self.model.phase != phase || self.model.capsuleSize != capsule
             guard moves || reshapes else {
                 self.settle()
                 return
             }
-            // Sinking to rest: shape first, then move. Everything else: move
-            // first, then shape. The completion rides whichever beat ends
-            // last — and only a beat that actually changes state, since a
-            // no-op body completes immediately and would settle mid-flight.
+            // The choreography cue for the view (squash-and-stretch along the
+            // travel axis + content reveal) — fired before the springs so its
+            // keyframes start on the same frame.
+            let wasResting = self.model.phase == .idle
+            let cue: MotionBeat.Kind = moves
+                ? (phase == .idle ? (wasResting ? .peek : .sink) : (wasResting ? .rise : .morph))
+                : .morph
+            self.model.apply(beat: cue)
+            // Sinking to rest: shape first, then move (it shrinks, then
+            // slips into the edge). Rising: move and shape start together —
+            // the size is explicit now, so the capsule visibly grows out of
+            // the edge instead of popping. The completion rides whichever
+            // beat ends last — and only a beat that actually changes state,
+            // since a no-op body completes immediately and would settle
+            // mid-flight.
             let shapeFirst = phase == .idle
             let moveAnimation = shapeFirst ? Self.moveSpring.delay(Self.stagger) : Self.moveSpring
-            let shapeAnimation = shapeFirst ? Self.shapeSpring : Self.shapeSpring.delay(Self.stagger)
-            let completeOnMove = moves && (shapeFirst || !reshapes)
+            let shapeAnimation = Self.shapeSpring
+            let completeOnMove = moves && (shapeFirst || !reshapes || (Self.moveDuration >= Self.shapeDuration))
             let settleWhenDone: () -> Void = { [weak self] in
                 guard let self, self.transitionGeneration == generation else { return }
                 self.settle()
+            }
+            let reshape = {
+                self.model.apply(phase: phase)
+                self.model.apply(capsuleSize: capsule)
             }
             if moves {
                 if completeOnMove {
@@ -440,10 +578,10 @@ final class DictationPillController: DictationPillPresenting {
             }
             if reshapes {
                 if completeOnMove {
-                    withAnimation(shapeAnimation) { self.model.apply(phase: phase) }
+                    withAnimation(shapeAnimation) { reshape() }
                 } else {
                     withAnimation(shapeAnimation, completionCriteria: .logicallyComplete) {
-                        self.model.apply(phase: phase)
+                        reshape()
                     } completion: { settleWhenDone() }
                 }
             }
@@ -566,7 +704,7 @@ final class DictationPillController: DictationPillPresenting {
         for state: DictationPillState, panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?
     ) -> CGPoint {
         let active = activeOrigin(panelSize: size, edge: edge, on: screen)
-        guard state == .idle else { return active }
+        guard state == .idle, !peeking else { return active }
         return restingOrigin(activeOrigin: active, panelSize: size, edge: edge, on: screen)
     }
 
@@ -655,6 +793,8 @@ final class DictationPillController: DictationPillPresenting {
     struct Layout {
         var panelSize: CGSize
         var labelWidth: CGFloat?
+        /// The capsule itself, un-rotated (width = its length along the edge).
+        var capsuleSize: CGSize
     }
 
     /// The most a text label may take: a share of the screen along the pill's
@@ -681,7 +821,7 @@ final class DictationPillController: DictationPillPresenting {
             length = PillStyle.restingWidth
         case .listening(let handsFree):
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
-                + (handsFree ? 6 + KleothMetrics.spacingS : 0)
+                + (handsFree ? 6 + PillStyle.spacingS : 0)
         case .transcribing, .polishing, .done:
             // `.done` keeps the bar's width so the check appears in place of the wave.
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
@@ -691,21 +831,22 @@ final class DictationPillController: DictationPillPresenting {
             let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
             let label = min(measured, labelCap(edge: edge, on: screen))
             labelWidth = label
-            length = 20 + KleothMetrics.spacingS + label
+            length = 20 + PillStyle.spacingS + label
             if let action = state.fault?.action {
-                length += KleothMetrics.spacingS + textWidth(action.title, style: .caption1, weight: .semibold) + 22
+                length += PillStyle.spacingS + textWidth(action.title, style: .caption1, weight: .semibold) + 22
             }
             if state.isSticky {
-                length += KleothMetrics.spacingS + 18
+                length += PillStyle.spacingS + 18
             }
-            length += 2 * KleothMetrics.spacingM
+            length += 2 * PillStyle.spacingM
         }
+        let capsule = CGSize(width: ceil(length), height: capsuleHeight(for: state))
         length = ceil(length + 2 * shadowPadding + widthSlack)
         let thickness = capsuleHeight(for: state) + 2 * shadowPadding
         let size = (edge == .left || edge == .right)
             ? CGSize(width: thickness, height: length)
             : CGSize(width: length, height: thickness)
-        return Layout(panelSize: size, labelWidth: labelWidth)
+        return Layout(panelSize: size, labelWidth: labelWidth, capsuleSize: capsule)
     }
 
     private static func textWidth(_ text: String, style: NSFont.TextStyle, weight: NSFont.Weight) -> CGFloat {
@@ -741,7 +882,7 @@ final class DictationPillController: DictationPillPresenting {
 
 extension DictationPillState {
     /// The one line the pill shows (and VoiceOver announces).
-    var pillText: String {
+    public var pillText: String {
         switch self {
         case .hidden: return ""
         case .idle: return "Dictation ready — hold \(DictationDefaults.hotkeyDescription) to speak"
@@ -756,7 +897,7 @@ extension DictationPillState {
     }
 
     /// Leading SF Symbol, or `nil` for `.listening` (which shows the meter).
-    var symbolName: String? {
+    public var symbolName: String? {
         switch self {
         case .hidden, .idle, .listening: return nil
         case .transcribing: return "waveform"
@@ -769,12 +910,12 @@ extension DictationPillState {
 
     /// `.failed` sticks around until the user dismisses it or a new session
     /// replaces it — it is the only phase with a ✕.
-    var isSticky: Bool {
+    public var isSticky: Bool {
         if case .failed = self { return true }
         return false
     }
 
-    var fault: DictationPillFault? {
+    public var fault: DictationPillFault? {
         if case .failed(let fault) = self { return fault }
         return nil
     }
@@ -782,7 +923,7 @@ extension DictationPillState {
 
 // MARK: - AppKit helpers
 
-extension NSScreen {
+public extension NSScreen {
     /// `NSScreenNumber` — the stable-ish id `PillPlacement` records.
     /// Acronym-free name, per the project's stored-key convention.
     var kleothDisplayId: UInt32? {

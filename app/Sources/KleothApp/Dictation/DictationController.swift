@@ -3,6 +3,7 @@ import AVFoundation
 import Foundation
 import KleothCapture
 import KleothCore
+import KleothPillUI
 import os
 
 /// Owns a dictation session end to end: hotkey → capture → STT → polish →

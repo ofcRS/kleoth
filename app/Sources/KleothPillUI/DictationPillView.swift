@@ -90,11 +90,15 @@ struct DictationPillView: View {
     }
 
     private var capsule: some View {
-        HStack(spacing: KleothMetrics.spacingS) {
+        HStack(spacing: PillStyle.spacingS) {
             content
         }
-        .padding(.horizontal, model.phase.showsText ? KleothMetrics.spacingM : PillStyle.compactPadding)
-        .frame(height: DictationPillController.capsuleHeight(for: model.phase))
+        // The content is revealed by the motion beat (`Choreography.content`)
+        // so a rising pill is a plain blob until it has left the edge.
+        .modifier(ContentReveal(beat: model.beat, reduceMotion: reduceMotion))
+        // Explicit, animatable size — see `DictationPillModel.capsuleSize`.
+        .frame(width: model.capsuleSize.width, height: model.capsuleSize.height)
+        .clipShape(Capsule(style: .continuous))
         .background(PillStyle.surface, in: Capsule(style: .continuous))
         .overlay(
             // Resting gets a visible white rim so the half-hidden tab reads as
@@ -102,13 +106,15 @@ struct DictationPillView: View {
             Capsule(style: .continuous)
                 .strokeBorder(
                     model.phase == .idle ? PillStyle.restingRim : PillStyle.rim,
-                    lineWidth: model.phase == .idle ? 1 : KleothMetrics.hairline
+                    lineWidth: model.phase == .idle ? 1 : PillStyle.hairline
                 )
         )
         .overlay {
             if model.phase == .idle {
                 RestingSheen(brightEndAtTop: model.edge == .bottom, reduceMotion: reduceMotion)
-                    .transition(.opacity)
+                    // Quick in/out: riding the 0.5 s shape spring left a pale,
+                    // sheen-lit blob climbing out of the edge.
+                    .transition(.opacity.animation(.easeOut(duration: 0.12)))
             }
         }
 
@@ -116,26 +122,74 @@ struct DictationPillView: View {
         // indicator, not a window.
         .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
         .shadow(color: .black.opacity(model.phase == .idle ? 0.18 : 0.28), radius: 10, y: 3)
-        // Squash-and-stretch on every phase change: a quick stretch along the
-        // pill's length that springs back, timed to land during the
-        // controller's stagger before the shape beat — the anticipation that
-        // makes the bloom read as elastic rather than a resize. Applied in the
-        // capsule's own (un-rotated) space so a vertical pill stretches
-        // vertically. No-op under Reduce Motion.
-        .phaseAnimator([Squash.rest, .stretch], trigger: model.phase) { content, squash in
+        // Breathes with the voice: a touch of scale on the mic level so the
+        // whole pill feels alive, not just the bars inside it.
+        .scaleEffect(1 + (reduceMotion ? 0 : 0.045 * model.level))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: model.level)
+        // Keyframed squash-and-stretch along the travel axis, retriggered by
+        // every motion beat. In the capsule's own (un-rotated) space travel is
+        // always along its THICKNESS (y): a bottom pill rises vertically, a
+        // side pill is rotated 90° so its screen-horizontal slide is its own y.
+        .keyframeAnimator(
+            initialValue: Choreography(kind: model.beat.kind),
+            trigger: model.beat
+        ) { content, pose in
             content.scaleEffect(
-                x: !reduceMotion && squash == .stretch ? 1.06 : 1,
-                y: !reduceMotion && squash == .stretch ? 0.88 : 1
+                x: reduceMotion ? 1 : pose.across,
+                y: reduceMotion ? 1 : pose.along
             )
-        } animation: { squash in
-            switch squash {
-            case .stretch: .spring(duration: 0.2, bounce: 0.3)
-            case .rest: .spring(duration: 0.45, bounce: 0.4)
+        } keyframes: { pose in
+            KeyframeTrack(\.along) {
+                switch pose.kind {
+                case .rise:
+                    CubicKeyframe(0.82, duration: 0.07)   // anticipation: squat in the edge
+                    SpringKeyframe(1.32, duration: 0.2, spring: .snappy)   // stretch on the way up
+                    SpringKeyframe(0.9, duration: 0.18, spring: .snappy)   // land: squash
+                    SpringKeyframe(1.0, duration: 0.35, spring: .bouncy)
+                case .sink:
+                    CubicKeyframe(1.18, duration: 0.08)   // lift before the dive
+                    SpringKeyframe(0.8, duration: 0.24, spring: .snappy)   // flatten into the edge
+                    SpringKeyframe(1.0, duration: 0.3, spring: .smooth)
+                case .peek:
+                    CubicKeyframe(0.9, duration: 0.06)
+                    SpringKeyframe(1.16, duration: 0.18, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                case .morph:
+                    CubicKeyframe(0.94, duration: 0.08)
+                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                }
+            }
+            KeyframeTrack(\.across) {
+                switch pose.kind {
+                case .rise:
+                    CubicKeyframe(1.14, duration: 0.07)
+                    SpringKeyframe(0.9, duration: 0.2, spring: .snappy)
+                    SpringKeyframe(1.07, duration: 0.18, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.35, spring: .bouncy)
+                case .sink:
+                    CubicKeyframe(0.94, duration: 0.08)
+                    SpringKeyframe(1.12, duration: 0.24, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.3, spring: .smooth)
+                case .peek:
+                    CubicKeyframe(1.06, duration: 0.06)
+                    SpringKeyframe(0.94, duration: 0.18, spring: .snappy)
+                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                case .morph:
+                    CubicKeyframe(1.05, duration: 0.08)
+                    SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                }
             }
         }
     }
 
-    private enum Squash { case rest, stretch }
+    /// One pose of the squash-and-stretch: scale along the travel axis and
+    /// across it, in the capsule's own space. `kind` rides along so the
+    /// keyframes can pick their shape from the initial value.
+    private struct Choreography {
+        var kind: MotionBeat.Kind
+        var along: CGFloat = 1
+        var across: CGFloat = 1
+    }
 
     /// Horizontal on the bottom and top edges; on a side edge the pill stands
     /// up in every phase, turned so text reads the way a spine label does —
@@ -154,9 +208,21 @@ struct DictationPillView: View {
         case .hidden:
             EmptyView()
         case .idle:
-            Color.clear
-                .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
-                .transition(.opacity)
+            // Nothing when tucked (anything centered would be cut in half);
+            // a mic glyph fades in while the pointer holds it fully on screen.
+            ZStack {
+                Color.clear
+                    .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
+                if model.peeking {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(PillStyle.ink)
+                        .rotationEffect(-edgeRotation)
+                        .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                        .accessibilityHidden(true)
+                }
+            }
+            .transition(.opacity)
         case .listening(let handsFree):
             if handsFree {
                 Circle()
@@ -176,21 +242,21 @@ struct DictationPillView: View {
         case .done:
             Image(systemName: "checkmark")
                 .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(KleothPalette.successTint)
+                .foregroundStyle(PillStyle.successTint)
                 .transition(.scale(scale: 0.4).combined(with: .opacity))
                 .accessibilityHidden(true)
         case .warning(let message):
             Image(systemName: "exclamationmark.triangle.fill")
                 .symbolRenderingMode(.hierarchical)
                 .font(.callout)
-                .foregroundStyle(KleothPalette.pendingTint)
+                .foregroundStyle(PillStyle.pendingTint)
                 .accessibilityHidden(true)
             label(message)
         case .failed(let fault):
             Image(systemName: "xmark.octagon.fill")
                 .symbolRenderingMode(.hierarchical)
                 .font(.callout)
-                .foregroundStyle(KleothPalette.failureTint)
+                .foregroundStyle(PillStyle.failureTint)
                 .accessibilityHidden(true)
             label(fault.text)
             if let action = fault.action {
@@ -249,6 +315,60 @@ struct DictationPillView: View {
     }
 }
 
+// MARK: - Content reveal
+
+/// Fades the capsule's content with the motion: hidden for the first stretch
+/// of a rise (the pill leaves the edge as a plain blob, then the bars bloom
+/// in), gone early on a sink, untouched for in-place morphs and peeks.
+private struct ContentReveal: ViewModifier {
+    let beat: MotionBeat
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .keyframeAnimator(initialValue: Reveal(kind: beat.kind), trigger: beat) { content, reveal in
+                content
+                    .opacity(reduceMotion ? 1 : reveal.opacity)
+                    .scaleEffect(reduceMotion ? 1 : reveal.scale)
+            } keyframes: { reveal in
+                KeyframeTrack(\.opacity) {
+                    switch reveal.kind {
+                    case .rise:
+                        CubicKeyframe(0.0, duration: 0.14)
+                        CubicKeyframe(1.0, duration: 0.22)
+                    case .sink:
+                        CubicKeyframe(0.0, duration: 0.12)
+                    case .morph, .peek:
+                        CubicKeyframe(1.0, duration: 0.01)
+                    }
+                }
+                KeyframeTrack(\.scale) {
+                    switch reveal.kind {
+                    case .rise:
+                        CubicKeyframe(0.6, duration: 0.14)
+                        SpringKeyframe(1.0, duration: 0.3, spring: .bouncy)
+                    case .sink:
+                        CubicKeyframe(0.7, duration: 0.12)
+                    case .morph, .peek:
+                        CubicKeyframe(1.0, duration: 0.01)
+                    }
+                }
+            }
+    }
+
+    private struct Reveal {
+        var kind: MotionBeat.Kind
+        var opacity: Double = 1
+        var scale: CGFloat = 1
+        init(kind: MotionBeat.Kind) {
+            self.kind = kind
+            // A rise starts hidden; everything else starts visible.
+            opacity = kind == .rise ? 0 : 1
+            scale = kind == .rise ? 0.6 : 1
+        }
+    }
+}
+
 // MARK: - Style
 
 /// The pill's own look. Deliberately NOT the app's `.regularMaterial`: a
@@ -262,6 +382,16 @@ enum PillStyle {
     static let ink = Color.white.opacity(0.92)
     static let restingOpacity: Double = 0.9
     static let compactPadding: CGFloat = 14
+
+    // Spacing / tints mirrored from the app's `KleothMetrics` / `KleothPalette`
+    // (this library must not depend on the app target).
+    static let spacingXS: CGFloat = 4
+    static let spacingS: CGFloat = 8
+    static let spacingM: CGFloat = 12
+    static let hairline: CGFloat = 1
+    static let pendingTint: Color = .orange
+    static let successTint: Color = .green
+    static let failureTint: Color = .red
 
     // Waveform geometry — `DictationPillController.contentWidth` mirrors these.
     static let barCount = 14

@@ -25,6 +25,10 @@ _Last updated: 2026-09-03. This file is living context for future sessions — k
 - `KleothCapture` (lib): Recorder (writes `mic.m4a` + `system.m4a`, builds 2-channel
   `meeting.m4a`), MicCapture, SystemAudioTap (Core Audio process tap), ScreenshotCapture,
   **LocalTranscriber** (WhisperKit), **DictationCapture** (own AVAudioEngine input tap → temp m4a).
+- `KleothPillUI` (lib): the dictation pill — `DictationPanel`, `DictationPillController`,
+  `DictationPillModel`, `DictationPillView`, `PillTypes` (the pill contract). Shared by the app and
+  `pillsandbox`.
+- `pillsandbox` (exe): pill playground + `--film` filmstrip renderer (see the 2026-09-03 status).
 - `KleothApp` (exe): MenuBarExtra agent, `RecordingController` (`@MainActor`, owns capture +
   pipeline, app-lifetime `shared`), `DictationController` (`@MainActor`, see "Dictation" below),
   `AppConfig` (Settings/Credentials + Keychain overlay, shared by both controllers), Views
@@ -486,6 +490,34 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   NSPanel+NSHostingView probe; idle and active shift equally, ≤0.5 pt hop at settle. Trace recipe:
   `/usr/bin/log stream --level debug --predicate 'subsystem == "dev.kleoth" AND category == "PillTrace"'`
   (zsh has a `log` builtin — use the full path).
+- **Pill sandbox + motion rebuild (same day; user: "you can't see the animation… build a little sandbox
+  app… rebuild the animation from scratch, stretching, live, react to the mouse when inactive"):**
+  the pill (panel, controller, model, view + `DictationPillState/Fault/Action/Presenting`, now in
+  `app/Sources/KleothPillUI/PillTypes.swift`) moved into the **`KleothPillUI` library target**
+  (public surface: `DictationPillController.init(defaults:)`, the presenting API, `dock(edge:fraction:)`,
+  `setHovered(_:)`, `captureFrame()`, `panelFrame`). **`pillsandbox`** (`app/Sources/pillsandbox`):
+  `swift run --package-path app pillsandbox` = control window (edge picker, along-edge slider, phase
+  buttons, "Run a whole dictation", simulated speech, "Film"); `app/.build/debug/pillsandbox --film <dir>
+  --edge right --fraction 0.3 --hold 1.2 --sequence idle,peek,unpeek,listening,transcribing,done,idle`
+  = headless filmstrip: `frame-NNNN.png` (panel composited on a canvas around the anchor, screen edge
+  in red, off-screen shaded), `frames.tsv` (time/phase/panel frame), `sheet.png` (≤40 labelled tiles).
+  **Capture must be `CGWindowListCreateImage` on our own window** (no screen-recording permission
+  needed): `cacheDisplay` and `layer.presentation()?.render` both return SwiftUI's MODEL state — the
+  filmed rise looked like a jump until the capture was switched. The agent reads the PNGs with the
+  Read tool. Placement lives in the `dev.kleoth.pillsandbox` defaults suite. Findings from the first
+  film: the old rise popped to the full listening shape (content-driven width is not animatable) while
+  still tucked, then slid up with a 6% squash — "barely a bit". **New motion:**
+  `DictationPillModel.capsuleSize` (explicit, applied inside the shape spring with `phase` →
+  grows out of the edge), `MotionBeat` (rise/sink/morph/peek, bumped per transition) driving a
+  `keyframeAnimator` squash-and-stretch in the capsule's own space (travel is always along its
+  thickness = own y, on every edge) and a `ContentReveal` keyframe (rise: content hidden 0.14 s then
+  blooms; sink: gone by 0.12 s), capsule `scaleEffect(1 + 0.045·level)` breathing, sheen fades in
+  0.12 s. **Hover peek:** `DictationPillHostingView` `.activeAlways` tracking area (SwiftUI `.onHover`
+  is dead while another app is active) → `handleHover` → `peeking` → `origin(for: .idle)` returns the
+  active spot; tucks back `peekLinger` 0.45 s after leave; mic glyph while peeking. Filmed on bottom +
+  right edges (rise: squat → plain stretched blob → bars bloom → settle; peek/unpeek; sink). Not
+  wired: click on the peeking pill (candidate: start hands-free) — needs a controller path that keeps
+  the chord machine in sync. Rise ~0.55 s (`moveSpring` 0.55/0.32, `shapeSpring` 0.5/0.22).
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

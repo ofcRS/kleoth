@@ -33,6 +33,19 @@ final class DictationPillModel: ObservableObject {
     /// and capped by the controller so an over-long message truncates instead
     /// of running off the screen; nil for phases without text.
     @Published private(set) var labelWidth: CGFloat?
+    /// The capsule's own (un-rotated) size for the phase being rendered.
+    /// Explicit so it ANIMATES: a width that came from swapped-in content
+    /// snapped to its final value the instant the phase changed (the pill
+    /// popped to its full listening shape while still tucked in the edge).
+    /// Applied inside the same spring as `phase`.
+    @Published private(set) var capsuleSize = CGSize(width: 68, height: 22)
+    /// The last motion cue — drives the view's keyframed squash-and-stretch
+    /// and content reveal. `id` changes on every beat so equal kinds retrigger.
+    @Published private(set) var beat = MotionBeat(kind: .morph, id: 0)
+    /// Pointer over the panel (any phase).
+    @Published private(set) var hovered = false
+    /// The resting capsule is pulled fully on screen by the pointer.
+    @Published private(set) var peeking = false
 
     // MARK: Controller-facing mutation
 
@@ -57,6 +70,22 @@ final class DictationPillModel: ObservableObject {
         if labelWidth != width { labelWidth = width }
     }
 
+    func apply(capsuleSize size: CGSize) {
+        if capsuleSize != size { capsuleSize = size }
+    }
+
+    func apply(beat kind: MotionBeat.Kind) {
+        beat = MotionBeat(kind: kind, id: beat.id &+ 1)
+    }
+
+    func apply(hovered on: Bool) {
+        if hovered != on { hovered = on }
+    }
+
+    func apply(peeking on: Bool) {
+        if peeking != on { peeking = on }
+    }
+
     func apply(level newLevel: Double) {
         let clamped = newLevel.isFinite ? min(max(newLevel, 0), 1) : 0
         // 20 Hz updates: skip sub-pixel churn so SwiftUI is not re-laid-out for
@@ -64,4 +93,20 @@ final class DictationPillModel: ObservableObject {
         guard abs(clamped - level) > 0.005 || (clamped == 0 && level != 0) else { return }
         level = clamped
     }
+}
+
+/// What kind of move the capsule is making, for the view's choreography.
+struct MotionBeat: Equatable {
+    enum Kind: Equatable {
+        /// Out of the edge into an active phase.
+        case rise
+        /// Back into the edge.
+        case sink
+        /// Phase-to-phase in place (listening → transcribing → …).
+        case morph
+        /// The resting pill pulled out (or released) by the pointer.
+        case peek
+    }
+    var kind: Kind
+    var id: Int
 }

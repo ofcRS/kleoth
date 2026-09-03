@@ -6,6 +6,24 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The resting pill reacts to the pointer.** Hovering the half-tucked capsule pulls it fully on
+  screen with a mic glyph; it tucks back shortly after the pointer leaves.
+- **`pillsandbox` (dev tool).** `swift run --package-path app pillsandbox` opens a control window
+  that drives the real pill through every phase, edge and mic level with no signing, Keychain or
+  Accessibility involved; `--film <dir>` renders a transition to PNG frames plus a contact sheet
+  so the motion can be reviewed without watching the screen.
+
+### Changed
+
+- **Pill motion rebuilt.** The capsule's size is now an explicit animated value, so it grows out of
+  the edge instead of popping to its full shape while still tucked; a keyframed squash-and-stretch
+  follows the direction of travel (squat, stretch on the way, land, settle); the waveform blooms in
+  only once the pill has left the edge and fades before it sinks back; the whole capsule breathes
+  with the mic level. The pill code moved into a `KleothPillUI` library shared by the app and the
+  sandbox.
+
 ### Fixed
 
 - **Dictation pill jumped sideways on a left/right edge.** After every transition the pill's

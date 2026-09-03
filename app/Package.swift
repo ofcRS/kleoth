@@ -29,10 +29,38 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // The dictation pill (panel + controller + SwiftUI view + its contract
+        // types), split out so `pillsandbox` can host the real thing without
+        // the app: no signing, no Keychain, no Accessibility, instant rebuilds.
+        .target(
+            name: "KleothPillUI",
+            dependencies: [
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        // Pill sandbox: a control window that drives the real pill through its
+        // phases / edges / mic levels, and a headless `--film` mode that renders
+        // a transition to PNG frames + a contact sheet (no screen-recording
+        // permission needed) so an agent can SEE the motion. `swift run
+        // --package-path app pillsandbox [--film <dir> --edge right]`.
+        .executableTarget(
+            name: "pillsandbox",
+            dependencies: [
+                "KleothPillUI",
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         .executableTarget(
             name: "KleothApp",
             dependencies: [
                 "KleothCapture",
+                "KleothPillUI",
                 .product(name: "KleothCore", package: "kleoth-app"),
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],

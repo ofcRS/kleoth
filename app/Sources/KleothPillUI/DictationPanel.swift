@@ -91,6 +91,35 @@ final class DictationPillHostingView<Content: View>: NSHostingView<Content> {
     /// `NSEvent.mouseLocation`), not by AppKit window dragging.
     override var mouseDownCanMoveWindow: Bool { false }
 
+    /// Pointer entered / left the panel. An `.activeAlways` tracking area —
+    /// SwiftUI's `.onHover` only fires while the app is active, and Kleoth is
+    /// almost never the active app while its pill is on screen.
+    var onHoverChange: ((Bool) -> Void)?
+    private var hoverArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHoverChange?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverChange?(false)
+    }
+
     required init(rootView: Content) {
         super.init(rootView: rootView)
     }
