@@ -6,6 +6,14 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dictation pill jumped sideways on a left/right edge.** After every transition the pill's
+  window was being widened by SwiftUI to fit the capsule's un-rotated width, re-centering the
+  capsule 23–31 pt toward the screen edge (and pushing the resting sliver fully off-screen). The
+  capsule is now an overlay on a size-less root, so only Kleoth sizes that window. Bottom/top
+  edges were never affected.
+
 ### Changed
 
 - **Short dictations and chat messages are pasted as heard.** The OpenRouter clean-up call now

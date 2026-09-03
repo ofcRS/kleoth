@@ -318,6 +318,11 @@ final class DictationPillController: DictationPillPresenting {
         )
         hosting.frame = CGRect(origin: .zero, size: size)
         hosting.autoresizingMask = [.width, .height]
+        // The controller is the only thing that sizes this panel: no
+        // min/max/intrinsic size constraints from the SwiftUI content. This
+        // alone did NOT stop the window from growing on a side edge — see the
+        // root-view note in `DictationPillView.body` for the fix that did.
+        hosting.sizingOptions = []
         panel.contentView = hosting
         self.panel = panel
         return panel

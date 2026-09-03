@@ -43,6 +43,25 @@ struct DictationPillView: View {
     }
 
     var body: some View {
+        // LOAD-BEARING: the ROOT is a clear, fully flexible base and the
+        // capsule is only an overlay on it. `NSHostingView` grows its window
+        // (`setContentSize`, top-left anchored — regardless of `sizingOptions`)
+        // whenever the panel is smaller than the root view's MINIMUM size, and
+        // the capsule is laid out un-rotated (`.fixedSize()`, then
+        // `rotationEffect`), so on a side edge its ideal width (68–131 pt +
+        // shadow) exceeds the thin vertical panel (58–68 pt). With the capsule
+        // as the root, every `settle()` was followed by the window widening
+        // to the right and the capsule re-centering 23–31 pt off its anchor —
+        // the "forced shift" the user saw on the right edge. An overlay does
+        // not contribute to its base's size, so the root's minimum is zero
+        // and the controller stays the only thing that sizes the panel.
+        Color.clear
+            .overlay { pill }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text(model.phase.pillText))
+    }
+
+    private var pill: some View {
         // The hit shape is the CAPSULE, not the panel rect: the transparent
         // shadow margin around it must stay non-interactive, or a `.statusBar`-
         // level panel would swallow clicks aimed at the app underneath.
@@ -68,9 +87,6 @@ struct DictationPillView: View {
             .scaleEffect(model.isPresented ? 1 : 0.9, anchor: .center)
             .opacity(model.isPresented ? 1 : 0)
             .padding(DictationPillController.shadowPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(Text(model.phase.pillText))
     }
 
     private var capsule: some View {

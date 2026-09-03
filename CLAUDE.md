@@ -470,6 +470,22 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   default off) / Settings → Dictation toggle "Also clean up short dictations and chat messages";
   `DictationController.polishAlways` + `setPolishAlways(_:)`. `dictate` prints the gate verdict
   but still polishes. Design doc §10.3 item 8. 257 core tests. ⚠️ Not runtime-verified by a human.
+- **Side-edge pill "forced shift" — root-caused with a frame trace (same day; user: "the pill has one
+  position when inactive, and before the animation starts it's being moved slightly to the right"):**
+  a temporary `os.Logger` trace of `panel.frame` + the capsule's `GeometryReader` frame per render
+  (driven by a `KLEOTH_PILL_DEMO=1` cycle hook, both removed) showed the panel set to 58/68 pt wide by
+  `settle()` and **re-widened to 104/131 pt ~2 ms later, top-left anchored** — the un-rotated capsule
+  width + shadow. `NSHostingView` grows its window (`setContentSize`) whenever the panel is smaller
+  than the root view's MINIMUM size; on a side edge the capsule is laid out un-rotated then
+  `rotationEffect`ed, so its ideal width exceeds the thin vertical panel. `sizingOptions = []` did NOT
+  stop it (minSize/contentMin/intrinsic all 0 in the trace). Fix: `DictationPillView.body` is now
+  `Color.clear.overlay { pill }` — an overlay contributes nothing to the root's size, so the minimum
+  is zero; re-traced: widths stay 58/68, capsule center = anchor (1440 / 1395 on this Mac). Bottom/top
+  edges were never affected (panel wider than the capsule). Left over, harmless: AppKit lands every
+  `setFrame` 1 pt lower (y−1, stage h+1) than requested for this panel — not reproduced by a bare
+  NSPanel+NSHostingView probe; idle and active shift equally, ≤0.5 pt hop at settle. Trace recipe:
+  `/usr/bin/log stream --level debug --predicate 'subsystem == "dev.kleoth" AND category == "PillTrace"'`
+  (zsh has a `log` builtin — use the full path).
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —
