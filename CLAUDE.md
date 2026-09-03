@@ -436,6 +436,23 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   target); both packages build; release app reinstalled (running instance NOT killed).
   ⚠️ Not runtime-verified: all three need a human (quit mid-pipeline + `ls $TMPDIR/kleoth-dictation`,
   unplugging a mic mid-utterance, the Settings button by eye).
+- **Polish restructures now (same day; user: "I dictate prompts as a non-native speaker, brainstorming
+  out loud — get the core idea and structure it, depending on the app"):** `AppStyle` is an editing
+  INTENSITY — `compose` (AI chats, editors/IDEs, notes/docs, mail, browsers, unknown/nil: reorder, merge,
+  split, list, resolve word hunts, drop thinking-out-loud, keep every point + the speaker's stance, add
+  nothing) / `chat` (messengers: fillers, self-corrections, punctuation, keep sentence order + voice) /
+  `terminal` (plain text, one line unless enumerated, never turn a description into a command). Was
+  `code/chat/prose/neutral` with browsers → neutral (§10.3 item 8 in the design doc records it). System
+  prompt is static (cacheable) with the MODES section + a compose few-shot; the user message carries
+  `Mode: <hint>`. **Benchmark (6 inputs: rambling ESL coding prompt, UX notes, Slack, RU prompt, mixed
+  RU/EN Cursor, terminal; 3 runs each, real polisher, 2026-09-03):** `google/gemini-3.5-flash-lite`
+  **0.8–1.3 s median, 18/18 ok, best structure/faithfulness** (numbered plans, problems/ideas split,
+  RU stays RU, Slack + terminal untouched, "Anna, sorry, Boris" applied) → **stays the default**;
+  `gemini-3.5-flash` 1.4–2.8 s (1 timeout), `gemini-3.8-flash` low/minimal 1.3–2.2 s (1 timeout each,
+  outliers to 6.6 s), `z-ai/glm-5.3-flash` low 0.9–2.9 s (fallback, fine), `anthropic/claude-haiku-4.5`
+  1.6–2.7 s (excellent quality, reachable, but 2× slower), `gemini-3.6-flash` cut off on 14/16 (broken
+  under the strict schema — do not use), `deepseek-v4-flash` timed out on 13/18. Bench harness was
+  scratch-only (`bench/run.ts` over the `dictate --text` probe). 248 core tests.
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

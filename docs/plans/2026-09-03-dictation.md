@@ -351,11 +351,12 @@ public func complete(messages: [ChatMessage], model: String, responseFormat: Ope
 ### 3.6 KleothCore — `Sources/KleothCore/Dictation/DictationPrompt.swift`
 
 ```swift
-/// Tone/format class of the paste target, from its bundle id. Browsers → .neutral.
+/// Editing intensity for the paste target, from its bundle id (superseded 2026-09-03 — see §10.3
+/// item 8; was `code, chat, prose, neutral` with browsers → .neutral).
 public enum AppStyle: String, Sendable, CaseIterable {
-    case code, chat, prose, neutral
-    public static func classify(bundleId: String?) -> AppStyle   // case-insensitive; nil/"" → .neutral
-    public var hint: String                                        // injected as "Style: …"
+    case compose, chat, terminal
+    public static func classify(bundleId: String?) -> AppStyle   // case-insensitive; terminals → .terminal, messengers → .chat, everything else (editors, AI chats, notes, mail, browsers, nil/"") → .compose
+    public var hint: String                                        // injected as "Mode: <name> — …"
 }
 
 public enum DictationPrompt {
@@ -1121,6 +1122,18 @@ public func polish(rawText: String, context: DictationContext) async -> Dictatio
 // decode: Summarizer.stripCodeFences (internal, same module) → JSONDecoder → {text, language?}
 ```
 
+`AppStyle` tables (case-insensitive match on the lowercased bundle id) — **superseded 2026-09-03 by the compose/chat/terminal intensity model (§10.3 item 8); the original four-way `code/chat/prose/neutral` split is kept below for history:**
+- `.terminal` exact: `com.apple.terminal`, `com.googlecode.iterm2`, `dev.warp.warp-stable`, `net.kovidgoyal.kitty`, `io.alacritty`, `com.mitchellh.ghostty`
+- `.chat` exact: `com.tinyspeck.slackmacgap`, `com.hnc.discord`, `com.microsoft.teams2`, `org.telegram.desktop`, `ru.keepcoder.telegram`, `net.whatsapp.whatsapp`, `com.apple.mobilesms`, `com.linear`
+- everything else → `.compose`: AI chats (Claude, ChatGPT), editors/IDEs (VS Code, Cursor, Windsurf, Zed, Xcode, JetBrains), notes/docs (Notes, Obsidian, Notion, Bear, Craft, iWork, Word), mail, browsers (deliberately — most prompt-writing happens in a tab), Kleoth itself, unknown, nil.
+
+Hints (injected as `Mode: <name> — …`; the full per-mode rules live in the static system prompt under MODES):
+- compose: restructure freely (reorder, merge, split, list) so the text reads as if typed, but keep every point and add nothing.
+- chat: light touch only — fillers, self-corrections and punctuation; keep the sentence order and the casual voice.
+- terminal: plain text, no Markdown, one line unless the speaker enumerated; keep the speaker’s words (never turn a description into a command).
+
+<details><summary>Original (2026-09-03 morning) tables</summary>
+
 `AppStyle` tables (case-insensitive match on the lowercased bundle id):
 - `.code` exact: `com.apple.terminal`, `com.googlecode.iterm2`, `dev.warp.warp-stable`, `net.kovidgoyal.kitty`, `io.alacritty`, `com.mitchellh.ghostty`, `com.microsoft.vscode`, `com.microsoft.vscodeinsiders`, `com.visualstudio.code.oss`, `com.todesktop.230313mzl4w4u92` (Cursor), `com.exafunction.windsurf`, `dev.zed.zed`, `com.apple.dt.xcode`, `com.sublimetext.4`, `com.github.atom`; prefix `com.jetbrains.`
 - `.chat` exact: `com.tinyspeck.slackmacgap`, `com.hnc.discord`, `com.microsoft.teams2`, `org.telegram.desktop`, `ru.keepcoder.telegram`, `net.whatsapp.whatsapp`, `com.apple.mobilesms`, `com.linear`
@@ -1132,6 +1145,8 @@ Hints:
 - chat: "Casual and short, the way people write in chat. Sentence case, light punctuation, no salutation and no sign-off unless the speaker actually said one. Use '-' bullets only if the speaker clearly enumerated items."
 - prose: "Well-formed paragraphs with full punctuation, suitable for an email or a document. Keep the speaker's register — do not make it more formal than they were. Do not add a greeting or a sign-off unless the speaker said one."
 - neutral: "Neutral, Markdown-light. Plain paragraphs; use a '-' bullet list or a numbered list only when the speaker clearly enumerated items. No headings, no bold."
+
+</details>
 
 **Response schema (`DictationPrompt.schemaJSON`):**
 
@@ -1582,7 +1597,7 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 **`ScribeDictationOptionsTests`** (T3): `dictationOptionsSendNoVerbatimTrue`, `noVerbatimFalseOmitsField`, `keytermsAreRepeatedParts`, `dictationOptionsDisableDiarizationAndAudioEventsAndLanguage`, `xiApiKeyHeaderAndBoundaryMatch`.
 **`KeytermsTests`** (T3): `dropsForbiddenCharacters`, `dropsOverlongAndMultiWordTerms`, `dedupesCaseInsensitivelyKeepingFirstCasing`, `capsAtOneHundred`.
 
-**`DictationPromptTests`** (T4): `userContentCarriesAppStyleLanguageDictionaryAndDelimitedTranscript`, `userContentOmitsDictionaryAndLanguageLinesWhenAbsent`, `russianCodesMapToRussianLanguageLine` (`"rus"` and `"ru"`), `systemPromptForbidsTranslationAndContainsInjectionExample`, `schemaParsesAndRequiresTextAndLanguage`, `appStyleClassifiesKnownBundlesAndDefaultsToNeutral`, `appStyleHintsAreNonEmptyAndCodeHintSaysPlainText`.
+**`DictationPromptTests`** (T4): `userContentCarriesAppStyleLanguageDictionaryAndDelimitedTranscript`, `userContentOmitsDictionaryAndLanguageLinesWhenAbsent`, `russianCodesMapToRussianLanguageLine` (`"rus"` and `"ru"`), `systemPromptForbidsTranslationAndContainsInjectionExample`, `schemaParsesAndRequiresTextAndLanguage`, `systemPromptDefinesTheThreeEditingModes`, `appStyleClassifiesTerminalsChatsAndDefaultsToCompose`, `appStyleHintsNameTheirModeAndStateTheirIntensity` (names as of the 2026-09-03 compose pass).
 **`DictationPolisherTests`** (T4, `MockTransport`): `happyPathDecodesPolished`, `fencedJSONStillDecodes`, `finishReasonLengthFallsBackToRawWithoutRetry`, `http500FallsBackToRaw`, `proseContentFallsBackToRaw`, `emptyTextFallsBackToRaw`, `tenTimesLongerOutputFallsBackToRaw`, `emptyInputMakesNoRequest`, `http400OnJSONSchemaRetriesAsJSONObject`, `requestBodyCarriesTemperatureAndDictationModel`, `stalledTransportTimesOutPromptly` (file-private `SlowMockTransport`), `languageMismatchFallsBackToRaw` (Scribe `"rus"`, model `"en"` → `.raw`), `sameLanguageInDifferentCodeFormsIsPolished` (`"rus"` vs `"ru"` → `.polished`), `unknownLanguageCodesSkipTheGuard` (nil / `"xx"` on either side → `.polished`).
 **`OpenRouterTemperatureTests`** (T4, new file — no existing test file is edited): `summarizerRequestBodyIsByteIdenticalWithoutTemperature` (build the body through `Summarizer` before/after — no `temperature` key), `temperatureIsEncodedWhenProvided`, `openRouterClientIsSendable` (a compile-time `let _: any Sendable = client`).
 **`TimeoutTests`** (T4): `returnsValueBeforeDeadline`, `throwsKleothTimeoutErrorAfterDeadline`, `cancelsTheLosingOperation`.
