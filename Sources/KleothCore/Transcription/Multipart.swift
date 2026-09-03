@@ -7,7 +7,7 @@ import Foundation
 ///
 /// 1. The instance API (`addField`, `addFile`, `finalizedBody`) assembles a
 ///    body entirely in memory. Suitable for small payloads only.
-/// 2. ``Multipart/writeBody(fields:fileFieldName:fileURL:mimeType:boundary:)``
+/// 2. ``Multipart/writeBody(fields:repeatedFields:fileFieldName:fileURL:mimeType:boundary:)``
 ///    streams the body to a temporary file on disk, copying the source file
 ///    in fixed-size chunks. This is the path the Scribe client uses because
 ///    audio files can be multiple gigabytes and must never be loaded into
@@ -76,7 +76,7 @@ public struct Multipart {
     /// Content-Disposition: form-data; name="<k>"\r\n
     /// \r\n
     /// <value>\r\n
-    /// ... (repeated for each field) ...
+    /// ... (repeated for each field, then for each repeated field, in order) ...
     /// --<boundary>\r\n
     /// Content-Disposition: form-data; name="<fileFieldName>"; filename="<lastPathComponent>"\r\n
     /// Content-Type: <mimeType>\r\n
@@ -90,6 +90,12 @@ public struct Multipart {
     ///
     /// - Parameters:
     ///   - fields: Ordered-insensitive text fields to emit before the file part.
+    ///   - repeatedFields: Text parts emitted, in the given order, after
+    ///     `fields` and before the file part. Unlike `fields` these are *not*
+    ///     keyed, so the same name may appear more than once — the wire form
+    ///     an array-valued form field takes (e.g. Scribe's `keyterms`).
+    ///     Defaults to empty, in which case the body is byte-identical to one
+    ///     built without this parameter.
     ///   - fileFieldName: The form field name for the binary part (e.g. `"file"`).
     ///   - fileURL: The source file whose bytes form the file part.
     ///   - mimeType: The `Content-Type` for the file part.
@@ -99,6 +105,7 @@ public struct Multipart {
     ///   file or writing the temporary body file.
     public static func writeBody(
         fields: [String: String],
+        repeatedFields: [(name: String, value: String)] = [],
         fileFieldName: String,
         fileURL: URL,
         mimeType: String,
@@ -132,7 +139,16 @@ public struct Multipart {
                 try writeHandle.kleoth_write(crlfData(value))
             }
 
-            // 2. File part header.
+            // 2. Repeated text fields (same name may occur more than once), in
+            //    the caller's order.
+            for field in repeatedFields {
+                try writeHandle.kleoth_write(crlfData("--\(boundary)"))
+                try writeHandle.kleoth_write(crlfData("Content-Disposition: form-data; name=\"\(field.name)\""))
+                try writeHandle.kleoth_write(crlfData(""))
+                try writeHandle.kleoth_write(crlfData(field.value))
+            }
+
+            // 3. File part header.
             let filename = fileURL.lastPathComponent
             try writeHandle.kleoth_write(crlfData("--\(boundary)"))
             try writeHandle.kleoth_write(
@@ -141,7 +157,7 @@ public struct Multipart {
             try writeHandle.kleoth_write(crlfData("Content-Type: \(mimeType)"))
             try writeHandle.kleoth_write(crlfData(""))
 
-            // 3. File bytes, streamed in chunks.
+            // 4. File bytes, streamed in chunks.
             let readHandle = try FileHandle(forReadingFrom: fileURL)
             defer { try? readHandle.close() }
             let chunkSize = 1 << 20 // 1 MiB
@@ -151,7 +167,7 @@ public struct Multipart {
                 try writeHandle.kleoth_write(chunk)
             }
 
-            // 4. Trailing CRLF after file bytes, then closing boundary.
+            // 5. Trailing CRLF after file bytes, then closing boundary.
             try writeHandle.kleoth_write(crlfData(""))
             try writeHandle.kleoth_write(crlfData("--\(boundary)--"))
         } catch {

@@ -13,6 +13,20 @@ public struct ScribeOptions: Sendable {
     public var tagAudioEvents: Bool
     public var useMultiChannel: Bool
 
+    /// Suppresses filler words, stutters and false starts in the returned text
+    /// (`scribe_v2` only). Sent as `no_verbatim=true` **only when true**, so a
+    /// meeting request body stays byte-identical to what it was before this
+    /// option existed. Dictation always sets it; meetings never do.
+    public var noVerbatim: Bool
+
+    /// Domain vocabulary biasing (names, jargon, product words). Each term is
+    /// emitted as its own `keyterms` multipart part — the wire form an
+    /// array-valued form field takes, verified live 2026-09-03. Callers must
+    /// pass ``Keyterms/sanitize(_:)``d values; in particular no more than
+    /// ``Keyterms/maxTerms`` terms, because >100 terms triggers ElevenLabs'
+    /// 20-second minimum billable duration per request.
+    public var keyterms: [String]
+
     /// Transient callback fired with the multipart upload's fractional progress
     /// (0…1) as the audio body is sent to Scribe. Not persisted config — set it
     /// per request to drive a progress bar; `nil` skips progress reporting (and
@@ -28,6 +42,8 @@ public struct ScribeOptions: Sendable {
         languageCode: String? = nil,
         tagAudioEvents: Bool = true,
         useMultiChannel: Bool = false,
+        noVerbatim: Bool = false,
+        keyterms: [String] = [],
         onUploadProgress: (@Sendable (Double) -> Void)? = nil
     ) {
         self.modelId = modelId
@@ -36,7 +52,35 @@ public struct ScribeOptions: Sendable {
         self.languageCode = languageCode
         self.tagAudioEvents = tagAudioEvents
         self.useMultiChannel = useMultiChannel
+        self.noVerbatim = noVerbatim
+        self.keyterms = keyterms
         self.onUploadProgress = onUploadProgress
+    }
+}
+
+public extension ScribeOptions {
+    /// The exact options a dictation uses.
+    ///
+    /// - `scribe_v2`, language auto-detected (no `language_code`).
+    /// - Diarization off: a dictation is one voice, and the speaker labels would
+    ///   be thrown away anyway.
+    /// - Audio events off: the default is `true`, which would paste "(laughs)"
+    ///   into the user's document.
+    /// - `no_verbatim` on: fillers and false starts never reach the clipboard.
+    ///
+    /// - Parameter keyterms: Personal-dictionary terms, already passed through
+    ///   ``Keyterms/sanitize(_:)`` by the caller.
+    static func dictation(keyterms: [String]) -> ScribeOptions {
+        ScribeOptions(
+            modelId: "scribe_v2",
+            diarize: false,
+            numSpeakers: nil,
+            languageCode: nil,
+            tagAudioEvents: false,
+            useMultiChannel: false,
+            noVerbatim: true,
+            keyterms: keyterms
+        )
     }
 }
 
@@ -93,10 +137,21 @@ public struct ScribeClient {
         if let languageCode = options.languageCode {
             fields["language_code"] = languageCode
         }
+        if options.noVerbatim {
+            // scribe_v2-only, and emitted only when requested so the meeting
+            // request body is unchanged from before this option existed.
+            fields["no_verbatim"] = "true"
+        }
+
+        // Keyterms travel as one repeated `keyterms` part per term (the wire
+        // form the official SDKs emit for an array-valued form field);
+        // verified live against api.elevenlabs.io on 2026-09-03.
+        let repeated = options.keyterms.map { (name: "keyterms", value: $0) }
 
         // Stream the body to a temporary file; clean it up no matter what.
         let (bodyURL, boundary) = try Multipart.writeBody(
             fields: fields,
+            repeatedFields: repeated,
             fileFieldName: "file",
             fileURL: fileURL,
             mimeType: Self.mimeType(for: fileURL)

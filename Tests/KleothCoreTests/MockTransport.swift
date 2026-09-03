@@ -31,6 +31,12 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
     private(set) var recordedRequests: [URLRequest] = []
     /// Captured upload source files, in call order (parallel to data/upload calls).
     private(set) var recordedUploadFiles: [URL?] = []
+    /// Contents of each upload source file, snapshotted at call time (parallel
+    /// to `recordedUploadFiles`; `nil` for non-upload calls or an unreadable
+    /// file). Clients delete their temporary multipart body as soon as the
+    /// upload returns, so a test can only inspect what was sent by capturing it
+    /// here, while the call is in flight.
+    private(set) var recordedUploadBodies: [Data?] = []
 
     init(outcomes: [Outcome]) {
         self.outcomes = outcomes
@@ -78,6 +84,7 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
 
         recordedRequests.append(request)
         recordedUploadFiles.append(uploadFile)
+        recordedUploadBodies.append(uploadFile.flatMap { try? Data(contentsOf: $0) })
 
         guard !outcomes.isEmpty else {
             throw MockTransportError.exhausted
@@ -95,6 +102,17 @@ final class MockTransport: HTTPTransport, @unchecked Sendable {
         case let .failure(error):
             throw error
         }
+    }
+
+    /// UTF-8 text of the body uploaded by call `index`, or `nil` if that call
+    /// was not an upload (or the body could not be read).
+    func uploadBodyText(at index: Int = 0) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard index < recordedUploadBodies.count, let data = recordedUploadBodies[index] else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Number of requests served so far (data + upload combined).
