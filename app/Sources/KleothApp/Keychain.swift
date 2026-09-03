@@ -56,6 +56,10 @@ public enum Keychain {
         /// `DictationDefaults.polishModel`; passed through `ModelCatalog.migrating`).
         /// New key: NOT in `legacyAccounts`.
         public static let dictationModel = "dictation_model"
+        /// "true" (strict) runs the polish call on every dictation; absent or
+        /// anything else lets `PolishGate` paste short / chat-app dictations
+        /// as heard. New key: NOT in `legacyAccounts`.
+        public static let dictationPolishAlways = "dictation_polish_always"
     }
 
     /// Every legacy per-value account, for the one-time migration.

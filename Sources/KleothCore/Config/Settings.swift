@@ -19,6 +19,10 @@ public struct Settings: Sendable {
     /// OpenRouter model used for the one dictation "polish" call. Defaults to
     /// `DictationDefaults.polishModel`.
     public var dictationModel: String
+    /// Run the polish call on EVERY dictation. Off by default: short
+    /// utterances and messages into chat apps paste Scribe's transcript
+    /// directly (`PolishGate`). Strict opt-in (`"true"` only).
+    public var dictationPolishAlways: Bool
 
     public init(
         outputDir: URL,
@@ -26,7 +30,8 @@ public struct Settings: Sendable {
         transcriptionLanguage: String? = nil,
         autoTranscribe: Bool = false,
         dictationEnabled: Bool = false,
-        dictationModel: String = DictationDefaults.polishModel
+        dictationModel: String = DictationDefaults.polishModel,
+        dictationPolishAlways: Bool = false
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
@@ -34,6 +39,7 @@ public struct Settings: Sendable {
         self.autoTranscribe = autoTranscribe
         self.dictationEnabled = dictationEnabled
         self.dictationModel = dictationModel
+        self.dictationPolishAlways = dictationPolishAlways
     }
 
     /// Loads settings, applying defaults:
@@ -75,13 +81,17 @@ public struct Settings: Sendable {
             dictationModel = configured
         }
 
+        // Same strict opt-in for "polish every dictation".
+        let dictationPolishAlways = (config["dictation_polish_always"] == "true")
+
         return Settings(
             outputDir: outputDir,
             defaultModel: defaultModel,
             transcriptionLanguage: transcriptionLanguage,
             autoTranscribe: autoTranscribe,
             dictationEnabled: dictationEnabled,
-            dictationModel: dictationModel
+            dictationModel: dictationModel,
+            dictationPolishAlways: dictationPolishAlways
         )
     }
 

@@ -6,6 +6,18 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Short dictations and chat messages are pasted as heard.** The OpenRouter clean-up call now
+  runs only when it earns its latency: dictations of fewer than 24 words, and every dictation into
+  a messenger (Telegram, Slack, Discord, Teams, WhatsApp, Messages, Linear), paste Scribe's
+  transcript directly — `no_verbatim` already strips fillers, so a casual one-liner arrives ~1 s
+  sooner with no LLM in the loop and no risk of a rewrite. Longer dictations into editors, AI
+  chats, notes, mail and browsers are still cleaned up and structured. Settings → Dictation →
+  "Also clean up short dictations and chat messages" restores the old always-polish behavior
+  (Keychain `dictation_polish_always`). Skipped rows show an "As heard" badge in the Dictations
+  detail pane (not the orange "Raw" fallback — nothing failed).
+
 ## [0.2.0] — 2026-09-03
 
 ### Added

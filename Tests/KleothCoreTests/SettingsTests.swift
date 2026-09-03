@@ -52,6 +52,14 @@ import Foundation
         #expect(settings.dictationModel == "deepseek/deepseek-v4-flash")
     }
 
+    @Test func loadParsesDictationPolishAlwaysStrictTrue() {
+        #expect(Settings(outputDir: URL(fileURLWithPath: "/tmp"), defaultModel: "m").dictationPolishAlways == false)
+        #expect(Settings.load(config: ["dictation_polish_always": "true"]).dictationPolishAlways == true)
+        #expect(Settings.load(config: [:]).dictationPolishAlways == false)
+        #expect(Settings.load(config: ["dictation_polish_always": "1"]).dictationPolishAlways == false)
+        #expect(Settings.load(config: ["dictation_polish_always": "TRUE"]).dictationPolishAlways == false)
+    }
+
     @Test func defaultModelComesFromModelCatalog() {
         #expect(Settings.load(config: [:]).defaultModel == ModelCatalog.defaultModel)
         #expect(Settings.load(config: [:]).defaultModel == "z-ai/glm-5.3-flash")

@@ -57,6 +57,9 @@ enum AppConfig {
         if let model = Keychain.get(Keychain.Account.dictationModel), !model.isEmpty {
             merged.dictationModel = model
         }
+        if let always = Keychain.get(Keychain.Account.dictationPolishAlways), !always.isEmpty {
+            merged.dictationPolishAlways = (always == "true")
+        }
         merged.defaultModel = ModelCatalog.migrating(merged.defaultModel)
         merged.dictationModel = ModelCatalog.migrating(merged.dictationModel)
         return merged

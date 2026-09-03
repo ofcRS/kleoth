@@ -68,6 +68,9 @@ struct SettingsDictationSection: View {
                 dictation.setDictationModel(newValue)
             }
 
+            Toggle("Also clean up short dictations and chat messages", isOn: polishAlwaysBinding)
+                .help("Off: anything under \(DictationDefaults.minimumWordsToPolish) words, and every dictation into a messenger, is pasted exactly as transcribed — faster, and no OpenRouter call. Longer dictations into editors, AI chats, notes, mail and browsers are still cleaned up and structured.")
+
             dictionaryEditor
 
             Button(didResetPillPosition ? "Position reset" : "Reset pill position") {
@@ -88,6 +91,13 @@ struct SettingsDictationSection: View {
         Binding(
             get: { dictation.isEnabled },
             set: { dictation.setEnabled($0) }
+        )
+    }
+
+    private var polishAlwaysBinding: Binding<Bool> {
+        Binding(
+            get: { dictation.polishAlways },
+            set: { dictation.setPolishAlways($0) }
         )
     }
 

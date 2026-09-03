@@ -38,6 +38,12 @@ public enum DictationDefaults {
     ]
     /// The slugs in `reasoningCaps`.
     public static var reasoningCappedModels: Set<String> { Set(reasoningCaps.keys) }
+    /// Dictations shorter than this (whitespace-separated words) are pasted as
+    /// Scribe returned them unless `Settings.dictationPolishAlways` is on — see
+    /// `PolishGate`. ~10 s of speech; a casual one-liner is well under it, a
+    /// structured prompt or a brainstorm well over. Messages into chat apps
+    /// skip the pass regardless of length.
+    public static let minimumWordsToPolish = 24
     public static let transcriptionModel = "scribe_v2"
     public static let hotkeyDescription = "fn + shift"
     /// A chord held shorter than this (with no double-tap) is discarded.

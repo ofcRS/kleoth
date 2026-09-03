@@ -57,6 +57,8 @@ struct DictateMain {
                     if run == 1 { print("polished  : \(out)") }
                 case .raw(_, let reason, _):
                     print("run \(run)     : FELL BACK after \(format(seconds)) s — \(reason)")
+                case .skipped:
+                    break   // the polisher never returns this; only the app's gate does
                 }
             }
             let sorted = times.sorted()
@@ -172,6 +174,18 @@ struct DictateMain {
             languageCode: response.languageCode,
             dictionary: terms
         )
+        // What the app would do with this transcript (the probe polishes
+        // regardless, so the pipeline can still be timed).
+        let gate = PolishGate.decide(
+            rawText: rawText,
+            style: AppStyle.classify(bundleId: arguments.bundleId),
+            alwaysPolish: Settings.load().dictationPolishAlways
+        )
+        if case let .skip(reason) = gate {
+            print("gate      : the app would paste as heard (\(PolishGate.wordCount(rawText)) words) — \(reason)")
+        } else {
+            print("gate      : the app would polish (\(PolishGate.wordCount(rawText)) words)")
+        }
         let polisher = DictationPolisher(
             client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
             model: model
@@ -188,6 +202,8 @@ struct DictateMain {
         case .raw(_, let reason, let cost):
             print("polished  : <raw fallback>")
             print("polish    : FELL BACK after \(format(polishSeconds)) s — \(reason) (billed $\(String(format: "%.6f", cost)))")
+        case .skipped:
+            break   // the polisher never returns this; only the app's gate does
         }
     }
 

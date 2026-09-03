@@ -458,6 +458,18 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   1.6–2.7 s (excellent quality, reachable, but 2× slower), `gemini-3.6-flash` cut off on 14/16 (broken
   under the strict schema — do not use), `deepseek-v4-flash` timed out on 13/18. Bench harness was
   scratch-only (`bench/run.ts` over the `dictate --text` probe). 248 core tests.
+- **Polish gate (same day, after 0.2.0; user: "disable the LLM enhance for short messages… for
+  Telegram and Russian messages… Scribe itself is doing pretty well"):** `PolishGate.decide(rawText:
+  style:alwaysPolish:)` (KleothCore, 9 tests) runs in `run()` before the polish step — `.chat`
+  targets skip at any length, everything else skips under `DictationDefaults.minimumWordsToPolish`
+  (24 words; language is deliberately NOT a criterion — RU brainstorms still get structured).
+  Skip ≠ fallback: new `DictationPolishResult.skipped` (never returned by the polisher),
+  `usedRawFallback == false`, no pill warning, `polish_model: null`, phase jumps transcribing →
+  inserting. Detail pane badge "As heard" (reason recomputed from stored fields, no new log key).
+  Opt-out = `Settings.dictationPolishAlways` / Keychain `dictation_polish_always` (strict "true",
+  default off) / Settings → Dictation toggle "Also clean up short dictations and chat messages";
+  `DictationController.polishAlways` + `setPolishAlways(_:)`. `dictate` prints the gate verdict
+  but still polishes. Design doc §10.3 item 8. 257 core tests. ⚠️ Not runtime-verified by a human.
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

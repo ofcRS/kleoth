@@ -29,6 +29,9 @@ final class DictationController: ObservableObject {
         didSet { if isMonitoring != oldValue { pill.setResting(isMonitoring) } }
     }
     @Published private(set) var dictationModel: String
+    /// Mirrors `Settings.dictationPolishAlways` for the Settings toggle; the
+    /// pipeline reads the fresh `AppConfig.settings()` value on every run.
+    @Published private(set) var polishAlways: Bool
     /// True from `.began`/`.toggledOn` until `endSession()` (listening or pipeline in flight).
     @Published private(set) var isSessionActive: Bool = false
     /// Bumped AFTER `await logStore.append` returns (the row is on disk); DictationsListView reloads on change.
@@ -148,6 +151,7 @@ final class DictationController: ObservableObject {
         self.isTrusted = AccessibilityPermission.isTrusted
         self.isMonitoring = false
         self.dictationModel = settings.dictationModel
+        self.polishAlways = settings.dictationPolishAlways
 
         pill.onAction = { [weak self] action in self?.handlePillAction(action) }
         pill.onDismiss = { [weak self] in self?.handlePillDismiss() }
@@ -257,6 +261,11 @@ final class DictationController: ObservableObject {
         let resolved = trimmed.isEmpty ? DictationDefaults.polishModel : ModelCatalog.migrating(trimmed)
         Keychain.set(resolved, Keychain.Account.dictationModel)
         dictationModel = resolved
+    }
+
+    func setPolishAlways(_ on: Bool) {
+        Keychain.set(on ? "true" : "false", Keychain.Account.dictationPolishAlways)
+        polishAlways = on
     }
 
     /// promptIfNeeded + refreshTrust.
@@ -624,17 +633,29 @@ final class DictationController: ObservableObject {
             return
         }
 
-        // 7. Polish (non-throwing; raw fallback built in).
+        // 7. Polish (non-throwing; raw fallback built in) — unless the gate
+        // says Scribe's text is already what the user wants: a message into a
+        // chat app, or a short utterance. Skipping is not a fallback: no
+        // warning, no `polish_model` on the row, and the phase goes straight
+        // to inserting (no polishing wave on the pill).
         let context = DictationContext(
             appBundleId: target?.bundleIdentifier,
             appName: target?.localizedName,
             languageCode: response.languageCode,
             dictionary: terms
         )
-        phase = .polishing
-        pill.show(.polishing)
+        let gate = PolishGate.decide(
+            rawText: rawText,
+            style: AppStyle.classify(bundleId: context.appBundleId),
+            alwaysPolish: settings.dictationPolishAlways
+        )
         let polish: DictationPolishResult
-        if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
+        if case let .skip(reason) = gate {
+            log.debug("polish skipped: \(reason, privacy: .public)")
+            polish = .skipped(text: rawText, reason: reason)
+        } else if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
+            phase = .polishing
+            pill.show(.polishing)
             let polisher = DictationPolisher(
                 client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
                 model: settings.dictationModel
@@ -682,7 +703,7 @@ final class DictationController: ObservableObject {
             usedRawFallback: polish.usedRawFallback,
             fallbackReason: polish.fallbackReason,
             transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
-            polishModel: polish.usedRawFallback ? nil : settings.dictationModel,
+            polishModel: polish.ranModel ? settings.dictationModel : nil,
             durationSeconds: clip.durationSeconds,
             insertMethod: method,
             transcriptionCost: transcriber.usdPerHour * clip.durationSeconds / 3600 * surcharge,

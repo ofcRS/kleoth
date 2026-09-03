@@ -75,6 +75,10 @@ struct DictationDetailView: View {
                     if entry.usedRawFallback {
                         KleothPill("Raw", systemImage: "exclamationmark.triangle", tint: KleothPalette.pendingTint)
                     }
+                    if let reason = skippedReason {
+                        KleothPill("As heard", systemImage: "waveform.badge.checkmark")
+                            .help(reason)
+                    }
                     if entry.insertMethod == .clipboard {
                         KleothPill("Copied only", systemImage: "doc.on.clipboard", tint: KleothPalette.pendingTint)
                     }
@@ -89,6 +93,21 @@ struct DictationDetailView: View {
             Spacer(minLength: 0)
         }
         .kleothCard()
+    }
+
+    /// Why the clean-up pass was deliberately skipped for this row — a
+    /// messenger target or a short utterance (`PolishGate`). Recomputed from
+    /// the stored fields (the row carries no reason of its own); nil for rows
+    /// that were polished or fell back.
+    private var skippedReason: String? {
+        guard !entry.usedRawFallback, (entry.polishModel ?? "").isEmpty else { return nil }
+        let decision = PolishGate.decide(
+            rawText: entry.rawText,
+            style: AppStyle.classify(bundleId: entry.appBundleId),
+            alwaysPolish: false
+        )
+        if case let .skip(reason) = decision { return reason }
+        return "Pasted as heard — the clean-up pass didn't run."
     }
 
     /// The icon of the app the text was dictated into, when that app is still

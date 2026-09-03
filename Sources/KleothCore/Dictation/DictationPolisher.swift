@@ -44,17 +44,30 @@ public enum DictationPolishResult: Sendable, Equatable {
     /// must not claim those were free. It stays 0 for the no-key, timeout,
     /// cancellation, HTTP-error and pre-request short-circuit paths.
     case raw(text: String, reason: String, cost: Double = 0)
+    /// The controller decided not to call the model at all (`PolishGate`:
+    /// a chat app, or fewer than `DictationDefaults.minimumWordsToPolish`
+    /// words). Not a fallback — nothing failed, no warning, no cost — so
+    /// `usedRawFallback` stays false and the log row carries no `polish_model`.
+    /// `DictationPolisher` never produces this case.
+    case skipped(text: String, reason: String)
 
     /// The text to insert, whichever branch won.
     public var text: String {
         switch self {
         case let .polished(text, _, _): return text
         case let .raw(text, _, _): return text
+        case let .skipped(text, _): return text
         }
     }
 
     public var usedRawFallback: Bool {
         if case .raw = self { return true }
+        return false
+    }
+
+    /// True only when a model actually rewrote the text.
+    public var ranModel: Bool {
+        if case .polished = self { return true }
         return false
     }
 
@@ -69,6 +82,7 @@ public enum DictationPolishResult: Sendable, Equatable {
         switch self {
         case let .polished(_, _, cost): return cost
         case let .raw(_, _, cost): return cost
+        case .skipped: return 0
         }
     }
 
