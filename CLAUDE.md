@@ -320,6 +320,22 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   clickable, and the rotation unwinds as the bar rises; `DictationPillModel.restingEdge` carries the
   edge, `PillGeometry.restingOrigin(…edge:in:)` takes it explicitly; (c) idle rim = white 0.42 @ 1 pt
   (`PillStyle.restingRim`), active keeps the hairline.
+  Second follow-up (user: "it should stay vertical on a side edge in the active state too" + "the
+  size-change animation is ugly — make it beautiful, research best practice"): (a) `DictationPillModel.edge`
+  now rotates the capsule ±90° in EVERY phase on a side edge (left reads bottom-to-top like a spine
+  label; top edge stays horizontal with the sheen flipped); `layout(for:edge:on:)` swaps panel
+  dimensions for every phase there. (b) **The panel frame is never animated any more** — AppKit's
+  timer-driven `animator().setFrame` fighting SwiftUI's own spring on the capsule was the jank.
+  Stage technique: `transition(to:phase:)` sets the panel instantly to the UNION of the current and
+  destination rects, re-expresses the capsule's current position as `model.offset` (relative to the
+  stage center, y-down) under `disablesAnimations`, then on the NEXT main-queue callout runs ONE
+  `withAnimation(.spring(duration: 0.45, bounce: 0.22), completionCriteria: .logicallyComplete)` that
+  moves `offset` + switches `phase` (size, rotation, content transitions all ride that spring — the
+  view has NO `.animation` modifiers of its own), and the completion `settle()`s: panel = destination
+  rect, offset = 0, same turn, invisible. `transitionGeneration` guards stale completions; `beginDrag()`
+  settles first; `finishHide` resets. The capsule is `.fixedSize()` (the stage / a side panel is not its
+  size) and the text label gets an explicit `labelWidth` (measured + capped at 60% of the screen axis)
+  so long messages still truncate. Reduce Motion → the panel just jumps.
 - **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
   then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
   the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]

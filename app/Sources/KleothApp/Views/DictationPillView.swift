@@ -21,6 +21,13 @@ import KleothCore
 ///   know *why* something degraded or failed, and `.failed` carries an action.
 ///
 /// Every phase still exposes its sentence through `.help` (hover) and VoiceOver.
+///
+/// Motion: this view animates NOTHING on its own. The controller changes
+/// `phase`, `offset`, and `edge` inside one `withAnimation(spring)`, so the
+/// capsule's size, position, rotation, and content transitions all ride the
+/// same spring (`DictationPillController.transitionSpring`). The panel's own
+/// frame is never animated — AppKit's timer-driven window animator fighting a
+/// SwiftUI spring was the jerky transition the user rejected.
 struct DictationPillView: View {
     /// Not owned — the controller owns the hosting view that owns this view.
     private unowned let controller: DictationPillController
@@ -41,20 +48,24 @@ struct DictationPillView: View {
         // shadow margin around it must stay non-interactive, or a `.statusBar`-
         // level panel would swallow clicks aimed at the app underneath.
         capsule
+            // The capsule sizes itself to its content whatever the panel's
+            // size: while a transition is in flight the panel is a stage
+            // larger than the capsule, and on a side edge it is narrower than
+            // the capsule's un-rotated length. Text still cannot run away —
+            // the label carries an explicit, screen-capped width.
+            .fixedSize()
             .contentShape(Capsule(style: .continuous))
             .gesture(dragGesture)
             .onTapGesture {
                 if model.phase.isSticky { controller.dismissFromUser() }
             }
             .help(model.phase.pillText)
-            // A tab tucked into a side edge stands up (its "top" — the sheen's
-            // bright end — pointing into the screen); the rotation unwinds as
-            // the pill rises into a horizontal bar. Applied AFTER the hit shape
-            // and gestures so they rotate with it — a horizontal hit capsule
-            // under a vertical tab would leave only its middle clickable, and
-            // that middle is the part that is off-screen.
-            .rotationEffect(restingRotation)
-            .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: restingRotation)
+            // A pill on a side edge stands up in every phase. Applied AFTER
+            // the hit shape and gestures so they rotate with it — a horizontal
+            // hit capsule under a vertical bar would leave only its middle
+            // clickable.
+            .rotationEffect(edgeRotation)
+            .offset(model.offset)
             .scaleEffect(model.isPresented ? 1 : 0.9, anchor: .center)
             .opacity(model.isPresented ? 1 : 0)
             .padding(DictationPillController.shadowPadding)
@@ -81,7 +92,7 @@ struct DictationPillView: View {
         )
         .overlay {
             if model.phase == .idle {
-                RestingSheen(reduceMotion: reduceMotion)
+                RestingSheen(brightEndAtTop: model.edge == .bottom, reduceMotion: reduceMotion)
                     .transition(.opacity)
             }
         }
@@ -90,18 +101,16 @@ struct DictationPillView: View {
         // indicator, not a window.
         .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
         .shadow(color: .black.opacity(model.phase == .idle ? 0.18 : 0.28), radius: 10, y: 3)
-        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: model.phase)
     }
 
-    /// 0 for active phases and a bottom tab; ±90° on the sides, 180° on top,
-    /// chosen so the sheen's bright end always faces inward.
-    private var restingRotation: Angle {
-        guard model.phase == .idle else { return .zero }
-        switch model.restingEdge {
-        case .bottom: return .zero
-        case .top: return .degrees(180)
-        case .left: return .degrees(90)
-        case .right: return .degrees(-90)
+    /// Horizontal on the bottom and top edges; on a side edge the pill stands
+    /// up in every phase, turned so text reads the way a spine label does —
+    /// bottom-to-top on the left, top-to-bottom on the right.
+    private var edgeRotation: Angle {
+        switch model.edge {
+        case .bottom, .top: return .zero
+        case .left: return .degrees(-90)
+        case .right: return .degrees(90)
         }
     }
 
@@ -177,6 +186,10 @@ struct DictationPillView: View {
             .foregroundStyle(PillStyle.ink)
             .lineLimit(1)
             .truncationMode(.tail)
+            // Measured + capped by the controller (`DictationPillModel.labelWidth`);
+            // with `.fixedSize()` on the capsule this is what makes a
+            // screen-wide message truncate instead of overflow.
+            .frame(width: model.labelWidth, alignment: .leading)
     }
 
     /// Moving the panel from a `DragGesture` has one trap: `value.translation`
@@ -190,7 +203,7 @@ struct DictationPillView: View {
                 let mouse = NSEvent.mouseLocation
                 if dragStartMouse == nil {
                     dragStartMouse = mouse
-                    dragStartOrigin = controller.panelOrigin
+                    dragStartOrigin = controller.beginDrag()
                 }
                 guard let start = dragStartMouse else { return }
                 controller.moveDuringDrag(
@@ -249,8 +262,10 @@ enum PillStyle {
 // MARK: - Resting sheen
 
 /// A slow, soft light that washes over the resting capsule — the "I'm here"
-/// breath of a pill that is mostly off-screen. Static under Reduce Motion.
+/// breath of a pill that is mostly off-screen. Its bright end is the one that
+/// faces into the screen (the half the user can see). Static under Reduce Motion.
 private struct RestingSheen: View {
+    let brightEndAtTop: Bool
     let reduceMotion: Bool
     @State private var breathing = false
 
@@ -259,7 +274,8 @@ private struct RestingSheen: View {
             .fill(
                 LinearGradient(
                     colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
-                    startPoint: .top, endPoint: .bottom
+                    startPoint: brightEndAtTop ? .top : .bottom,
+                    endPoint: brightEndAtTop ? .bottom : .top
                 )
             )
             .opacity(reduceMotion ? 0.5 : (breathing ? 1.0 : 0.15))

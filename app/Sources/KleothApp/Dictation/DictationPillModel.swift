@@ -18,10 +18,21 @@ final class DictationPillModel: ObservableObject {
     /// Drives the spring-in / fade-out. Set *after* the panel is on screen so
     /// SwiftUI has a state change to animate.
     @Published var isPresented: Bool = false
-    /// The screen edge the resting capsule is tucked into. The view rotates
-    /// the `.idle` capsule to lie along a side edge (a vertical tab) and points
-    /// its sheen inward; set by the controller before the phase changes.
-    @Published private(set) var restingEdge: PillGeometry.Edge = .bottom
+    /// The screen edge the pill lives on. A side edge stands the capsule up
+    /// (the view rotates it ±90° in EVERY phase, so a pill parked on the left
+    /// is a vertical bar that reads bottom-to-top) and turns the resting sheen
+    /// so its bright end faces into the screen.
+    @Published private(set) var edge: PillGeometry.Edge = .bottom
+    /// Where the capsule sits inside the panel, as a displacement from the
+    /// panel's center in SwiftUI points (y down). Zero whenever the panel is
+    /// sized to the capsule; non-zero only while a transition is in flight and
+    /// the panel is a stage covering both the start and the end rect. The
+    /// controller animates this — it is THE pill's motion.
+    @Published private(set) var offset: CGSize = .zero
+    /// Explicit width for the text label of `.warning` / `.failed`, measured
+    /// and capped by the controller so an over-long message truncates instead
+    /// of running off the screen; nil for phases without text.
+    @Published private(set) var labelWidth: CGFloat?
 
     // MARK: Controller-facing mutation
 
@@ -34,8 +45,16 @@ final class DictationPillModel: ObservableObject {
         if level != 0 { level = 0 }
     }
 
-    func apply(restingEdge edge: PillGeometry.Edge) {
-        if restingEdge != edge { restingEdge = edge }
+    func apply(edge newEdge: PillGeometry.Edge) {
+        if edge != newEdge { edge = newEdge }
+    }
+
+    func apply(offset newOffset: CGSize) {
+        if offset != newOffset { offset = newOffset }
+    }
+
+    func apply(labelWidth width: CGFloat?) {
+        if labelWidth != width { labelWidth = width }
     }
 
     func apply(level newLevel: Double) {

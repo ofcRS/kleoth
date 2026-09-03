@@ -3,7 +3,7 @@ import SwiftUI
 import KleothCore
 
 /// Owns the dictation pill's panel: when it is on screen, where it sits, how it
-/// resizes between phases, and when it hides itself (design §3.19, §5.6).
+/// moves between phases, and when it hides itself (design §3.19, §5.6).
 ///
 /// Placement model (reworked 2026-09-03 after the reference bar): the pill has
 /// ONE anchor — the saved placement, else bottom-center of the screen under the
@@ -11,12 +11,22 @@ import KleothCore
 /// (centered on it, so phase-to-phase size changes grow in place). The resting
 /// `.idle` capsule is the same anchor slid into the nearest screen edge until
 /// half of it is off-screen (`PillGeometry.restingOrigin`), and a chord makes
-/// it rise back out to the anchor. Dragging moves the anchor.
+/// it rise back out to the anchor. Dragging moves the anchor. A pill whose
+/// nearest edge is a side stands up — vertical in every phase.
+///
+/// Motion model: the panel's frame is NEVER animated. Every move is a
+/// `transition(to:phase:)`: the panel is set — instantly — to a *stage* that
+/// covers both the current and the destination rect, the capsule is placed on
+/// the stage where it already is (no visible change), and one SwiftUI spring
+/// then carries its `offset`, size, rotation, and content to the destination.
+/// When the spring is logically complete the panel shrinks to the destination
+/// rect and the offset returns to zero, again instantly and invisibly. Between
+/// transitions the panel is exactly the capsule plus its shadow margin.
 ///
 /// It is the `DictationPillPresenting` the controller talks to; all it exposes
-/// upward is `show/setLevel/dismiss/resetPosition` plus the two callbacks. All
-/// pure math lives in `PillGeometry` (KleothCore) so it can be unit-tested — the
-/// app package has no test target.
+/// upward is `show/setLevel/dismiss/setResting/resetPosition` plus the two
+/// callbacks. All pure math lives in `PillGeometry` (KleothCore) so it can be
+/// unit-tested — the app package has no test target.
 @MainActor
 final class DictationPillController: DictationPillPresenting {
     /// Transparent margin around the capsule. The SwiftUI content draws its
@@ -26,6 +36,10 @@ final class DictationPillController: DictationPillPresenting {
     /// the Keychain: the Keychain blob is a once-per-launch credential read and
     /// this is rewritten on every drag.
     static let placementDefaultsKey = "dev.kleoth.dictation.pillPlacement"
+    /// The one spring every pill move rides (rise, sink, grow, walk home).
+    /// Duration/bounce form (macOS 14): perceptual duration with a little
+    /// overshoot, so the rise out of the edge lands like a spring, not a slide.
+    static let transitionSpring: Animation = .spring(duration: 0.45, bounce: 0.22)
 
     /// What the SwiftUI content renders.
     let model = DictationPillModel()
@@ -46,6 +60,13 @@ final class DictationPillController: DictationPillPresenting {
     /// panel's frame straddles a screen edge, so deriving its screen from the
     /// frame is unreliable; this is the source of truth while it is up.
     private var currentDisplayId: UInt32?
+    /// The rect the panel settles to when the in-flight transition completes;
+    /// nil when the panel is settled (frame == capsule rect, offset == zero).
+    private var pendingFrame: CGRect?
+    /// Bumped by every transition, settle, and hide so a stale spring
+    /// completion can never shrink the panel to a rect that is no longer the
+    /// destination.
+    private var transitionGeneration = 0
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -77,29 +98,31 @@ final class DictationPillController: DictationPillPresenting {
         let alreadyUp = panel.isVisible && model.isPresented
         let screen = (alreadyUp ? panelScreen() : nil) ?? anchorScreen()
         currentDisplayId = screen?.kleothDisplayId
-        // Width is capped to the screen the pill will sit on, so an unbounded
-        // message truncates inside the capsule instead of pushing the ✕ off
-        // the right edge (`PillGeometry.maxPanelWidth`).
         let edge = restingEdge(on: screen)
-        let size = Self.panelSize(for: state, edge: edge, in: screen.map(Self.bounds))
-        let target = CGRect(origin: origin(for: state, panelSize: size, edge: edge, on: screen), size: size)
+        let layout = Self.layout(for: state, edge: edge, on: screen)
+        let target = CGRect(origin: origin(for: state, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
 
-        model.apply(restingEdge: edge)
-        model.apply(phase: state)
+        // Not animated: the edge and label width describe the destination and
+        // must be in place before the phase springs.
+        model.apply(edge: edge)
+        model.apply(labelWidth: layout.labelWidth)
 
         if alreadyUp {
-            // Resting → active rises out of the edge; active → resting sinks
-            // back; phase swaps grow in place. One animated frame change.
-            setFrame(target, animated: !Self.reduceMotion)
+            transition(to: target, phase: state)
         } else {
             // A fresh show starts from the tucked spot and emerges, so even the
             // first pill of the day comes in from the edge rather than popping.
-            let tucked = CGRect(origin: restingOrigin(activeOrigin: target.origin, panelSize: size, edge: edge, on: screen), size: size)
+            settle()
+            let tucked = CGRect(
+                origin: restingOrigin(activeOrigin: target.origin, panelSize: layout.panelSize, edge: edge, on: screen),
+                size: layout.panelSize
+            )
             panel.setFrame(tucked, display: false)
+            model.apply(phase: state)
             panel.orderFrontRegardless()
             present()
             if target != tucked {
-                setFrame(target, animated: !Self.reduceMotion)
+                transition(to: target, phase: state)
             }
         }
 
@@ -135,8 +158,8 @@ final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    /// Phase → `.idle` on the visible panel (shrinks around the current
-    /// center), or a fresh spring-in if the panel is down.
+    /// Phase → `.idle` on the visible panel (sinks back into the edge), or a
+    /// fresh spring-in if the panel is down.
     private func collapseToResting() {
         if model.phase == .idle, panel?.isVisible == true, model.isPresented { return }
         show(.idle)
@@ -172,16 +195,22 @@ final class DictationPillController: DictationPillPresenting {
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
         let edge = restingEdge(on: screen)
-        model.apply(restingEdge: edge)
-        let size = Self.panelSize(for: model.phase, edge: edge, in: Self.bounds(of: screen))
-        let origin = origin(for: model.phase, panelSize: size, edge: edge, on: screen)
-        setFrame(CGRect(origin: origin, size: size), animated: !Self.reduceMotion)
+        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
+        model.apply(edge: edge)
+        model.apply(labelWidth: layout.labelWidth)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase)
     }
 
     // MARK: View-facing API (DictationPillView)
 
-    /// Current panel origin, captured once at drag start.
-    var panelOrigin: CGPoint { panel?.frame.origin ?? .zero }
+    /// Called once at drag start: finishes any in-flight transition (so the
+    /// panel is exactly the capsule and the drag moves what the user sees) and
+    /// returns the panel origin the drag deltas are applied to.
+    func beginDrag() -> CGPoint {
+        settle()
+        return panel?.frame.origin ?? .zero
+    }
 
     /// Live drag. The caller computes `origin` from `NSEvent.mouseLocation`
     /// deltas — never `DragGesture.Value.translation`, which double-counts as
@@ -201,8 +230,9 @@ final class DictationPillController: DictationPillPresenting {
     }
 
     /// Persists where the user dropped the pill, as fractions of the screen it
-    /// landed on (see `PillPlacement`). The drop spot is the new *anchor*; a
-    /// resting pill then slides back into the nearest edge from there.
+    /// landed on (see `PillPlacement`). The drop spot is the new *anchor*; the
+    /// pill then re-lays out for the edge it is now nearest to (a side edge
+    /// stands it up) and, if resting, slides back into that edge.
     func commitDraggedPlacement() {
         guard let panel else { return }
         let frame = panel.frame
@@ -218,15 +248,12 @@ final class DictationPillController: DictationPillPresenting {
         if let data = try? JSONEncoder().encode(placement) {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
-        guard model.phase == .idle else { return }
-        // The dragged tab may have crossed to another edge: re-size (a side
-        // edge stands the tab up) and tuck into the new nearest edge.
         let edge = restingEdge(on: screen)
-        model.apply(restingEdge: edge)
-        let size = Self.panelSize(for: .idle, edge: edge, in: Self.bounds(of: screen))
-        let active = activeOrigin(panelSize: size, on: screen)
-        let tucked = restingOrigin(activeOrigin: active, panelSize: size, edge: edge, on: screen)
-        setFrame(CGRect(origin: tucked, size: size), animated: !Self.reduceMotion)
+        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
+        model.apply(edge: edge)
+        model.apply(labelWidth: layout.labelWidth)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase)
     }
 
     /// The pill's action button. The handler lives in `DictationController`;
@@ -251,7 +278,7 @@ final class DictationPillController: DictationPillPresenting {
 
     private func ensurePanel() -> DictationPanel {
         if let panel { return panel }
-        let size = Self.panelSize(for: .idle)
+        let size = Self.layout(for: .idle, edge: .bottom, on: nil).panelSize
         let panel = DictationPanel(contentRect: CGRect(origin: .zero, size: size))
         let hosting = DictationPillHostingView(
             rootView: AnyView(DictationPillView(controller: self).environmentObject(model))
@@ -279,6 +306,10 @@ final class DictationPillController: DictationPillPresenting {
         panel.orderOut(nil)
         model.isPresented = false
         model.apply(phase: .hidden)
+        // A hidden panel is settled by definition; forget any in-flight move.
+        transitionGeneration += 1
+        pendingFrame = nil
+        model.apply(offset: .zero)
     }
 
     private func scheduleAutoHide(for state: DictationPillState) {
@@ -290,22 +321,90 @@ final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    /// One animated frame change for every move the pill makes — rising out of
-    /// the edge, sinking back, growing between phases, walking home after a
-    /// reset. `animator().setFrame` (not `setFrame(animate:)`, which blocks the
-    /// main thread with a synchronous run loop). The curve overshoots a touch
-    /// so the rise reads as a spring, not a slide.
-    private func setFrame(_ target: CGRect, animated: Bool) {
-        guard let panel, target != panel.frame else { return }
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.3
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 1.1, 0.3, 1.0)
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
+    // MARK: Motion
+
+    /// Moves the capsule to `target` (a panel rect: capsule + shadow margin)
+    /// and switches it to `phase`, on one spring. See the type comment for the
+    /// stage technique. Under Reduce Motion the panel simply jumps.
+    private func transition(to target: CGRect, phase: DictationPillState) {
+        guard let panel else { return }
+        transitionGeneration += 1
+        let generation = transitionGeneration
+
+        guard !Self.reduceMotion else {
+            pendingFrame = nil
+            model.apply(offset: .zero)
+            model.apply(phase: phase)
             panel.setFrame(target, display: true)
+            return
         }
+
+        // Where the capsule logically is right now, in screen coordinates: the
+        // panel's center displaced by the current offset (zero when settled,
+        // the in-flight destination's when not — the spring re-targets from
+        // wherever it actually is, keeping its velocity).
+        let stageBefore = panel.frame
+        let currentCenter = CGPoint(
+            x: stageBefore.midX + model.offset.width,
+            y: stageBefore.midY - model.offset.height
+        )
+        // The new stage covers the current stage (which contains the capsule
+        // wherever the spring has it) and the destination.
+        let stage = stageBefore.union(target)
+        pendingFrame = target
+
+        if stage != stageBefore {
+            // Re-express the current position on the new stage and grow the
+            // panel — in one turn, without animation, so nothing on screen
+            // moves. `display: true` lays the hosting view out synchronously
+            // with the new offset already applied.
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                model.apply(offset: Self.offset(ofCenter: currentCenter, in: stage))
+            }
+            panel.setFrame(stage, display: true)
+        }
+
+        let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
+        // The animated change goes out on the NEXT main-queue callout so
+        // SwiftUI has committed the re-expressed start position first; a
+        // change in the same turn would spring from the previous graph value,
+        // which is a different point on the new stage.
+        Task { @MainActor [weak self] in
+            guard let self, self.transitionGeneration == generation else { return }
+            withAnimation(Self.transitionSpring, completionCriteria: .logicallyComplete) {
+                self.model.apply(offset: destination)
+                self.model.apply(phase: phase)
+            } completion: { [weak self] in
+                guard let self, self.transitionGeneration == generation else { return }
+                self.settle()
+            }
+        }
+    }
+
+    /// Ends any in-flight transition NOW: panel = destination rect, offset =
+    /// zero, both without animation and in the same turn, so the screen does
+    /// not change. Safe to call when already settled.
+    private func settle() {
+        transitionGeneration += 1
+        var still = Transaction()
+        still.disablesAnimations = true
+        guard let panel, let target = pendingFrame else {
+            if model.offset != .zero {
+                withTransaction(still) { model.apply(offset: .zero) }
+            }
+            return
+        }
+        pendingFrame = nil
+        withTransaction(still) { model.apply(offset: .zero) }
+        panel.setFrame(target, display: true)
+    }
+
+    /// A screen-space center → the capsule `offset` that puts it there on a
+    /// panel whose frame is `stage` (SwiftUI's y grows downward).
+    private static func offset(ofCenter center: CGPoint, in stage: CGRect) -> CGSize {
+        CGSize(width: center.x - stage.midX, height: -(center.y - stage.midY))
     }
 
     /// Displays changed: put the pill back on its anchor (tucked if resting)
@@ -313,12 +412,14 @@ final class DictationPillController: DictationPillPresenting {
     private func reanchorAfterScreenChange() {
         guard let panel, panel.isVisible else { return }
         guard let screen = panelScreen() ?? anchorScreen() else { return }
+        settle()
         currentDisplayId = screen.kleothDisplayId
         let edge = restingEdge(on: screen)
-        model.apply(restingEdge: edge)
-        let size = Self.panelSize(for: model.phase, edge: edge, in: Self.bounds(of: screen))
-        let target = CGRect(origin: origin(for: model.phase, panelSize: size, edge: edge, on: screen), size: size)
-        setFrame(target, animated: false)
+        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        model.apply(edge: edge)
+        model.apply(labelWidth: layout.labelWidth)
+        let target = CGRect(origin: origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
+        panel.setFrame(target, display: true)
     }
 
     // MARK: Placement
@@ -336,12 +437,12 @@ final class DictationPillController: DictationPillPresenting {
         return PillGeometry.defaultOrigin(panelSize: size, shadowPadding: Self.shadowPadding, in: bounds)
     }
 
-    /// The edge the resting tab tucks into on `screen`: the one nearest the
-    /// anchor. Decided from the horizontal resting size so that standing the
-    /// tab up for a side edge cannot flip the answer.
+    /// The edge the pill lives on for `screen`: the one nearest the anchor.
+    /// Decided from the horizontal resting size so that standing the pill up
+    /// for a side edge cannot flip the answer.
     private func restingEdge(on screen: NSScreen?) -> PillGeometry.Edge {
         guard let screen else { return .bottom }
-        let size = Self.panelSize(for: .idle, edge: .bottom, in: Self.bounds(of: screen))
+        let size = Self.layout(for: .idle, edge: .bottom, on: screen).panelSize
         let active = activeOrigin(panelSize: size, on: screen)
         return PillGeometry.nearestEdge(ofPanelAt: active, panelSize: size, in: screen.frame)
     }
@@ -427,9 +528,10 @@ final class DictationPillController: DictationPillPresenting {
     // MARK: Sizing
 
     private static let fadeOutDuration: Double = 0.18
-    /// Capsule heights per phase; the panel adds `shadowPadding` above and
-    /// below. Resting is a sliver (and only half of it is on screen), motion
-    /// phases a short bar, text phases the old label height.
+    /// Capsule heights per phase (its thickness — on a side edge this becomes
+    /// the width); the panel adds `shadowPadding` on every side. Resting is a
+    /// sliver (and only half of it is on screen), motion phases a short bar,
+    /// text phases the old label height.
     static func capsuleHeight(for state: DictationPillState) -> CGFloat {
         switch state {
         case .idle: return PillStyle.restingHeight
@@ -442,50 +544,63 @@ final class DictationPillController: DictationPillPresenting {
     /// it (extra width is transparent margin).
     private static let widthSlack: CGFloat = 20
 
+    /// Everything the panel and the view need to agree on for one phase on one
+    /// edge: the panel's size (rotated for a side edge) and the explicit label
+    /// width for text phases.
+    struct Layout {
+        var panelSize: CGSize
+        var labelWidth: CGFloat?
+    }
+
+    /// The most a text label may take: a share of the screen along the pill's
+    /// axis (its height on a side edge). Bounded below so a tiny or unknown
+    /// screen still shows something.
+    static func labelCap(edge: PillGeometry.Edge, on screen: NSScreen?) -> CGFloat {
+        guard let screen else { return 600 }
+        let bounds = bounds(of: screen)
+        let axis = (edge == .left || edge == .right) ? bounds.height : bounds.width
+        guard axis.isFinite, axis > 0 else { return 600 }
+        return max(PillGeometry.minPanelWidth, floor(axis * 0.6))
+    }
+
     /// Panel size for a phase. Motion phases have fixed content widths that
-    /// mirror `PillStyle`; text phases are measured from the label. Computed
-    /// rather than read from `fittingSize` so the frame is known synchronously,
-    /// before SwiftUI has laid the new phase out. When `visibleFrame` is known
-    /// the width is capped to it (the label then truncates — `DictationPillView`).
-    static func panelSize(
-        for state: DictationPillState, edge: PillGeometry.Edge = .bottom, in visibleFrame: CGRect? = nil
-    ) -> CGSize {
-        // A resting tab on a side edge stands up: the view rotates the capsule
-        // 90°, so the panel swaps its dimensions to hold it.
-        if state == .idle, edge == .left || edge == .right {
-            return CGSize(
-                width: PillStyle.restingHeight + 2 * shadowPadding,
-                height: PillStyle.restingWidth + 2 * shadowPadding
-            )
-        }
-        var width: CGFloat
+    /// mirror `PillStyle`; text phases are measured from the label and capped
+    /// (`labelCap`). Computed rather than read from `fittingSize` so the frame
+    /// is known synchronously, before SwiftUI has laid the new phase out. On a
+    /// side edge the capsule is rotated 90°, so the panel swaps its dimensions.
+    static func layout(for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?) -> Layout {
+        var length: CGFloat
+        var labelWidth: CGFloat?
         switch state {
         case .hidden, .idle:
-            width = PillStyle.restingWidth
+            length = PillStyle.restingWidth
         case .listening(let handsFree):
-            width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
+            length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
                 + (handsFree ? 6 + KleothMetrics.spacingS : 0)
-        case .transcribing, .polishing:
-            width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
-        case .done:
-            // Keep the bar's width so the check appears in place of the wave.
-            width = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
+        case .transcribing, .polishing, .done:
+            // `.done` keeps the bar's width so the check appears in place of the wave.
+            length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
         case .warning, .failed:
-            width = 20 + KleothMetrics.spacingS + textWidth(state.pillText, style: .callout, weight: .medium)
+            // +1: SwiftUI's ideal text width can round up a hair past AppKit's
+            // measurement; a frame narrower than the ideal would truncate.
+            let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
+            let label = min(measured, labelCap(edge: edge, on: screen))
+            labelWidth = label
+            length = 20 + KleothMetrics.spacingS + label
             if let action = state.fault?.action {
-                width += KleothMetrics.spacingS + textWidth(action.title, style: .caption1, weight: .semibold) + 22
+                length += KleothMetrics.spacingS + textWidth(action.title, style: .caption1, weight: .semibold) + 22
             }
             if state.isSticky {
-                width += KleothMetrics.spacingS + 18
+                length += KleothMetrics.spacingS + 18
             }
-            width += 2 * KleothMetrics.spacingM
+            length += 2 * KleothMetrics.spacingM
         }
-        width += 2 * shadowPadding + widthSlack
-        width = ceil(width)
-        if let visibleFrame {
-            width = PillGeometry.cappedPanelWidth(width, in: visibleFrame)
-        }
-        return CGSize(width: width, height: capsuleHeight(for: state) + 2 * shadowPadding)
+        length = ceil(length + 2 * shadowPadding + widthSlack)
+        let thickness = capsuleHeight(for: state) + 2 * shadowPadding
+        let size = (edge == .left || edge == .right)
+            ? CGSize(width: thickness, height: length)
+            : CGSize(width: length, height: thickness)
+        return Layout(panelSize: size, labelWidth: labelWidth)
     }
 
     private static func textWidth(_ text: String, style: NSFont.TextStyle, weight: NSFont.Weight) -> CGFloat {
