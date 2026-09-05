@@ -158,14 +158,14 @@ public final class DictationCapture {
             throw DictationCaptureError.writeFailed
         }
         let url = directory.appendingPathComponent("dictation-\(UUID().uuidString).m4a")
-        let settings = AudioFormat.aacSettings(
-            sampleRate: format.sampleRate,
-            channels: Int(format.channelCount),
-            bitRate: DictationDefaults.captureBitRate
-        )
         let audioFile: AVAudioFile
         do {
-            audioFile = try AVAudioFile(forWriting: url, settings: settings)
+            audioFile = try AudioFormat.openAACFile(
+                at: url,
+                sampleRate: format.sampleRate,
+                channels: Int(format.channelCount),
+                bitRate: DictationDefaults.captureBitRate
+            )
         } catch {
             Self.discard(url)
             throw DictationCaptureError.writeFailed
@@ -176,29 +176,11 @@ public final class DictationCapture {
         frames.reset()
         interrupted = false
 
-        let failed = writeFailed
-        let meter = level
-        let counter = frames
-        let fileBox = SendableAudioFileBox(audioFile)
-        // @Sendable real-time callback: one file write plus two heap-word
-        // stores. No allocation, no locking, no await.
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in
-            do {
-                try fileBox.file.write(from: buffer)
-            } catch {
-                failed.raise()
-                return
-            }
-            let frameLength = buffer.frameLength
-            counter.add(UInt64(frameLength))
-            if frameLength > 0, let data = buffer.floatChannelData {
-                // `vDSP_measqv` returns the MEAN of squares, so `sqrt` of it IS
-                // the RMS — no divide-by-N is missing (see CLAUDE.md).
-                var meanSquare: Float = 0
-                vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(frameLength))
-                meter.store(meanSquare > 0 ? sqrt(meanSquare) : 0)
-            }
+        guard let writer = TapWriter(file: audioFile, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
+            Self.discard(url)
+            throw DictationCaptureError.writeFailed
         }
+        installTap(writer)
 
         do {
             engine.prepare()
@@ -212,11 +194,42 @@ public final class DictationCapture {
 
         file = audioFile
         currentURL = url
-        captureSampleRate = format.sampleRate
+        // Frames are counted at the FILE's rate (see `TapWriter.write`), so the
+        // duration stays right even if the device — and its rate — changes.
+        captureSampleRate = audioFile.processingFormat.sampleRate
         running = true
         engineQuiesced = false
         observeConfigurationChange()
         return url
+    }
+
+    private static let tapBufferSize: AVAudioFrameCount = 2048
+
+    /// Installs the render callback: one converted file write plus two
+    /// heap-word stores. No allocation, no locking, no await.
+    private func installTap(_ writer: TapWriter) {
+        tapFormat = writer.sourceFormat
+        let failed = writeFailed
+        let meter = level
+        let counter = frames
+        engine.inputNode.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: writer.sourceFormat) { @Sendable buffer, _ in
+            let written: AVAudioFrameCount
+            do {
+                written = try writer.write(buffer)
+            } catch {
+                failed.raise()
+                return
+            }
+            counter.add(UInt64(written))
+            let frameLength = buffer.frameLength
+            if frameLength > 0, let data = buffer.floatChannelData {
+                // `vDSP_measqv` returns the MEAN of squares, so `sqrt` of it IS
+                // the RMS — no divide-by-N is missing (see CLAUDE.md).
+                var meanSquare: Float = 0
+                vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(frameLength))
+                meter.store(meanSquare > 0 ? sqrt(meanSquare) : 0)
+            }
+        }
     }
 
     /// Stops the engine, finalizes the file, and describes the clip.
@@ -359,11 +372,9 @@ public final class DictationCapture {
         engine.stop()
     }
 
-    /// Watches for a mid-utterance device switch (AirPods connecting, dock
-    /// unplugged). The input node's format changes underneath the tap, which
-    /// the preopened AAC writer cannot accept, so the only safe response is to
-    /// quiesce immediately and keep whatever was captured — `stop()` still
-    /// returns it if it clears the minimum.
+    /// Watches for a device change under the live session — a Bluetooth
+    /// headset switching profiles ~0.1 s after its mic is opened (every cold
+    /// start on such a headset), AirPods connecting, a dock unplugged.
     private func observeConfigurationChange() {
         removeConfigurationObserver()
         let box = OwnerBox(self)
@@ -376,17 +387,48 @@ public final class DictationCapture {
         }
     }
 
-    /// The device changed under a live session: stop, zero the meter, and
-    /// remember it. Zeroing matters because the owner polls `currentLevel` at
-    /// 20 Hz — a frozen last-RMS reading keeps the pill looking like it is
-    /// still hearing the user. Restarting on the new device is deliberately
-    /// out of scope (design doc §7).
+    /// The device (or its format) changed under a live session: reinstall the
+    /// tap at the node's new format and restart the engine, converting into
+    /// the already-open file (`TapWriter`) so the clip continues seamlessly.
+    /// A change that left the engine running at the same format — the usual
+    /// Bluetooth profile settle — is a no-op. Only when the restart itself
+    /// fails (no input device left, converter unavailable) does the session
+    /// quiesce with `interrupted` set, keeping whatever was captured; the
+    /// meter is zeroed then because the owner polls `currentLevel` at 20 Hz
+    /// and a frozen last-RMS reading keeps the pill looking live.
     private func handleConfigurationChange() {
-        guard running, !engineQuiesced else { return }
+        guard running, !engineQuiesced, let file else { return }
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        if engine.isRunning, let current = tapFormat, TapWriter.matches(format, current) {
+            return
+        }
+        input.removeTap(onBus: 0)
+        engine.stop()
+        guard format.channelCount > 0, format.sampleRate > 0,
+              let writer = TapWriter(file: file, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
+            giveUpAfterConfigurationChange()
+            return
+        }
+        installTap(writer)
+        tapFormat = format
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            giveUpAfterConfigurationChange()
+        }
+    }
+
+    private func giveUpAfterConfigurationChange() {
+        engineQuiesced = true
         interrupted = true
-        quiesce()
         level.reset()
     }
+
+    /// The format the current tap was installed with.
+    private var tapFormat: AVAudioFormat?
 
     private func removeConfigurationObserver() {
         if let configurationObserver {
