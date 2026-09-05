@@ -533,6 +533,27 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   press → sliver out in ~0.12 s, bars bloom ~0.2 s after `minHold`, sink 0.32 s, hover peek 0.22 s.
   If it still feels slow the user's next candidate is dropping the double-tap (then `.armed` could go
   straight to `.listening` at key-down). ⚠️ Not felt by a human yet — verify in the real app.
+- **External-mic fix (2026-09-06; user: "it doesn't work with the external microphone" — Sony WH-1000XM5,
+  errors on both meeting record and dictation):** two root causes, both probed live with scratch Swift
+  tools. (1) **AAC bit-rate cap:** the headset mic is **16 kHz mono**, and the system AAC encoder accepts
+  at most 48 kbps there (measured: 8 kHz→24, 16→48, 24→64, 32→96, 48 mono→256, 48 stereo→320 kbps), so
+  `AVAudioFile(forWriting:)` with our 64 kbps (dictation) / 128 kbps (meeting) threw `'!dat'`
+  (560226676) → dictation `writeFailed`, recorder start error. `AudioFormat.aacSettings` now clamps to
+  `AudioFormat.maxAACBitRate(sampleRate:channels:)` (`kAudioConverterApplicableEncodeBitRates`) and
+  `openAACFile(at:…)` retries once with no bit-rate key — every writer (Recorder combine,
+  ChannelAudio.mixToMono, SystemAudioTap) goes through `aacSettings`, so all are covered. (2) **Bluetooth
+  profile switch:** ~0.1 s after the engine starts on a cold headset (A2DP→HFP) an
+  `AVAudioEngineConfigurationChange` fires; `DictationCapture` treated it as "device switched
+  mid-utterance" and quiesced → 0.1 s clip → discarded (silent "nothing heard"), and `MicCapture` had no
+  handler (in a probe without a run loop the engine stayed stopped: 0 frames). Now: new `TapWriter`
+  (AudioFormat.swift) writes each tap buffer through an `AVAudioConverter` into the already-open file
+  whenever the node's format differs from the file's; both captures handle the change by reinstalling
+  the tap at the node's new format and restarting (no-op if the engine is still running at the same
+  format), quiescing with `interrupted` only if that fails. Frames are counted at the FILE rate.
+  Verified: cold `dictate 4 --no-polish` on the headset → 4.22 s @ 16 kHz, peak 0.59, Scribe OK; earlier
+  the same run gave 0 frames. ⚠️ Meeting recording on the headset not runtime-verified (same code path).
+  Design doc §7 "restart out of scope" is superseded (§10.3 item 11). Gotcha for probes: a script that
+  blocks the main thread (`Thread.sleep`) never receives the configuration change → looks like a dead mic.
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

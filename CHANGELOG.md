@@ -31,6 +31,12 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Fixed
 
+- **External microphones.** Recording and dictation failed outright with a Bluetooth headset mic
+  (Sony WH-1000XM5 and the like): those run at 16 kHz mono, where the AAC encoder caps at 48 kbps and
+  rejected Kleoth's fixed 64/128 kbps request. The bit rate now follows the encoder's own limit for
+  the device's format. Both captures also survive the profile switch a Bluetooth headset performs
+  right after its mic is opened, and a device swap mid-session: the tap is reinstalled and the audio
+  is converted into the file already being written, instead of the capture ending at the switch.
 - **Dictation pill jumped sideways on a left/right edge.** After every transition the pill's
   window was being widened by SwiftUI to fit the capsule's un-rotated width, re-centering the
   capsule 23–31 pt toward the screen edge (and pushing the resting sliver fully off-screen). The
