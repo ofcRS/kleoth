@@ -115,6 +115,21 @@ import Testing
         #expect(ModelCatalog.curatedFallback.contains(DictationDefaults.polishModel))
     }
 
+    @Test func polishMigrationRetiresTheFormerPolishDefault() {
+        // The 2026-09-03 default was persisted into Keychains as `dictation_model`
+        // and kept a fifth of all polishes past the budget; it maps to the current
+        // default on load. Dead slugs chain through `ModelCatalog.migrating` first.
+        #expect(DictationDefaults.migratingPolishModel("z-ai/glm-5.3-flash") == DictationDefaults.polishModel)
+        #expect(DictationDefaults.migratingPolishModel("google/gemini-3-flash-preview") == DictationDefaults.polishModel)
+        #expect(DictationDefaults.migratingPolishModel(DictationDefaults.polishModel) == DictationDefaults.polishModel)
+        #expect(DictationDefaults.migratingPolishModel("google/gemini-3.8-flash") == "google/gemini-3.8-flash")
+        #expect(DictationDefaults.migratingPolishModel("") == "")
+        // The current default must never be mapped away, and the retired slug
+        // stays the automatic fallback model (it is retired as a *choice* only).
+        #expect(DictationDefaults.retiredPolishModels[DictationDefaults.polishModel] == nil)
+        #expect(DictationDefaults.retiredPolishModels.keys.contains(DictationDefaults.fallbackPolishModel ?? ""))
+    }
+
     @Test func geminiStaysSelectableButNotDefault() {
         #expect(ModelCatalog.curatedFallback.contains("google/gemini-3.8-flash"))
         #expect(ModelCatalog.curatedFallback.first != "google/gemini-3.8-flash")

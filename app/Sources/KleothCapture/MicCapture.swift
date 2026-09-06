@@ -46,8 +46,11 @@ public final class MicCapture {
         writeFailed.reset()
 
         let input = engine.inputNode
-        // Capture in the node's native output format; the AAC writer transcodes.
-        let format = input.outputFormat(forBus: 0)
+        // Capture at the HARDWARE format (`inputFormat`); the AAC writer
+        // transcodes. `outputFormat` keeps the previous run's format after the
+        // default input device changed while the engine was idle, and a tap at
+        // that stale format raises — see `DictationCapture.start()`.
+        let format = input.inputFormat(forBus: 0)
 
         // Open the destination file up front so the render thread never touches
         // the file-creation path.
@@ -59,8 +62,8 @@ public final class MicCapture {
         guard let writer = TapWriter(file: audioFile, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
             throw ChannelAudio.AudioError.formatUnavailable
         }
+        try installTap(writer)   // an AVFoundation refusal surfaces as a Swift error, nothing to roll back
         self.file = audioFile
-        installTap(writer)
 
         do {
             engine.prepare()
@@ -79,14 +82,20 @@ public final class MicCapture {
 
     /// @Sendable real-time callback: one (converted) file write, no
     /// allocation/await/locks.
-    private func installTap(_ writer: TapWriter) {
+    ///
+    /// - Throws: ``ObjCExceptionError`` when AVFoundation raises on a format
+    ///   that does not match the hardware (see `DictationCapture.installTap`).
+    private func installTap(_ writer: TapWriter) throws {
         tapFormat = writer.sourceFormat
         let failed = writeFailed
-        engine.inputNode.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: writer.sourceFormat) { @Sendable buffer, _ in
-            do {
-                _ = try writer.write(buffer)
-            } catch {
-                failed.raise()
+        let input = engine.inputNode
+        try catchingObjCExceptions {
+            input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: writer.sourceFormat) { @Sendable buffer, _ in
+                do {
+                    _ = try writer.write(buffer)
+                } catch {
+                    failed.raise()
+                }
             }
         }
     }
@@ -126,7 +135,7 @@ public final class MicCapture {
     private func handleConfigurationChange() {
         guard isRunning, let file else { return }
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = input.inputFormat(forBus: 0)   // the hardware format — see `start()`
         if engine.isRunning, let current = tapFormat, TapWriter.matches(format, current) {
             return
         }
@@ -136,7 +145,11 @@ public final class MicCapture {
               let writer = TapWriter(file: file, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
             return
         }
-        installTap(writer)
+        do {
+            try installTap(writer)
+        } catch {
+            return   // no input left worth reopening; the system channel keeps recording
+        }
         do {
             engine.prepare()
             try engine.start()

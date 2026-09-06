@@ -143,8 +143,15 @@ public final class DictationCapture {
         }
 
         // 2. A usable input format (no device selected ⇒ 0 channels / 0 Hz).
+        //    `inputFormat`, NOT `outputFormat`: the output bus keeps the
+        //    format of the last run, so after the default input device
+        //    changed while this engine was idle (a Bluetooth headset
+        //    connecting) it still said 48 kHz while the hardware was at
+        //    44.1 kHz, and `installTap` at that format raises an
+        //    NSException — the 2026-09-06 crashes. The input bus follows the
+        //    hardware (probed: stale 48 k output vs correct 44.1 k input).
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = input.inputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
             throw DictationCaptureError.noInputDevice
         }
@@ -180,7 +187,14 @@ public final class DictationCapture {
             Self.discard(url)
             throw DictationCaptureError.writeFailed
         }
-        installTap(writer)
+        do {
+            try installTap(writer)
+        } catch {
+            // AVFoundation refused the tap (format mismatch): a `.failed` pill,
+            // not a swallowed NSException that kills the app a moment later.
+            Self.discard(url)
+            throw DictationCaptureError.engineFailed(error)
+        }
 
         do {
             engine.prepare()
@@ -207,27 +221,35 @@ public final class DictationCapture {
 
     /// Installs the render callback: one converted file write plus two
     /// heap-word stores. No allocation, no locking, no await.
-    private func installTap(_ writer: TapWriter) {
+    ///
+    /// - Throws: ``ObjCExceptionError`` when AVFoundation raises (the format
+    ///   does not match the hardware). `installTap` is documented to raise;
+    ///   left uncaught, the exception is swallowed by AppKit and the process
+    ///   crashes on its next main-actor check.
+    private func installTap(_ writer: TapWriter) throws {
         tapFormat = writer.sourceFormat
         let failed = writeFailed
         let meter = level
         let counter = frames
-        engine.inputNode.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: writer.sourceFormat) { @Sendable buffer, _ in
-            let written: AVAudioFrameCount
-            do {
-                written = try writer.write(buffer)
-            } catch {
-                failed.raise()
-                return
-            }
-            counter.add(UInt64(written))
-            let frameLength = buffer.frameLength
-            if frameLength > 0, let data = buffer.floatChannelData {
-                // `vDSP_measqv` returns the MEAN of squares, so `sqrt` of it IS
-                // the RMS — no divide-by-N is missing (see CLAUDE.md).
-                var meanSquare: Float = 0
-                vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(frameLength))
-                meter.store(meanSquare > 0 ? sqrt(meanSquare) : 0)
+        let input = engine.inputNode
+        try catchingObjCExceptions {
+            input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: writer.sourceFormat) { @Sendable buffer, _ in
+                let written: AVAudioFrameCount
+                do {
+                    written = try writer.write(buffer)
+                } catch {
+                    failed.raise()
+                    return
+                }
+                counter.add(UInt64(written))
+                let frameLength = buffer.frameLength
+                if frameLength > 0, let data = buffer.floatChannelData {
+                    // `vDSP_measqv` returns the MEAN of squares, so `sqrt` of it IS
+                    // the RMS — no divide-by-N is missing (see CLAUDE.md).
+                    var meanSquare: Float = 0
+                    vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(frameLength))
+                    meter.store(meanSquare > 0 ? sqrt(meanSquare) : 0)
+                }
             }
         }
     }
@@ -399,7 +421,7 @@ public final class DictationCapture {
     private func handleConfigurationChange() {
         guard running, !engineQuiesced, let file else { return }
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = input.inputFormat(forBus: 0)   // the hardware format — see `start()`
         if engine.isRunning, let current = tapFormat, TapWriter.matches(format, current) {
             return
         }
@@ -410,7 +432,12 @@ public final class DictationCapture {
             giveUpAfterConfigurationChange()
             return
         }
-        installTap(writer)
+        do {
+            try installTap(writer)
+        } catch {
+            giveUpAfterConfigurationChange()
+            return
+        }
         tapFormat = format
         do {
             engine.prepare()

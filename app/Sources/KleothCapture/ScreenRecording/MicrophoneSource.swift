@@ -87,7 +87,10 @@ final class MicrophoneSource: @unchecked Sendable {
     func start() throws {
         guard !running else { return }
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        // The HARDWARE format (`inputFormat`) — `outputFormat` goes stale when
+        // the default input device changes under an idle engine, and a tap at
+        // the stale format raises (see `DictationCapture.start()`).
+        let format = input.inputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
             throw DictationCaptureError.noInputDevice
         }
@@ -98,7 +101,11 @@ final class MicrophoneSource: @unchecked Sendable {
         guard let converter = makeConverter(from: format) else {
             throw DictationCaptureError.noInputDevice
         }
-        install(converter, format: format)
+        do {
+            try install(converter, format: format)
+        } catch {
+            throw DictationCaptureError.engineFailed(error)
+        }
         tapFormat = format
 
         do {
@@ -168,14 +175,18 @@ final class MicrophoneSource: @unchecked Sendable {
         Converter(from: format, sampleRate: sampleRate, bufferSize: Self.tapBufferSize)
     }
 
-    private func install(_ converter: Converter, format: AVAudioFormat) {
+    /// - Throws: ``ObjCExceptionError`` when AVFoundation raises on a format
+    ///   that does not match the hardware (see `DictationCapture.installTap`).
+    private func install(_ converter: Converter, format: AVAudioFormat) throws {
         let rings = rings
         let clock = clock
         let sampleRate = sampleRate
         let audioQueue = audioQueue
         let offsetTicks = offsetTicks
+        let input = engine.inputNode
 
-        engine.inputNode.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: format) { buffer, when in
+        try catchingObjCExceptions {
+          input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: format) { buffer, when in
             // The tap buffer is only valid inside this callback, so the
             // converted block is copied into a small array that is handed to
             // the audio queue. One allocation per ~43 ms; the dictation path
@@ -210,6 +221,7 @@ final class MicrophoneSource: @unchecked Sendable {
                     rings.writeMic($0, channels: converter.channels, at: position)
                 }
             }
+          }
         }
     }
 
@@ -237,7 +249,7 @@ final class MicrophoneSource: @unchecked Sendable {
     private func handleConfigurationChange() {
         guard running else { return }
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = input.inputFormat(forBus: 0)   // the hardware format — see `start()`
         if engine.isRunning, let current = tapFormat, TapWriter.matches(format, current) {
             return   // the usual Bluetooth profile settle: nothing to do
         }
@@ -251,7 +263,12 @@ final class MicrophoneSource: @unchecked Sendable {
         // Bluetooth HFP headset can be over a hundred — so the timestamp shift
         // is recomputed rather than carried over from the old one.
         offsetTicks = clock.hostTicks(forSeconds: input.presentationLatency + ScreenRecordingDefaults.micOffsetCompensation)
-        install(converter, format: format)
+        do {
+            try install(converter, format: format)
+        } catch {
+            giveUp(error.localizedDescription)
+            return
+        }
         tapFormat = format
         do {
             engine.prepare()

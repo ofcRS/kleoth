@@ -41,6 +41,21 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Fixed
 
+- **Crash a few seconds after starting a dictation.** Five crash reports (2026-09-04…06) shared one
+  signature: an Objective-C exception from AVFoundation — "Failed to create tap due to format
+  mismatch" — raised when the hotkey opened the mic after the default input device had changed
+  while Kleoth was idle (a Bluetooth headset connecting or disconnecting). AppKit swallowed the
+  exception, which corrupted the Swift runtime's thread state, and the app then died on the next
+  hotkey press or timer tick. Both causes are fixed: every capture now installs its tap at the
+  hardware's current input format (the engine's cached output format goes stale across a device
+  switch and never recovers), and every AVFoundation call that can raise is bridged into a Swift
+  error, so a refused tap shows a red pill instead of taking the app down.
+- **Polish timing out on long dictations.** Installs that opened Settings on 2026-09-03 had the
+  slow former polish model persisted as their choice and kept using it — a fifth of all polishes
+  ran past the 8 s budget and pasted the raw transcript. That slug now migrates to the current
+  default (the same texts polish in 1–2 s), the ceiling is 30 s instead of 8 s, and pressing Esc
+  while the pill is polishing pastes the raw transcript immediately instead of cancelling the
+  dictation. The dictation log records how long each polish took (`polish_seconds`).
 - **External microphones.** Recording and dictation failed outright with a Bluetooth headset mic
   (Sony WH-1000XM5 and the like): those run at 16 kHz mono, where the AAC encoder caps at 48 kbps and
   rejected Kleoth's fixed 64/128 kbps request. The bit rate now follows the encoder's own limit for

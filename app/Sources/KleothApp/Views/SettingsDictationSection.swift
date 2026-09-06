@@ -231,8 +231,13 @@ struct SettingsDictationSection: View {
 
     /// The catalog, guaranteed to contain the current selection even if a
     /// refresh hasn't landed yet (an empty picker would silently reset it).
+    /// Former polish defaults (`DictationDefaults.retiredPolishModels`) are not
+    /// offered: `setDictationModel` would map the pick straight back.
     private var pickerModels: [String] {
-        availableModels.contains(dictationModel) ? availableModels : [dictationModel] + availableModels
+        let offered = availableModels.filter {
+            DictationDefaults.retiredPolishModels[$0] == nil || $0 == dictationModel
+        }
+        return offered.contains(dictationModel) ? offered : [dictationModel] + offered
     }
 
     private func modelLabel(_ slug: String) -> String {

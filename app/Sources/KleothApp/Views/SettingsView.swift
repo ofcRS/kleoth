@@ -602,8 +602,13 @@ struct SettingsView: View {
             selectedModel = ModelCatalog.defaultModel
             controller.updateDefaultModel(selectedModel)
         }
-        if Self.needsModelMigration(dictationModel) {
-            dictationModel = DictationDefaults.polishModel
+        // The polish slot also retires former polish defaults that are merely
+        // slow (`DictationDefaults.retiredPolishModels`), not just dead ones.
+        let migratedPolish = Self.isBlockedModel(dictationModel)
+            ? DictationDefaults.polishModel
+            : DictationDefaults.migratingPolishModel(dictationModel)
+        if migratedPolish != dictationModel {
+            dictationModel = migratedPolish
             dictation.setDictationModel(dictationModel)
         }
 

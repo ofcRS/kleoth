@@ -38,6 +38,9 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
     public var insertMethod: DictationInsertMethod
     public var transcriptionCost: Double?
     public var polishCost: Double?
+    /// Wall-clock seconds the polish call took (nil when no model was called).
+    /// Diagnostic: a run of slow rows points at the model, not the text.
+    public var polishSeconds: Double?
 
     public init(
         id: String = UUID().uuidString,
@@ -54,7 +57,8 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         durationSeconds: Double? = nil,
         insertMethod: DictationInsertMethod = .paste,
         transcriptionCost: Double? = nil,
-        polishCost: Double? = nil
+        polishCost: Double? = nil,
+        polishSeconds: Double? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -71,6 +75,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         self.insertMethod = insertMethod
         self.transcriptionCost = transcriptionCost
         self.polishCost = polishCost
+        self.polishSeconds = polishSeconds
     }
 
     // MARK: - Coding
@@ -81,7 +86,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         case id, timestamp, appBundleId, appName, language
         case rawText, polishedText, usedRawFallback, fallbackReason
         case transcriptionModel, polishModel, durationSeconds
-        case insertMethod, transcriptionCost, polishCost
+        case insertMethod, transcriptionCost, polishCost, polishSeconds
     }
 
     /// Lenient decode: only `id` / `timestamp` / `raw_text` / `polished_text`
@@ -110,6 +115,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         insertMethod = method.flatMap(DictationInsertMethod.init(rawValue:)) ?? .paste
         transcriptionCost = try container.decodeIfPresent(Double.self, forKey: .transcriptionCost)
         polishCost = try container.decodeIfPresent(Double.self, forKey: .polishCost)
+        polishSeconds = try container.decodeIfPresent(Double.self, forKey: .polishSeconds)
     }
 
     /// Explicit (rather than synthesized) so every key is always present —
@@ -133,6 +139,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         try container.encode(insertMethod, forKey: .insertMethod)
         try container.encode(transcriptionCost, forKey: .transcriptionCost)
         try container.encode(polishCost, forKey: .polishCost)
+        try container.encode(polishSeconds, forKey: .polishSeconds)
     }
 
     // MARK: - Time

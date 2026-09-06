@@ -35,7 +35,8 @@ import Foundation
             durationSeconds: 8.4,
             insertMethod: .paste,
             transcriptionCost: 0.000616,
-            polishCost: 0.00011
+            polishCost: 0.00011,
+            polishSeconds: 1.2
         )
     }
 
@@ -60,7 +61,7 @@ import Foundation
             "id", "timestamp", "app_bundle_id", "app_name", "language",
             "raw_text", "polished_text", "used_raw_fallback", "fallback_reason",
             "transcription_model", "polish_model", "duration_seconds",
-            "insert_method", "transcription_cost", "polish_cost",
+            "insert_method", "transcription_cost", "polish_cost", "polish_seconds",
         ])
     }
 
@@ -77,6 +78,7 @@ import Foundation
         #expect(loaded.appBundleId == "com.tinyspeck.slackmacgap")
         #expect(loaded.transcriptionCost == 0.000616)
         #expect(loaded.polishCost == 0.00011)
+        #expect(loaded.polishSeconds == 1.2)
         #expect(loaded.durationSeconds == 8.4)
         #expect(loaded.insertMethod == .paste)
     }

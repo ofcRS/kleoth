@@ -113,7 +113,7 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
   `prepareForUpload` (`ChannelAudio.mixToMono` with a nonexistent 2nd channel = mono + loudness
   + peak normalize, 64 kbps) → **`any Transcriber`** (`ScribeClient`, `ScribeOptions.dictation`:
   `scribe_v2`, `no_verbatim`, diarize/audio-events off, ≤100 sanitized `keyterms`, 25 s
-  `withTimeout`) → `DictationPolisher` (ONE OpenRouter call, json_schema, temp 0.2, 8 s budget,
+  `withTimeout`) → `DictationPolisher` (ONE OpenRouter call, json_schema, temp 0.2, 30 s ceiling (was 8 s), Esc while polishing = paste raw now,
   **non-throwing** → `.polished` or `.raw(reason)`; translation guard: model language ≠ Scribe's
   → raw) → `TextInserter` (full pasteboard snapshot → marked write → synthetic ⌘V via
   `CGEvent.post(.cgSessionEventTap)` → restore after 0.5 s iff `changeCount` still ours) →
@@ -770,6 +770,42 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   the same run gave 0 frames. ⚠️ Meeting recording on the headset not runtime-verified (same code path).
   Design doc §7 "restart out of scope" is superseded (§10.3 item 11). Gotcha for probes: a script that
   blocks the main thread (`Thread.sleep`) never receives the configuration change → looks like a dead mic.
+- **Crash after starting a dictation — root-caused + fixed (2026-09-06, user: "Kleoth has been crashing
+  the last couple of times I started dictation… no errors").** Crash reports live in
+  `~/Library/Logs/DiagnosticReports/Kleoth-*.ips` (+ `Retired/`); parse with a small python script
+  (`faultingThread` frames via `usedImages`). All five since 09-04 died in `swift_task_isCurrentExecutor`
+  → `swift_getObjectType` on garbage (main thread; twice in `DictationHotkeyMonitor.start()`'s closure,
+  once in `MeetingAudioPlayer`'s timer). `/usr/bin/log show` 5 s before each: AVFoundation raised
+  `Failed to create tap due to format mismatch <1 ch, 48000 Hz>` ("input hw 44100") from
+  `DictationCapture.installTap` ← `start()` ← `handleArmed()`; AppKit swallowed it (`HIExceptions FAULT`),
+  the unwind skipped the Swift runtime's C++ destructors, and the stale thread-local executor tracking
+  killed the process on the next main-actor check. **Root cause:** after the default input device changes
+  while an `AVAudioEngine` is idle (the headset connecting), `inputNode.outputFormat(forBus:)` keeps the
+  previous run's rate forever (`prepare()`/`reset()` don't refresh it) while `inputFormat(forBus:)` follows
+  the hardware — probed with an aggregate device at 44.1 kHz, then with the real WH-1000XM5. **Fixes:**
+  (a) `DictationCapture`/`MicCapture`/`MicrophoneSource` read **`inputFormat(forBus: 0)`** in `start()` and
+  the configuration-change handlers; (b) new **`KleothObjC`** target (`KLCatchObjCException`) +
+  `catchingObjCExceptions(_:)` (KleothCapture/ObjCExceptions.swift) wrap every `installTap` → thrown
+  `ObjCExceptionError` → `.engineFailed` → red pill + `log.error`, never a swallowed NSException. Verified
+  with a throwaway probe target driving the real `DictationCapture` through idle switches built-in 48 kHz
+  ↔ headset 16 kHz (starts land at 44.1/48/16 kHz, no exception). ⚠️ Rule: any AVFoundation call that
+  can raise (`installTap`, `connect`) goes through `catchingObjCExceptions` — an NSException reaching
+  AppKit is a delayed crash, not a logged error. Leftover: a mid-session default-input switch didn't
+  always post `AVAudioEngineConfigurationChange` in the probe (engine "running", no frames,
+  `interrupted` false) → the clip ends silently at the switch. Design doc §10.3 item 12.
+- **Polish timeouts root-caused (same day; user: "8 s may be not enough for long prompts… don't just
+  throw it on the timeout, allow cancelling manually").** Day files: 16/85 polishes "timed out" at 47–178
+  words, but `dictate --text` polishes the same texts in 1.0–2.2 s on the shipped default. Cause: every
+  polished row had `polish_model: z-ai/glm-5.3-flash` — the few-hours default of 09-03, persisted into the
+  Keychain by Settings and never migrated (3.6–4.1 s median, tail > 8 s). Shipped:
+  `DictationDefaults.retiredPolishModels` (glm → `polishModel`) + `migratingPolishModel(_:)` (chains
+  `ModelCatalog.migrating`; used by `AppConfig`, `setDictationModel`, `SettingsView.loadFromController`
+  persists it; the picker hides retired polish slugs — glm stays the automatic fallback);
+  `polishTimeout` 8 → **30 s** (a ceiling, not the expected wait); **Esc while `.polishing` cancels only
+  `polishTask`** (unstructured child of the run; `cancelPipeline()` cancels both) and pastes raw at once,
+  logged as `.skipped("Cancelled with Esc — pasted as heard.")`, pill `.help` says so; new log key
+  **`polish_seconds`** (nil when skipped). 339 core tests. Design doc §10.3 item 13. ⚠️ The Esc path and
+  the migration on this install are not runtime-verified (open Settings once to persist the new slug).
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

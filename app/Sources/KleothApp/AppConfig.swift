@@ -61,7 +61,9 @@ enum AppConfig {
             merged.dictationPolishAlways = (always == "true")
         }
         merged.defaultModel = ModelCatalog.migrating(merged.defaultModel)
-        merged.dictationModel = ModelCatalog.migrating(merged.dictationModel)
+        // Chains `ModelCatalog.migrating` and the retired polish defaults
+        // (`DictationDefaults.retiredPolishModels`).
+        merged.dictationModel = DictationDefaults.migratingPolishModel(merged.dictationModel)
         return merged
     }
 }
