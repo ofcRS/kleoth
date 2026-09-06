@@ -420,6 +420,9 @@ build with zero warnings; `screenrec 10` → 10.05 s file, 296 frames / 0 droppe
      grant → the sticky "quit and reopen Kleoth" pill → relaunch → "Record screen…" → Return → 5 s →
      stop → the file plays. **If the relaunched app still gets `-3801` / no frames, STOP and report
      "Developer ID required"** (Cap reports Sequoia silently rejecting ad-hoc SCK).
+     **✅ PASSED 2026-09-06 (user, release app on macOS 26.5, "Kleoth Self-Signed", no Team ID):** the
+     prompt appeared, the grant took, and a recording from the popover produced a playable file — the
+     self-signed identity is NOT blocked by SCK on this Mac. The feature is unblocked; items 1–8 still open.
   1. Quit via the popover mid-recording → dialog → Quit Anyway → the app exits within 5 s and the
      file plays; ⌘Q from the History window → same. Quit while the REGION PICKER is up → prompt exit,
      no file, no `-recovered.mp4`.
