@@ -20,6 +20,19 @@ import KleothCore
 /// - `.warning` / `.failed` — the only phases with text: the user needs to
 ///   know *why* something degraded or failed, and `.failed` carries an action.
 ///
+/// Since the screen-recording pass the pill is also the recorder's control
+/// surface (screen-recording design §6):
+/// - `.recording(since:)` — the BACKDROP while a screen recording runs: a
+///   breathing red dot plus a monospaced `mm:ss` that ticks off the session's
+///   own `since`. Hovering swaps the dot for `stop.fill`; clicking anywhere on
+///   the capsule stops the recording.
+/// - `.saving` — the same capsule with a travelling wave while the movie is
+///   finalized.
+/// - `.saved("2:14 · 48 MB")` — a green check and the text for 4 s; a click
+///   reveals the file in Finder.
+/// A peeked `.idle` pill grows a red record glyph next to the mic: that (or a
+/// tap on the capsule) is where a recording starts.
+///
 /// Every phase still exposes its sentence through `.help` (hover) and VoiceOver.
 ///
 /// Motion: this view animates NOTHING on its own. The controller changes
@@ -74,8 +87,22 @@ struct DictationPillView: View {
             .fixedSize()
             .contentShape(Capsule(style: .continuous))
             .gesture(dragGesture)
+            // Click routing (screen-recording design §6.4). The capsule IS the
+            // control in the recording phases, so a tap on it is the action —
+            // never a dismissal.
             .onTapGesture {
-                if model.phase.isSticky { controller.dismissFromUser() }
+                switch model.phase {
+                case .failed:
+                    controller.dismissFromUser()
+                case .idle where model.peeking:
+                    controller.perform(.startScreenRecording)
+                case .recording:
+                    controller.perform(.stopScreenRecording)
+                case .saved:
+                    controller.perform(.revealLastRecording)
+                default:
+                    break
+                }
             }
             .help(model.phase.pillText)
             // A pill on a side edge stands up in every phase. Applied AFTER
@@ -214,13 +241,33 @@ struct DictationPillView: View {
             ZStack {
                 Color.clear
                     .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
-                if model.peeking || model.phase == .armed {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(PillStyle.ink)
-                        .rotationEffect(-edgeRotation)
+                HStack(spacing: PillStyle.spacingS) {
+                    if model.peeking || model.phase == .armed {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(PillStyle.ink)
+                            .rotationEffect(-edgeRotation)
+                            .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                            .accessibilityHidden(true)
+                    }
+                    // The screen-recording start control (§2.1 step 2). Only on
+                    // the peeked resting pill: `.armed` is a dictation about to
+                    // begin, and a record button there would be a mis-click
+                    // waiting to happen. A tap anywhere on the peeked capsule
+                    // starts a recording too (§6.4) — this glyph is what says so.
+                    if model.peeking, model.phase == .idle {
+                        Button {
+                            controller.perform(.startScreenRecording)
+                        } label: {
+                            Image(systemName: "record.circle.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(PillStyle.recordTint)
+                                .rotationEffect(-edgeRotation)
+                        }
+                        .buttonStyle(.borderless)
                         .transition(.opacity.combined(with: .scale(scale: 0.6)))
-                        .accessibilityHidden(true)
+                        .accessibilityLabel("Record the screen")
+                    }
                 }
             }
             .transition(.opacity)
@@ -275,11 +322,42 @@ struct DictationPillView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Dismiss")
-        // T0 placeholder — T2 draws the recording dot + elapsed digits, the
-        // travelling save wave, and the green saved confirmation.
-        case .recording, .saving, .saved:
-            EmptyView()
+        case .recording(let since):
+            RecordingDot(stop: model.hovered, reduceMotion: reduceMotion)
+                .rotationEffect(-edgeRotation)
+                .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                .accessibilityHidden(true)
+            elapsed(since: since)
+        case .saving:
+            // Same capsule as `.recording` (the controller keeps the size), the
+            // dot and digits replaced by the travelling wave: "still working".
+            Waveform(mode: .wave(tint: PillStyle.ink, speed: 1.0), reduceMotion: reduceMotion)
+                .transition(.opacity)
+        case .saved(let text):
+            Image(systemName: "checkmark")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(PillStyle.successTint)
+                .transition(.scale(scale: 0.4).combined(with: .opacity))
+                .accessibilityHidden(true)
+            label(text)
         }
+    }
+
+    /// The elapsed readout. `TimelineView(.periodic(from: since, by: 1))` ticks
+    /// on the session's own second boundary, so the digits change exactly when
+    /// the recording's seconds do; the fixed 56 pt box (wide enough for
+    /// `1:02:34` in caption monospaced) is what keeps the capsule from
+    /// re-measuring when the readout grows an hour field.
+    private func elapsed(since: Date) -> some View {
+        TimelineView(.periodic(from: since, by: 1)) { context in
+            Text(ElapsedFormatter.string(seconds: Int(context.date.timeIntervalSince(since))))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(PillStyle.ink)
+                .lineLimit(1)
+        }
+        .frame(width: 56)
+        .rotationEffect(-edgeRotation)
     }
 
     /// No `.fixedSize()`: the panel width is capped to the screen
@@ -301,9 +379,12 @@ struct DictationPillView: View {
     /// toward another one); the controller reads `NSEvent.mouseLocation`
     /// itself — `value.translation` is measured against a coordinate space
     /// that moves with the window, so it double-counts and the pill runs away
-    /// from the cursor. `minimumDistance: 3` leaves the buttons clickable.
+    /// from the cursor. `minimumDistance: 6` leaves the buttons clickable and
+    /// is forgiving of a jittery click: raised from 3 once the capsule became a
+    /// start/stop CONTROL (§6.4) — a hand that drifts two points while pressing
+    /// "stop" must stop the recording, not re-dock the pill.
     private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 3)
+        DragGesture(minimumDistance: 6)
             .onChanged { _ in
                 if !dragging {
                     dragging = true
@@ -317,6 +398,45 @@ struct DictationPillView: View {
                 dragging = false
                 controller.commitDraggedPlacement()
             }
+    }
+}
+
+// MARK: - Recording dot
+
+/// The red "we are rolling" dot: an 8 pt circle that breathes once a second, in
+/// the universal record colour. Under the pointer it becomes a `stop.fill`
+/// square, because a click anywhere on this capsule stops the recording (§6.4)
+/// and the pill has to say so without words. A `TimelineView` is mounted only
+/// while this view is — the pill costs nothing when it is not recording.
+private struct RecordingDot: View {
+    /// The pointer is over the pill: show what a click will do.
+    let stop: Bool
+    let reduceMotion: Bool
+
+    private static let size: CGFloat = 8
+
+    var body: some View {
+        if stop {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(PillStyle.ink)
+                .frame(width: Self.size, height: Self.size)
+        } else if reduceMotion {
+            dot(scale: 1)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                // One slow breath a second: 1.0 → 0.78 → 1.0.
+                let t = context.date.timeIntervalSinceReferenceDate
+                dot(scale: 0.89 + 0.11 * cos(t * 2 * .pi))
+            }
+        }
+    }
+
+    private func dot(scale: CGFloat) -> some View {
+        Circle()
+            .fill(PillStyle.recordTint)
+            .frame(width: Self.size, height: Self.size)
+            .scaleEffect(scale)
     }
 }
 
@@ -397,6 +517,10 @@ enum PillStyle {
     static let pendingTint: Color = .orange
     static let successTint: Color = .green
     static let failureTint: Color = .red
+    /// The recording dot and the peek's record glyph. Deliberately a fixed red
+    /// rather than the accent colour: "we are rolling" is a convention the user
+    /// should not have to learn, and it must read the same on every theme.
+    static let recordTint = Color(red: 1.0, green: 0.27, blue: 0.23)
 
     // Waveform geometry — `DictationPillController.contentWidth` mirrors these.
     static let barCount = 14
