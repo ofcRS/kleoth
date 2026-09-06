@@ -57,6 +57,12 @@ struct Arguments {
     }
 }
 
+/// One date per process so every `.recording` re-show compares equal — the
+/// same rule the real session follows (§6.1).
+enum SandboxClock {
+    static let filmStart = Date()
+}
+
 func pillState(named name: String) -> DictationPillState? {
     switch name.lowercased() {
     case "idle": return .idle
@@ -69,6 +75,9 @@ func pillState(named name: String) -> DictationPillState? {
     case "warning": return .warning("Pasted the raw transcript — the clean-up model timed out.")
     case "failed": return .failed(.missingElevenLabsKey)
     case "hidden": return .hidden
+    case "recording": return .recording(since: SandboxClock.filmStart)
+    case "saving": return .saving
+    case "saved": return .saved("2:14 · 48 MB")
     default: return nil
     }
 }
@@ -84,6 +93,9 @@ func phaseName(_ state: DictationPillState) -> String {
     case .done: return "done"
     case .warning: return "warning"
     case .failed: return "failed"
+    case .recording: return "recording"
+    case .saving: return "saving"
+    case .saved: return "saved"
     }
 }
 

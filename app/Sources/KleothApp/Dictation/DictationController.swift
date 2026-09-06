@@ -822,6 +822,12 @@ final class DictationController: ObservableObject {
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         case .openAccessibilitySettings:
             AccessibilityPermission.openSystemSettings()
+        case .startScreenRecording, .stopScreenRecording, .revealLastRecording,
+             .openScreenRecordingSettings:
+            // Never reaches here: `PillCoordinator` routes the recording
+            // actions to `ScreenRecordingController` instead of the dictation
+            // face (§3.4). Listed so the switch stays exhaustive.
+            break
         }
         pill.dismiss()
     }

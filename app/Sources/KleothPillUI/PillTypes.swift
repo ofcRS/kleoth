@@ -1,10 +1,16 @@
 import Foundation
 import KleothCore
 
-// The pill half of the dictation contract (design doc §3.14), moved out of
+// The pill half of the contract, moved out of
 // `KleothApp/Dictation/DictationTypes.swift` into this library so that the
 // `pillsandbox` tool can drive the real pill without the rest of the app.
 // Change a signature here and you change every lane — don't.
+//
+// It started as the dictation contract (dictation design doc §3.14); since the
+// screen-recording pass it also carries the recording phases and the BACKDROP
+// (screen-recording design §3.3, §6.1). The `DictationPillPresenting` protocol
+// is deliberately UNCHANGED by that pass — `setResting(_:)` stays, and the
+// backdrop generalization is an addition on the concrete controller only.
 
 /// What the floating pill shows. The controller owns transitions; the pill
 /// only renders.
@@ -27,21 +33,59 @@ public enum DictationPillState: Equatable, Sendable {
     case warning(String)
     /// Nothing was pasted; sticky until dismissed/replaced.
     case failed(DictationPillFault)
+    /// A screen recording is in flight — this is the pill's BACKDROP while it
+    /// runs (never tucked). `since` is FIXED for the session so that every
+    /// re-show (after each dictation `dismiss()`) compares equal and fires no
+    /// spring, `MotionBeat`, re-layout or announcement. The digits come from a
+    /// `TimelineView(.periodic(from: since, by: 1))` in the view, not from a
+    /// per-second `show()`.
+    case recording(since: Date)
+    /// Finalizing the movie file (≤ 5 s): the `.recording` capsule with a
+    /// travelling wave instead of the dot.
+    case saving
+    /// "2:14 · 48 MB" — a green check plus the text, auto-hiding after 4 s;
+    /// a click reveals the file in Finder.
+    case saved(String)
 
-    /// `.done` → 1.0 s, `.warning` → 3.0 s, everything else nil (persists).
+    /// `.done` → 1.0 s, `.warning` → 3.0 s, `.saved` → 4.0 s, everything else
+    /// nil (persists). `.recording` and `.saving` last as long as the session.
     public var autoHideAfter: Duration? {
         switch self {
         case .done: return .seconds(1)
         case .warning: return .seconds(3)
-        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .failed: return nil
+        case .saved: return .seconds(4)
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .failed,
+             .recording, .saving:
+            return nil
         }
     }
 
-    /// Only warnings and failures carry words; every other phase is motion.
+    /// Only warnings, failures and the saved confirmation carry words; every
+    /// other phase is motion.
     public var showsText: Bool {
         switch self {
-        case .warning, .failed: return true
-        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done: return false
+        case .warning, .failed, .saved: return true
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done,
+             .recording, .saving:
+            return false
+        }
+    }
+}
+
+/// What the pill collapses to when no phase is live — the generalization of
+/// the old `restingVisible: Bool`. A running screen recording outranks the
+/// dictation resting capsule (`PillCoordinator.recompute()`).
+public enum DictationPillBackdrop: Equatable, Sendable {
+    case hidden
+    case idle
+    case recording(since: Date)
+
+    /// The phase this backdrop shows as, or nil when the pill should be gone.
+    public var state: DictationPillState? {
+        switch self {
+        case .hidden: return nil
+        case .idle: return .idle
+        case .recording(let since): return .recording(since: since)
         }
     }
 }
@@ -53,6 +97,11 @@ public enum DictationPillFault: Equatable, Sendable {
     case needsAccessibility
     case secureInput
     case message(String)
+    /// Screen Recording was never granted (or was declined).
+    case screenRecordingNeeded
+    /// Granted, but this process was launched before the grant — TCC only
+    /// answers for the process as it started, so a relaunch is the fix.
+    case screenRecordingStale
 
     /// Belt and braces for `.message`: no state may carry an unbounded line
     /// into the pill (the panel width follows this text). The controller
@@ -64,6 +113,8 @@ public enum DictationPillFault: Equatable, Sendable {
         case .missingElevenLabsKey: return "Add an ElevenLabs key to dictate"
         case .needsAccessibility: return "Kleoth needs Accessibility access"
         case .secureInput: return "The focused field blocks dictation"
+        case .screenRecordingNeeded: return "Allow Screen Recording, then quit and reopen Kleoth"
+        case .screenRecordingStale: return "Quit and reopen Kleoth to finish enabling Screen Recording"
         case .message(let message):
             let single = message.replacingOccurrences(of: "\n", with: " ")
             guard single.count > Self.maxMessageLength else { return single }
@@ -75,6 +126,7 @@ public enum DictationPillFault: Equatable, Sendable {
         switch self {
         case .missingElevenLabsKey: return .openSettings
         case .needsAccessibility: return .openAccessibilitySettings
+        case .screenRecordingNeeded, .screenRecordingStale: return .openScreenRecordingSettings
         case .secureInput, .message: return nil
         }
     }
@@ -83,11 +135,22 @@ public enum DictationPillFault: Equatable, Sendable {
 public enum DictationPillAction: Equatable, Sendable {
     case openSettings
     case openAccessibilitySettings
+    /// Tap on the peeking resting pill / its record glyph.
+    case startScreenRecording
+    /// Tap on the `.recording` capsule.
+    case stopScreenRecording
+    /// Tap on the `.saved` confirmation.
+    case revealLastRecording
+    case openScreenRecordingSettings
 
+    /// The label of the pill's action BUTTON. Empty for the tap-only actions:
+    /// they are the capsule itself, not a button with words.
     public var title: String {
         switch self {
         case .openSettings: return "Open Settings"
         case .openAccessibilitySettings: return "Open Accessibility"
+        case .startScreenRecording, .stopScreenRecording, .revealLastRecording: return ""
+        case .openScreenRecordingSettings: return "Open Screen Recording"
         }
     }
 }

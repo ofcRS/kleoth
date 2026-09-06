@@ -275,6 +275,10 @@ struct DictationPillView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Dismiss")
+        // T0 placeholder — T2 draws the recording dot + elapsed digits, the
+        // travelling save wave, and the green saved confirmation.
+        case .recording, .saving, .saved:
+            EmptyView()
         }
     }
 

@@ -173,6 +173,18 @@ public final class DictationPillController: DictationPillPresenting {
         hideCompletely()
     }
 
+    /// The backdrop the pill collapses to when no phase is live (§3.3). T0
+    /// forwards to `setResting` so behavior is bit-identical to today; T2
+    /// replaces the stored `restingVisible` with the backdrop itself and
+    /// teaches `dismiss()` to land on `.recording`.
+    public func setBackdrop(_ backdrop: DictationPillBackdrop) {
+        setResting(backdrop != .hidden)
+    }
+
+    /// What the pill is showing right now — the coordinator's "is a dictation
+    /// phase live?" input.
+    public var currentState: DictationPillState { model.phase }
+
     public func setResting(_ visible: Bool) {
         guard restingVisible != visible else { return }
         restingVisible = visible
@@ -787,6 +799,11 @@ public final class DictationPillController: DictationPillPresenting {
         case .idle, .armed: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
         case .warning, .failed: return 38
+        // Between resting (22) and a motion phase (32): the recording backdrop
+        // is "resting family, but alive". T0 placeholder — T2 films it.
+        case .recording, .saving: return 28
+        // The motion thickness, so the text confirmation is ONE morph.
+        case .saved: return 32
         }
     }
     /// Slack so a font or locale wider than measured never clips: the capsule
@@ -832,7 +849,12 @@ public final class DictationPillController: DictationPillPresenting {
         case .transcribing, .polishing, .done:
             // `.done` keeps the bar's width so the check appears in place of the wave.
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
-        case .warning, .failed:
+        case .recording, .saving:
+            // Dot 8 + spacingS + the fixed 56 pt digit box + the compact
+            // paddings = 100 pt, under the hands-free listening capsule, so the
+            // single anchor's `referenceSize` still covers it (§6.1 graft 7).
+            length = 8 + PillStyle.spacingS + 56 + 2 * PillStyle.compactPadding
+        case .warning, .failed, .saved:
             // +1: SwiftUI's ideal text width can round up a hair past AppKit's
             // measurement; a frame narrower than the ideal would truncate.
             let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
@@ -901,6 +923,9 @@ extension DictationPillState {
         case .done: return "Pasted"
         case .warning(let message): return message
         case .failed(let fault): return fault.text
+        case .recording: return "Recording the screen — click to stop"
+        case .saving: return "Saving the recording…"
+        case .saved(let text): return text
         }
     }
 
@@ -913,6 +938,9 @@ extension DictationPillState {
         case .done: return "checkmark.circle.fill"
         case .warning: return "exclamationmark.triangle.fill"
         case .failed: return "xmark.octagon.fill"
+        case .recording: return "record.circle.fill"
+        case .saving: return "waveform"
+        case .saved: return "checkmark.circle.fill"
         }
     }
 
