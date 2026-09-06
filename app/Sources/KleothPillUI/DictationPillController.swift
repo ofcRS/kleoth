@@ -897,7 +897,7 @@ extension DictationPillState {
         case .listening(let handsFree):
             return handsFree ? "Listening — tap \(DictationDefaults.hotkeyDescription) to stop" : "Listening…"
         case .transcribing: return "Transcribing…"
-        case .polishing: return "Polishing…"
+        case .polishing: return "Polishing… (Esc pastes it as heard)"
         case .done: return "Pasted"
         case .warning(let message): return message
         case .failed(let fault): return fault.text

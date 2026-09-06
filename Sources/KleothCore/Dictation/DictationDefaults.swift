@@ -20,6 +20,23 @@ public enum DictationDefaults {
     public static let fallbackPolishModel: String? = "z-ai/glm-5.3-flash"
     /// Minimum remaining budget worth spending on the fallback attempt.
     public static let minimumFallbackBudget: TimeInterval = 2
+    /// Former polish defaults that a stored `dictation_model` may still name, mapped to the
+    /// current one. `z-ai/glm-5.3-flash` was the default for a few hours on 2026-09-03 and got
+    /// PERSISTED into the Keychain of every install whose Settings opened that day; the app then
+    /// kept polishing on it — median 3.6–4.1 s with a tail past the (then 8 s) budget, 16 of 85
+    /// polishes timing out on this Mac — while the shipped default did the same texts in 1–2 s.
+    /// Applied by ``migratingPolishModel(_:)`` on every load and persisted the first time Settings
+    /// opens (the `ModelCatalog.retiredModels` idiom). The slug stays the automatic
+    /// `fallbackPolishModel`; it is only no longer offered as the *primary*.
+    public static let retiredPolishModels: [String: String] = [
+        "z-ai/glm-5.3-flash": polishModel,
+    ]
+    /// The replacement for a stored polish slug: `ModelCatalog.migrating` first (dead slugs), then
+    /// ``retiredPolishModels`` (slow former polish defaults); otherwise the slug unchanged.
+    public static func migratingPolishModel(_ slug: String) -> String {
+        let base = ModelCatalog.migrating(slug)
+        return retiredPolishModels[base] ?? base
+    }
     /// Per-model `reasoning` caps sent with the polish request. Model-specific, NOT a general
     /// speed-up — measured live 2026-09-03 under `require_parameters: true`: on
     /// `z-ai/glm-5.3-flash` `low` drops ~100–360 reasoning tokens to 0 (mean 8.4 s → 3.4 s,
@@ -55,7 +72,12 @@ public enum DictationDefaults {
     /// Clips shorter than this never reach Scribe (no spend, no log row).
     public static let minimumUtterance: TimeInterval = 0.5
     public static let scribeTimeout: TimeInterval = 25
-    public static let polishTimeout: TimeInterval = 8
+    /// Ceiling on the polish call — a safety net for a hung connection, NOT the expected wait.
+    /// Was 8 s; that cut off a fifth of all polishes on an install stuck on the former default
+    /// (see `retiredPolishModels`), and the user asked that a long dictation never lose its
+    /// polish to a timer. Esc during `.polishing` pastes the raw transcript immediately, so the
+    /// user, not this constant, decides how long is too long.
+    public static let polishTimeout: TimeInterval = 30
     public static let pasteboardRestoreDelay: TimeInterval = 0.5
     /// Stored dictionary cap (API max). Only `Keyterms.maxTerms` (100) are SENT.
     public static let maxStoredDictionaryTerms = 1000

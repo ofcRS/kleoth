@@ -19,9 +19,18 @@ let package = Package(
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "0.9.0"),
     ],
     targets: [
+        // One Objective-C function: `KLCatchObjCException`. AVFoundation raises
+        // `NSException`s (a tap installed at a stale input format, an invalid
+        // connection); Swift cannot catch them, AppKit swallows them, and the
+        // Swift concurrency runtime then crashes on its next main-actor check.
+        .target(
+            name: "KleothObjC",
+            path: "Sources/KleothObjC"
+        ),
         .target(
             name: "KleothCapture",
             dependencies: [
+                "KleothObjC",
                 .product(name: "KleothCore", package: "kleoth-app"),
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
             ],

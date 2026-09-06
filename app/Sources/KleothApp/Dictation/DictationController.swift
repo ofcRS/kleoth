@@ -89,6 +89,15 @@ final class DictationController: ObservableObject {
     /// (across Settings off→on cycles); only `shutdown()` cancels it.
     private var eventTask: Task<Void, Never>?
     private var pipelineTask: Task<Void, Never>?
+    /// The polish call in flight (a child of `pipelineTask`'s run), so Esc
+    /// during `.polishing` can cancel JUST the model call and paste the raw
+    /// transcript at once, instead of throwing the whole dictation away.
+    /// Every path that cancels `pipelineTask` cancels this too
+    /// (`cancelPipeline()`): an unstructured task does not inherit the cancel.
+    private var polishTask: Task<DictationPolishResult, Never>?
+    /// Set by `handleEscape()` when it cut a polish short — the result is then
+    /// logged as skipped (no warning, no `polish_model`), not as a fallback.
+    private var polishCancelledByUser = false
     /// 20 Hz `capture.currentLevel` → `PillGeometry` → `pill.setLevel`.
     private var levelTask: Task<Void, Never>?
     /// Restores the pill's pipeline phase after the 1 s "Finishing the previous
@@ -234,10 +243,16 @@ final class DictationController: ObservableObject {
             endSession()
             monitor.abort()
         case .transcribing, .polishing, .inserting:
-            pipelineTask?.cancel()
+            cancelPipeline()
             pill.dismiss()
             monitor.abort()
         }
+    }
+
+    /// Cancels the run in flight AND its polish child (see `polishTask`).
+    private func cancelPipeline() {
+        polishTask?.cancel()
+        pipelineTask?.cancel()
     }
 
     // MARK: - Settings surface
@@ -262,7 +277,7 @@ final class DictationController: ObservableObject {
 
     func setDictationModel(_ slug: String) {
         let trimmed = slug.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolved = trimmed.isEmpty ? DictationDefaults.polishModel : ModelCatalog.migrating(trimmed)
+        let resolved = trimmed.isEmpty ? DictationDefaults.polishModel : DictationDefaults.migratingPolishModel(trimmed)
         Keychain.set(resolved, Keychain.Account.dictationModel)
         dictationModel = resolved
     }
@@ -409,6 +424,7 @@ final class DictationController: ObservableObject {
             try capture.start()
         } catch {
             target = nil
+            log.error("dictation capture failed to start: \(error.localizedDescription, privacy: .public)")
             pill.show(.failed(.message(error.localizedDescription)))
             return
         }
@@ -508,8 +524,14 @@ final class DictationController: ObservableObject {
             pill.dismiss()
             endSession()
             monitor.abort()
-        case .transcribing, .polishing, .inserting:
-            pipelineTask?.cancel()
+        case .polishing:
+            // "I have waited long enough": drop the model call, paste the raw
+            // transcript now. The run continues into `.inserting`, so the pill
+            // stays up and ends in `.done`.
+            polishCancelledByUser = true
+            polishTask?.cancel()
+        case .transcribing, .inserting:
+            cancelPipeline()
             pill.dismiss()
         case .idle, .armed:
             break
@@ -680,6 +702,7 @@ final class DictationController: ObservableObject {
             alwaysPolish: settings.dictationPolishAlways
         )
         let polish: DictationPolishResult
+        var polishSeconds: Double?
         if case let .skip(reason) = gate {
             log.debug("polish skipped: \(reason, privacy: .public)")
             polish = .skipped(text: rawText, reason: reason)
@@ -690,7 +713,22 @@ final class DictationController: ObservableObject {
                 client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
                 model: settings.dictationModel
             )
-            polish = await polisher.polish(rawText: rawText, context: context)
+            // Runs as its own task so Esc can cancel the model call alone
+            // (`handleEscape`); `cancelPipeline()` cancels both together.
+            polishCancelledByUser = false
+            let started = ContinuousClock.now
+            let task = Task { await polisher.polish(rawText: rawText, context: context) }
+            polishTask = task
+            let attempted = await task.value
+            polishTask = nil
+            let elapsed = started.duration(to: .now)
+            polishSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            if polishCancelledByUser {
+                polish = .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
+            } else {
+                polish = attempted
+            }
+            log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
         } else {
             polish = .raw(text: rawText, reason: "No OpenRouter key — pasted the raw transcript.")
         }
@@ -737,7 +775,8 @@ final class DictationController: ObservableObject {
             durationSeconds: clip.durationSeconds,
             insertMethod: method,
             transcriptionCost: transcriber.usdPerHour * clip.durationSeconds / 3600 * surcharge,
-            polishCost: polish.cost
+            polishCost: polish.cost,
+            polishSeconds: polishSeconds
         )
         do {
             try await logStore.append(entry)
