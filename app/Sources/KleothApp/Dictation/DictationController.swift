@@ -118,7 +118,10 @@ final class DictationController: ObservableObject {
         let settings = AppConfig.settings()
         self.init(
             monitor: DictationHotkeyMonitor(),
-            pill: DictationPillController(),
+            // NOT a fresh `DictationPillController()`: there is one pill, and
+            // `PillCoordinator` owns it so a screen recording's backdrop and a
+            // dictation phase can share it (screen-recording design §3.4).
+            pill: PillCoordinator.shared.dictationFace,
             inserter: TextInserter.shared,
             logStore: DictationLogStore(outputDir: settings.outputDir),
             dictionary: PersonalDictionaryStore(),
