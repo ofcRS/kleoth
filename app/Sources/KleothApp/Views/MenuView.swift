@@ -14,14 +14,20 @@ import KleothCore
 struct MenuView: View {
     @EnvironmentObject private var controller: RecordingController
     @EnvironmentObject private var dictation: DictationController
+    @EnvironmentObject private var screenRecording: ScreenRecordingController
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
     /// How many recent meetings the popover surfaces before "Show all …".
     private let recentLimit = 5
 
-    /// Quit pressed while background processing is running — confirm first.
+    /// Quit pressed while background processing or a screen recording is
+    /// running — confirm first.
     @State private var confirmQuit = false
+
+    /// Transient acknowledgement for "Copy Path" on the last screen recording.
+    @State private var copiedLastPath = false
+    @State private var copiedResetTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingL) {
@@ -33,6 +39,8 @@ struct MenuView: View {
             }
 
             recordControl
+
+            screenRecordingSection
 
             if dictation.isEnabled && !dictation.isTrusted {
                 dictationAccessNotice
@@ -62,7 +70,7 @@ struct MenuView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Kleoth")
                     .font(.headline)
-                Text(headerSubtitle)
+                headerSubtitleView
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -104,10 +112,44 @@ struct MenuView: View {
     }
 
     /// One quiet line under the wordmark reflecting the current state.
+    ///
+    /// Meeting text always wins (§2.3): meetings are the app's primary job, and
+    /// a screen recording running alongside one already has the pill, the
+    /// menu-bar glyph and its own popover row saying so.
     private var headerSubtitle: String {
         if controller.isRecording { return "Recording in progress" }
         if controller.isProcessing { return "Transcribing in the background" }
         return "Local-first meeting recorder"
+    }
+
+    /// The subtitle as a view, so a lone screen recording can tick live digits
+    /// ("Recording the screen · 02:14"). `TimelineView(.periodic)` only exists
+    /// on that branch — the resting popover must not schedule a 1 Hz redraw.
+    @ViewBuilder
+    private var headerSubtitleView: some View {
+        if screenRecordingOwnsSubtitle, let since = screenRecording.since {
+            TimelineView(.periodic(from: since, by: 1)) { context in
+                Text("Recording the screen · \(elapsed(since: since, now: context.date))")
+                    .monospacedDigit()
+            }
+        } else if screenRecordingOwnsSubtitle {
+            // Active but with no fixed start yet (checking permission, picking
+            // a region, finalizing) — say so without inventing digits.
+            Text("Recording the screen")
+        } else {
+            Text(headerSubtitle)
+        }
+    }
+
+    /// True only when there is no meeting state to report and a screen
+    /// recording is in flight.
+    private var screenRecordingOwnsSubtitle: Bool {
+        !controller.isRecording && !controller.isProcessing && screenRecording.isActive
+    }
+
+    /// Wall-clock elapsed digits for a session that started at `since`.
+    private func elapsed(since: Date, now: Date) -> String {
+        ElapsedFormatter.string(seconds: Int(now.timeIntervalSince(since)))
     }
 
     // MARK: - Record control
@@ -149,6 +191,113 @@ struct MenuView: View {
             }
         }
         .kleothCard(padding: KleothMetrics.spacingM)
+    }
+
+    // MARK: - Screen recording
+
+    /// The universal entry point for screen recording (§2.2): one row that
+    /// starts, then becomes the stop control with live digits, then a quiet
+    /// pointer to the file that was just written.
+    ///
+    /// This is the entry for a user who has dictation switched off — the pill
+    /// appears anyway once a recording is in flight (§6.3), but it is not
+    /// something they would think to look for.
+    @ViewBuilder
+    private var screenRecordingSection: some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
+            screenRecordingRow
+
+            if let summary = screenRecording.lastSummary {
+                lastScreenRecordingRow(summary)
+            }
+        }
+    }
+
+    /// Start / stop / finalizing — the `dictationAccessNotice` look: a plain
+    /// caption-sized label row, not a second hero button (the meeting record
+    /// button is the popover's single glass element and stays that way).
+    @ViewBuilder
+    private var screenRecordingRow: some View {
+        if screenRecording.machineState == .saving {
+            Label("Saving screen recording…", systemImage: "square.and.arrow.down")
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(.secondary)
+        } else if screenRecording.isActive {
+            Button { screenRecording.stop() } label: {
+                Group {
+                    if let since = screenRecording.since {
+                        TimelineView(.periodic(from: since, by: 1)) { context in
+                            Label(
+                                "Stop screen recording · \(elapsed(since: since, now: context.date))",
+                                systemImage: "stop.fill"
+                            )
+                            .monospacedDigit()
+                        }
+                    } else {
+                        Label("Stop screen recording", systemImage: "stop.fill")
+                    }
+                }
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(KleothPalette.recordingTint)
+            .help("Stop the screen recording and save it to ~/Kleoth/screen-recordings")
+        } else {
+            Button { screenRecording.start(from: .popover) } label: {
+                Label("Record screen…", systemImage: "record.circle")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Record the screen with system audio and your microphone. Pick a display or drag a region; macOS may ask for Screen Recording access the first time.")
+        }
+    }
+
+    /// "Last screen recording · 02:14 · 48 MB", with the way to reach the file
+    /// (§2.5b). Kept in the popover rather than History — v1 has no Recordings
+    /// scope, and the file is a plain .mp4 the user owns.
+    private func lastScreenRecordingRow(_ summary: ScreenRecordingSummary) -> some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            HStack(spacing: KleothMetrics.spacingS) {
+                Text("Last screen recording · \(summary.pillText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: KleothMetrics.spacingS)
+
+                Button("Reveal") { screenRecording.revealLast() }
+                    .help("Show the recording in Finder")
+                Button(copiedLastPath ? "Copied!" : "Copy Path") { copyLastPath() }
+                    .help("Copy the recording's file path")
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+
+            // "Stopped: display disconnected" / "mic dropped for 1.2 s at 3:12"
+            // — the honest tail of a session that did not end plainly.
+            if let detail = screenRecording.lastStopDetail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func copyLastPath() {
+        screenRecording.copyLastPath()
+        copiedResetTask?.cancel()
+        copiedLastPath = true
+        copiedResetTask = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            copiedLastPath = false
+        }
     }
 
     // MARK: - Status
@@ -283,7 +432,10 @@ struct MenuView: View {
                 // Quitting kills any background transcription with it — warn
                 // first so a freshly-stopped meeting isn't silently abandoned
                 // (the audio stays on disk and resurfaces as "Untranscribed").
-                if controller.isProcessing {
+                // A screen recording in flight is the same kind of surprise:
+                // `applicationShouldTerminate` does save what was captured
+                // (§2.7), but the user should choose that, not discover it.
+                if controller.isProcessing || screenRecording.isActive {
                     confirmQuit = true
                 } else {
                     NSApplication.shared.terminate(nil)
@@ -297,15 +449,34 @@ struct MenuView: View {
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .confirmationDialog(
-            "A meeting is still transcribing.",
+            quitDialogTitle,
             isPresented: $confirmQuit,
             titleVisibility: .visible
         ) {
             Button("Quit Anyway", role: .destructive) { NSApplication.shared.terminate(nil) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Quitting stops the processing. The audio stays saved — you can transcribe it later from the list.")
+            Text(quitDialogMessage)
         }
+    }
+
+    /// The quit guard covers two different in-flight jobs. The screen recording
+    /// leads when both are true: it is the one the user is actively looking at.
+    private var quitDialogTitle: String {
+        screenRecording.isActive
+            ? "A screen recording is in progress."
+            : "A meeting is still transcribing."
+    }
+
+    private var quitDialogMessage: String {
+        guard screenRecording.isActive else {
+            return "Quitting stops the processing. The audio stays saved — you can transcribe it later from the list."
+        }
+        var message = "Quit saves what was recorded so far."
+        if controller.isProcessing {
+            message += " A meeting is still transcribing, and quitting stops that — its audio stays saved."
+        }
+        return message
     }
 
     /// Opens History on the Meetings scope. The popover's entry points are all
