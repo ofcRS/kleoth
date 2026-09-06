@@ -189,7 +189,8 @@ public final class DictationPillController: DictationPillPresenting {
 
     /// What the pill is showing right now — the coordinator's "is a dictation
     /// phase live?" input.
-    public var currentState: DictationPillState { model.phase }
+    public var currentState: DictationPillState { dismissingState ?? model.phase }
+    private var dismissingState: DictationPillState?
 
     public func setResting(_ visible: Bool) {
         setBackdrop(visible ? .idle : .hidden)
@@ -365,6 +366,13 @@ public final class DictationPillController: DictationPillPresenting {
 
     /// ✕, or a click anywhere on a `.failed` pill.
     func dismissFromUser() {
+        // `currentState` keeps reporting the phase the user dismissed for the
+        // duration of the callback. Without this the answer depends on motion
+        // settings: a spring applies the collapsed phase on the next main-queue
+        // turn, Reduce Motion applies it synchronously inside `dismiss()`, and
+        // the coordinator would then misroute a dictation ✕ as a recording one.
+        dismissingState = model.phase
+        defer { dismissingState = nil }
         dismiss()
         onDismiss?()
     }

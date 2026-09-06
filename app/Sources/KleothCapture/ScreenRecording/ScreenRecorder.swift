@@ -140,8 +140,9 @@ public final class ScreenRecorder {
 
     // MARK: - Start
 
-    /// Resolves `SCShareableContent` (under `withTimeout` — it can hang while
-    /// the TCC dialog is up), builds the filter + stream configuration (§5.2),
+    /// Resolves `SCShareableContent` (under `withDeadline` — it can hang while
+    /// the TCC dialog is up, and it ignores cancellation), builds the filter +
+    /// stream configuration (§5.2),
     /// opens the writer, starts capture, and returns after the first `.screen`
     /// sample of any status — or throws `.noFirstFrame` after
     /// `firstFrameTimeout`, deleting the file.
@@ -183,7 +184,9 @@ public final class ScreenRecorder {
 
     /// Idempotent. Stops the stream + mic, appends the retained last frame at
     /// the stop time (§5.3), flushes the mix pump, awaits `finishWriting`, and
-    /// renames to the final URL. Bounded by `finalizeTimeout`.
+    /// renames to the final URL. The WAIT is bounded by `finalizeTimeout`
+    /// (`withDeadline` — `finishWriting` itself cannot be cancelled); a finish
+    /// that lands after the deadline still renames the movie in the background.
     @discardableResult
     public func stop(reason: ScreenRecordingStopReason) async throws -> ScreenRecordingSummary {
         if let finalSummary { return finalSummary }
@@ -243,13 +246,19 @@ public final class ScreenRecorder {
         if let rings { lastRingDropped = (ringCount(rings, mic: true), ringCount(rings, mic: false)) }
         self.pump = nil
 
+        // `finishWriting` ignores cancellation, so the deadline can only stop US
+        // waiting — `withDeadline` (not `withTimeout`, which would sit on the
+        // non-cancellable child and make the bound a label) leaves the finish
+        // running and hands the wait back after `finalizeTimeout`.
+        let finish = Task { try await writer.finish() }
         let writerStats: MovieWriter.Stats
         do {
-            writerStats = try await withTimeout(seconds: ScreenRecordingDefaults.finalizeTimeout) {
-                try await writer.finish()
+            writerStats = try await withDeadline(seconds: ScreenRecordingDefaults.finalizeTimeout) {
+                try await finish.value
             }
         } catch is KleothTimeoutError {
             Self.log.error("screen recording finalize exceeded \(ScreenRecordingDefaults.finalizeTimeout, privacy: .public) s")
+            renameWhenFinishLands(finish, outputURL: configuration.outputURL)
             throw ScreenRecorderError.finalizeTimedOut
         }
         lastWriterStats = writerStats
@@ -289,7 +298,10 @@ public final class ScreenRecorder {
 
     private func shareableContent() async throws -> ContentBox {
         do {
-            return try await withTimeout(seconds: 5) {
+            // `withDeadline`, not `withTimeout`: the completion-handler import
+            // ignores cancellation, so a task group would wait out the TCC
+            // dialog anyway. The abandoned query is harmless — it only reads.
+            return try await withDeadline(seconds: 5) {
                 let content = try await SCShareableContent.excludingDesktopWindows(
                     false, onScreenWindowsOnly: true
                 )
@@ -519,6 +531,33 @@ public final class ScreenRecorder {
         stopped = true
         try? FileManager.default.removeItem(at: configuration.outputURL)
         eventSink.finish()
+    }
+
+    /// A finalize that blew `finalizeTimeout` is still running: when it lands,
+    /// give the movie its final name anyway (or delete an empty one), so a
+    /// slow-but-successful finish is a normal recording on disk instead of a
+    /// `.recording.mp4` the next launch sweeps as "recovered". If the app quits
+    /// first the file keeps its in-progress name and the sweep still finds it.
+    private func renameWhenFinishLands(
+        _ finish: Task<MovieWriter.Stats, Error>,
+        outputURL: URL
+    ) {
+        let log = Self.log
+        Task.detached {
+            guard let stats = try? await finish.value else { return }
+            guard stats.videoAppended > 0 else {
+                try? FileManager.default.removeItem(at: outputURL)
+                return
+            }
+            let finalURL = ScreenRecordingFileNaming.finalURL(for: outputURL)
+            guard !FileManager.default.fileExists(atPath: finalURL.path) else { return }
+            do {
+                try FileManager.default.moveItem(at: outputURL, to: finalURL)
+                log.notice("late screen recording finalize landed; renamed to its final name")
+            } catch {
+                log.error("couldn't rename a late-finalized recording: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private func rename(_ url: URL, to destination: URL) -> URL {

@@ -34,6 +34,12 @@ final class RegionPicker {
     private var continuation: CheckedContinuation<Choice?, Never>?
     private var keyObserver: NSObjectProtocol?
     private var pushedCursor = false
+    /// Whoever was frontmost before the picker activated Kleoth. An
+    /// `.accessory` app whose last window closes STAYS the active app, so
+    /// without handing activation back the recording would open on the user
+    /// clicking their way back into their editor — and a dictation finishing
+    /// right after the pick would paste into Kleoth.
+    private var previousApp: NSRunningApplication?
 
     /// nil = cancelled (Esc / ⌘. / the overlay lost key status).
     func pick() async -> Choice? {
@@ -65,7 +71,13 @@ final class RegionPicker {
         }
 
         // An `.accessory` app still has to be active for a borderless window to
-        // take key status, and the picker is modal by nature.
+        // take key status, and the picker is modal by nature. Remember who we
+        // are stealing it from so `teardown()` can hand it straight back (when
+        // Kleoth was already frontmost there is nothing to restore).
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? nil
+            : frontmost
         NSApp.activate(ignoringOtherApps: true)
         for window in overlays {
             window.orderFrontRegardless()
@@ -140,6 +152,13 @@ final class RegionPicker {
             window.close()
         }
         overlays.removeAll()
+
+        // Give the user's app its focus back before the recording starts (or
+        // after an Esc). Closing our last window does NOT do this on its own.
+        if let previousApp, !previousApp.isTerminated {
+            previousApp.activate()
+        }
+        previousApp = nil
     }
 }
 

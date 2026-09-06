@@ -51,6 +51,11 @@ final class ScreenRecordingController: ObservableObject {
     /// Set by a `writerFailed` event so the finalize path can report §7 row 13
     /// even when `finishWriting` itself succeeds on the fragments so far.
     private var writerFailureMessage: String?
+    /// Why `recorder.start()` threw AFTER a stop had already moved the machine
+    /// past `.starting`. `finalize()` surfaces it instead of a generic
+    /// "Nothing was recorded." — a stale permission or a missing display is
+    /// actionable, an empty file is not.
+    private var startFailure: ScreenRecordingFailure?
     /// Overrides the pill state `showFailed()` would derive from the failure.
     /// Only `finalizeTimedOut` uses it: §7 row 24 is a WARNING over a saved
     /// file, not a sticky fault, but the machine still has to leave `.saving`.
@@ -123,6 +128,13 @@ final class ScreenRecordingController: ObservableObject {
             return
         }
         log.notice("screen recording start from \(String(describing: origin), privacy: .public)")
+        // The previous session's confirmation or sticky fault is still on the
+        // pill, and `setBackdrop` only takes over a RESTING-family phase — so
+        // without this the new `.recording(since:)` would merely be stored and
+        // the whole recording would run behind a stale "…try again" (§7 rows
+        // 21-22). The coordinator only ever drops recording-owned phases, so a
+        // live dictation is untouched.
+        coordinator.dismissRecordingPhase()
         perform(effect)
     }
 
@@ -292,6 +304,7 @@ final class ScreenRecordingController: ObservableObject {
         micGapStart = nil
         micLostAt = nil
         writerFailureMessage = nil
+        startFailure = nil
 
         let target = ScreenRecordingTarget(
             displayID: choice.displayID,
@@ -339,7 +352,9 @@ final class ScreenRecordingController: ObservableObject {
                 guard case .starting = self.machine.state else {
                     // Stopped mid-start. Dropping the recorder makes
                     // `finalize()` take its "nothing to finalize" branch, which
-                    // is the truth: capture never began.
+                    // is the truth: capture never began — but keep WHY so the
+                    // fault names the real cause.
+                    self.startFailure = Self.failure(for: error)
                     self.recorder = nil
                     return
                 }
@@ -385,7 +400,7 @@ final class ScreenRecordingController: ObservableObject {
 
     private func finalize() {
         guard let recorder else {
-            perform(apply(.finalizeFailed(.nothingCaptured)))
+            perform(apply(.finalizeFailed(startFailure ?? .nothingCaptured)))
             return
         }
         let reason = pendingStopReason ?? .user
@@ -397,7 +412,7 @@ final class ScreenRecordingController: ObservableObject {
             guard let self else { return }
             self.startTask = nil
             guard self.recorder != nil else {
-                self.perform(self.apply(.finalizeFailed(.nothingCaptured)))
+                self.perform(self.apply(.finalizeFailed(self.startFailure ?? .nothingCaptured)))
                 return
             }
             do {
@@ -428,9 +443,15 @@ final class ScreenRecordingController: ObservableObject {
         guard case .saved(let summary) = machine.state else { return }
         lastSummary = summary
         lastStopDetail = Self.detail(for: summary, micDenied: micDenied)
-        // ORDER MATTERS (§6.1): show `.saved` first, THEN drop the backdrop, so
-        // the confirmation's 4 s auto-hide lands on `.idle`/`.hidden` instead of
-        // being collapsed away by a backdrop change underneath it.
+        // ORDER MATTERS (§6.1), the other way round: drop the backdrop FIRST.
+        // `setBackdrop` only takes over a resting-family phase, and `.recording`
+        // is one — so with the recording backdrop still on screen (a dictation
+        // ended over the top of `.saving`), clearing it AFTER the confirmation
+        // would `show(.idle)` on top of the `.saved` transition and eat it.
+        // Clearing it first is safe in both directions: on `.saving` the change
+        // is merely stored, and on `.recording` the `.saved` shown right after
+        // owns the later transition.
+        coordinator.setRecordingBackdrop(since: nil)
         if let at = micLostAt {
             // §7 row 16: the file is complete and in `lastSummary`, but the
             // mic went silent partway — that is a warning, not a clean check.
@@ -440,7 +461,6 @@ final class ScreenRecordingController: ObservableObject {
         } else {
             coordinator.showRecordingPhase(.saved(summary.pillText))
         }
-        coordinator.setRecordingBackdrop(since: nil)
         cleanUpSession()
         finishTermination()
     }
@@ -573,6 +593,7 @@ final class ScreenRecordingController: ObservableObject {
         pendingChoice = nil
         pendingStopReason = nil
         writerFailureMessage = nil
+        startFailure = nil
         micGapStart = nil
         micLostAt = nil
     }

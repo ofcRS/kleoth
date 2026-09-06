@@ -1,7 +1,7 @@
 import Foundation
 
 /// Single source of truth for every screen-recording constant (design
-/// `.scratch/video-recording-thread/DESIGN.md` §3.1). Nothing else may redefine
+/// `docs/plans/2026-09-06-screen-recording.md` §3.1). Nothing else may redefine
 /// these numbers — the same rule `DictationDefaults` lives by.
 public enum ScreenRecordingDefaults {
     /// Folder under the output directory (`~/Kleoth/` by default).
