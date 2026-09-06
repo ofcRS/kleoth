@@ -23,9 +23,21 @@ public enum CaptureGeometry {
 
         let cap = CGFloat(max(2, maxLongEdge))
         let longEdge = max(width, height)
-        let scale = longEdge > cap ? cap / longEdge : 1
+        guard longEdge > cap else {
+            return CGSize(width: evenFloor(width), height: evenFloor(height))
+        }
 
-        return CGSize(width: evenFloor(width * scale), height: evenFloor(height * scale))
+        // Snap the long edge to the cap EXACTLY rather than trusting
+        // `longEdge * (cap / longEdge)` to come back as `cap`: at 2666 → 1920
+        // the round trip lands on 1919.999…, which `evenFloor` then turns into
+        // 1918 — a two-pixel dent in every capped capture. The short side is
+        // the only one that carries the division.
+        let scale = cap / longEdge
+        let capped = width >= height
+            ? CGSize(width: cap, height: height * scale)
+            : CGSize(width: width * scale, height: cap)
+
+        return CGSize(width: evenFloor(capped.width), height: evenFloor(capped.height))
     }
 
     /// AppKit global rect (bottom-left origin, y up) → `SCStream.sourceRect`
