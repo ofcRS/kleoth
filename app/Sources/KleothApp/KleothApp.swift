@@ -7,7 +7,8 @@ import SwiftUI
 /// and shared into every view via the environment so a recording survives any
 /// view being torn down. The `DictationController` (fn+shift dictation) is
 /// created the same way and injected alongside it — dictation views read it
-/// via `@EnvironmentObject`, never through `DictationController.shared`.
+/// via `@EnvironmentObject`, never through `DictationController.shared`. The
+/// `ScreenRecordingController` is created and injected the same way.
 ///
 /// - Note: As a menu-bar `LSUIElement` agent this needs an app bundle with the
 ///   appropriate `Info.plist` and TCC usage descriptions to run; it compiles
@@ -16,6 +17,7 @@ import SwiftUI
 struct KleothApp: App {
     @StateObject private var controller = RecordingController()
     @StateObject private var dictation = DictationController()
+    @StateObject private var screenRecording = ScreenRecordingController()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -23,6 +25,7 @@ struct KleothApp: App {
             MenuView()
                 .environmentObject(controller)
                 .environmentObject(dictation)
+                .environmentObject(screenRecording)
         } label: {
             // The menu-bar label is the only view mounted at launch, so it's the
             // single place with a live SwiftUI environment from which the
@@ -30,7 +33,9 @@ struct KleothApp: App {
             // is unavailable from `App.init` / the `AppDelegate`). It self-opens the
             // welcome window shortly after launch when this is a fresh install.
             KleothMenuBarLabel(
-                isRecording: controller.isRecording,
+                // A hot microphone must always have a menu-bar indicator: the
+                // pill can be on a display the user is not looking at (§2.3).
+                isRecording: controller.isRecording || screenRecording.isActive,
                 needsOnboarding: controller.needsOnboarding
             )
         }
@@ -41,6 +46,7 @@ struct KleothApp: App {
             HistoryView()
                 .environmentObject(controller)
                 .environmentObject(dictation)
+                .environmentObject(screenRecording)
         }
         .defaultSize(width: 960, height: 640)
 
@@ -51,6 +57,7 @@ struct KleothApp: App {
             OnboardingView()
                 .environmentObject(controller)
                 .environmentObject(dictation)
+                .environmentObject(screenRecording)
         }
         .defaultSize(width: 560, height: 600)
         .windowResizability(.contentSize)
@@ -59,6 +66,7 @@ struct KleothApp: App {
             SettingsView()
                 .environmentObject(controller)
                 .environmentObject(dictation)
+                .environmentObject(screenRecording)
         }
     }
 }
