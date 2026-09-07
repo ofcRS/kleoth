@@ -101,10 +101,16 @@ public final class ScreenRecorder {
 
     /// The most recent mic and system RMS (0…1 linear), for the pill's live
     /// meters. Cheap enough to poll at 20 Hz from the main actor: the lanes
-    /// store into two heap words on their own queues, nothing is `sync`ed.
-    /// Zero when the session is not live. (Contract stub — lane L2 wires the
-    /// measurement into `MicrophoneSource` / `SystemAudioSink`.)
-    public var levels: AudioLevels { .zero }
+    /// store into two heap words (``LevelWord``) on their own queues — the mic
+    /// tap's render thread and the ScreenCaptureKit audio queue — and this
+    /// reads them straight, with no `sync` and no hop. The race that buys is
+    /// deliberate and benign; ``LevelWord`` documents it.
+    ///
+    /// Zero when the session is not live: both lanes reset their word when they
+    /// stop or give up, and `stop(reason:)` drops the mic lane entirely.
+    public var levels: AudioLevels {
+        AudioLevels(mic: microphone?.level.level ?? 0, system: output?.systemAudio.level.level ?? 0)
+    }
 
     /// Live counters — the `screenrec` probe's per-second line.
     ///
@@ -216,6 +222,10 @@ public final class ScreenRecorder {
             try? await stream.stopCapture()
         }
         stream = nil
+        // The stream is torn down, so nothing will store into the system meter
+        // again; `output` outlives this call (it is the stream delegate), so
+        // the word is cleared by hand rather than by dropping the object.
+        output?.systemAudio.level.reset()
 
         // The session origin is `AudioRingBox` state, and that box is
         // audio-queue only — read it there once rather than reaching into it
@@ -529,6 +539,7 @@ public final class ScreenRecorder {
         stopKeepalive()
         if let stream { try? await stream.stopCapture() }
         stream = nil
+        output?.systemAudio.level.reset()
         _ = await pump?.stop(at: 0)
         pump = nil
         writer?.cancel()
@@ -620,7 +631,8 @@ public final class ScreenRecorder {
 /// and `SystemAudioSink` document. `@unchecked Sendable` on that argument.
 private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let gate: VideoFrameGate
-    private let systemAudio: SystemAudioSink
+    /// Not `private`: `ScreenRecorder.levels` reads its meter word.
+    let systemAudio: SystemAudioSink
     private let onStreamStopped: @Sendable (String) -> Void
 
     init(

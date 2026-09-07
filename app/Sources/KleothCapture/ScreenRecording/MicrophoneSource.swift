@@ -48,6 +48,10 @@ final class MicrophoneSource: @unchecked Sendable {
     private let sampleRate: Double
     private let onStarted: @Sendable () -> Void
     private let onLost: @Sendable (String) -> Void
+    /// Meter for the pill: the RMS of the most recent converted block, stored
+    /// on the render thread and read from the main actor without a hop. See
+    /// ``LevelWord`` for the (deliberate, benign) race that buys.
+    let level = LevelWord()
 
     private var running = false
     private var tapFormat: AVAudioFormat?
@@ -126,6 +130,10 @@ final class MicrophoneSource: @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         removeConfigurationObserver()
+        // The tap is gone; drop the meter so a stopped lane cannot leave a
+        // frozen bar behind (`DictationCapture.handleConfigurationChange`'s
+        // lesson: a stale RMS reads as a live mic).
+        level.reset()
     }
 
     // MARK: - Conversion
@@ -183,6 +191,7 @@ final class MicrophoneSource: @unchecked Sendable {
         let sampleRate = sampleRate
         let audioQueue = audioQueue
         let offsetTicks = offsetTicks
+        let level = level
         let input = engine.inputNode
 
         try catchingObjCExceptions {
@@ -207,6 +216,11 @@ final class MicrophoneSource: @unchecked Sendable {
             guard frames > 0, let channelData = converter.scratch.floatChannelData else { return }
 
             let samples = frames * converter.channels
+            // The meter, measured straight off the converted (interleaved)
+            // scratch before it is copied — one vDSP pass, no allocation, and
+            // it does NOT depend on the writer's session origin, so the bar is
+            // live from the first tap buffer rather than from the first frame.
+            level.storeRMS(of: channelData[0], count: samples)
             let block = [Float](UnsafeBufferPointer(start: channelData[0], count: samples))
 
             // `AVAudioTime.hostTime` stamps the FIRST frame of the *input*
@@ -255,6 +269,9 @@ final class MicrophoneSource: @unchecked Sendable {
         }
         input.removeTap(onBus: 0)
         engine.stop()
+        // No tap is feeding it until the reinstall lands — a held-over RMS
+        // would show a live mic across the gap.
+        level.reset()
         guard format.channelCount > 0, format.sampleRate > 0, let converter = makeConverter(from: format) else {
             giveUp("the microphone went away")
             return
@@ -281,6 +298,7 @@ final class MicrophoneSource: @unchecked Sendable {
 
     private func giveUp(_ reason: String) {
         running = false
+        level.reset()
         removeConfigurationObserver()
         Self.log.error("screen recording microphone lost: \(reason, privacy: .public)")
         onLost(reason)
