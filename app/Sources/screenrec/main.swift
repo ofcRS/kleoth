@@ -9,13 +9,18 @@ import KleothCore
 /// mixer harness, the way `dictate` is the dictation pipeline's.
 ///
 ///     screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic]
-///               [--out file] [--inspect file]
+///               [--out file] [--inspect file] [--extract file]
+///               [--words file [--segments] [--language ru]]
 ///
 /// It prints the permission state, the resolved pixel size + bit rate, frames
-/// appended / dropped, audio blocks, mic gaps, duration (AVURLAsset), file size
-/// and MB/min. It is NOT the TCC spike: a binary exec'd from a shell is
-/// TCC-attributed to the shell (the responsible process), wherever it lives —
-/// the spike is the release app's own popover row (§8 #0).
+/// appended / dropped, audio blocks, live mic/system levels, mic gaps, duration
+/// (AVURLAsset), file size and MB/min. It is NOT the TCC spike: a binary exec'd
+/// from a shell is TCC-attributed to the shell (the responsible process),
+/// wherever it lives — the spike is the release app's own popover row (§8 #0).
+///
+/// `--extract` and `--words` are the recordings-viewer lane's probes:
+/// `RecordingAudioExtractor` (movie → `.m4a`) and `LocalTranscriber` with
+/// `wordTimestamps: true` (the per-word timings the viewer highlights).
 ///
 /// `--region` is display-local, **top-left-origin points** — the same
 /// convention `SCStreamConfiguration.sourceRect` uses (SCStream.h:269), so a
@@ -28,6 +33,18 @@ struct ScreenRecMain {
 
         if let inspect = arguments.inspect {
             await Inspector.print(url: URL(fileURLWithPath: inspect))
+            return
+        }
+        if let extract = arguments.extract {
+            await Extractor.run(movie: URL(fileURLWithPath: extract), to: arguments.out.map { URL(fileURLWithPath: $0) })
+            return
+        }
+        if let words = arguments.words {
+            await Words.run(
+                audio: URL(fileURLWithPath: words),
+                language: arguments.language,
+                wordTimestamps: !arguments.segments
+            )
             return
         }
         if arguments.showsHelp {
@@ -135,16 +152,21 @@ struct ScreenRecMain {
                 clock: clock
             )
             let now = recorder.stats
+            // Sampled, not averaged: `levels` is the RMS of the most recent
+            // buffer on each lane, which is exactly what the pill's meter reads.
+            let levels = recorder.levels
             let micFrames = now.micTotalFrames - previous.micTotalFrames
             let micReal = now.micRealFrames - previous.micRealFrames
             let micText = micFrames > 0 ? "\(Int((Double(micReal) / Double(micFrames)) * 100))%" : "—"
             print(String(
-                format: "  %2ds      : video %d appended / %d dropped · audio %d blocks · mic real %@",
+                format: "  %2ds      : video %d appended / %d dropped · audio %d blocks · mic real %@ · mic=%@ sys=%@",
                 second,
                 now.videoAppended - previous.videoAppended,
                 now.videoDropped - previous.videoDropped,
                 now.audioBlocks - previous.audioBlocks,
-                micText
+                micText,
+                format(levels.mic, digits: 3),
+                format(levels.system, digits: 3)
             ))
             previous = now
         }
@@ -277,14 +299,24 @@ struct ScreenRecMain {
 
 private struct Arguments {
     static let usage = """
-        screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic] [--out file] [--inspect file]
+        screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic] [--out file]
+        screenrec --inspect file
+        screenrec --extract movie.mp4 [--out audio.m4a]
+        screenrec --words audio.m4a [--segments] [--language ru]
 
           seconds     how long to record (default 10)
           --display   index into the active display list (default 0)
           --region    display-local, TOP-left-origin points: x,y,w,h
           --no-mic    system audio only
           --out       destination; the recorder writes "<name>.recording.mp4" and renames on success
+                      (with --extract: where the .m4a goes; default is the movie's stem + .m4a)
           --inspect   print bitrate, fps and track durations of an existing file, then exit
+          --extract   pull a movie's audio out to an .m4a (RecordingAudioExtractor), then exit
+          --words     transcribe an audio file on-device with per-WORD timings
+                      (LocalTranscriber wordTimestamps: true), then exit
+          --segments  with --words: the OLD per-SEGMENT path (wordTimestamps: false),
+                      i.e. what meetings still get — run both to diff them
+          --language  pin the --words language (e.g. ru); default is auto-detect
         """
 
     var seconds: Double = 10
@@ -292,8 +324,12 @@ private struct Arguments {
     var region: CGRect?
     var microphone = true
     var inspect: String?
+    var extract: String?
+    var words: String?
+    var segments = false
+    var language: String?
     var showsHelp = false
-    private var out: String?
+    var out: String?
 
     /// The recorder is handed the IN-FLIGHT name and renames on success, so a
     /// `--out /tmp/x.mp4` really produces `/tmp/x.mp4`.
@@ -315,6 +351,10 @@ private struct Arguments {
             case "--no-mic": microphone = false
             case "--out": out = iterator.next()
             case "--inspect": inspect = iterator.next()
+            case "--extract": extract = iterator.next()
+            case "--words": words = iterator.next()
+            case "--segments": segments = true
+            case "--language": language = iterator.next()
             case "-h", "--help": showsHelp = true
             default:
                 if let value = Double(argument), value > 0 { seconds = value }
@@ -385,6 +425,79 @@ private enum Inspector {
         case "avc1": return "H.264 (avc1)"
         case "aac ", "mp4a": return "AAC (\(name.trimmingCharacters(in: .whitespaces)))"
         default: return name
+        }
+    }
+}
+
+// MARK: - Extract
+
+/// `--extract`: the recordings viewer's first step — a movie is tens of MB per
+/// minute, and neither transcriber should be handed one.
+private enum Extractor {
+    static func run(movie: URL, to destination: URL?) async {
+        guard FileManager.default.fileExists(atPath: movie.path) else {
+            Swift.print("extract    : no file at \(movie.path)")
+            return
+        }
+        let output = destination ?? movie.deletingPathExtension().appendingPathExtension("m4a")
+        let started = Date()
+        do {
+            try await RecordingAudioExtractor.extractAudio(from: movie, to: output)
+        } catch {
+            Swift.print("extract    : FAILED — \(error.localizedDescription)")
+            return
+        }
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? Int64) ?? 0
+        let movieBytes = (try? FileManager.default.attributesOfItem(atPath: movie.path)[.size] as? Int64) ?? 0
+        Swift.print("extract    : \(output.path)")
+        Swift.print("             \(String(format: "%.2f", Date().timeIntervalSince(started))) s · "
+            + "\(ScreenRecordingFileNaming.sizeText(bytes: bytes)) "
+            + "(from \(ScreenRecordingFileNaming.sizeText(bytes: movieBytes)))")
+        await Inspector.print(url: output)
+    }
+}
+
+// MARK: - Words
+
+/// `--words`: `LocalTranscriber` with `wordTimestamps: true`, i.e. one entry
+/// per WORD rather than per segment. Prints the timings so a run can be eyeballed
+/// for "is this really per-word" (consecutive entries a few hundred ms apart,
+/// one token each) rather than per-segment. `--segments` runs the SAME file down
+/// the old path, so the two can be diffed to show meetings are unaffected.
+private enum Words {
+    static func run(audio: URL, language: String?, wordTimestamps: Bool) async {
+        guard FileManager.default.fileExists(atPath: audio.path) else {
+            Swift.print("words      : no file at \(audio.path)")
+            return
+        }
+        guard LocalTranscriber.cachedModel(variant: LocalTranscriber.defaultModel) != nil else {
+            Swift.print("words      : \(LocalTranscriber.defaultModel) is not downloaded — run the app once, or localtranscribe")
+            return
+        }
+        Swift.print("words      : \(audio.lastPathComponent) · model \(LocalTranscriber.defaultModel)"
+            + " · language \(language ?? "auto") · \(wordTimestamps ? "per word" : "per segment")")
+        let transcriber = LocalTranscriber(
+            model: LocalTranscriber.defaultModel,
+            language: language,
+            wordTimestamps: wordTimestamps
+        )
+        let started = Date()
+        let response: ScribeResponse
+        do {
+            response = try await transcriber.transcribe(fileURL: audio, options: ScribeOptions())
+        } catch {
+            Swift.print("words      : FAILED — \(error.localizedDescription)")
+            return
+        }
+        let words = ScreenRecordingRecord.words(from: response)
+        Swift.print("             \(String(format: "%.2f", Date().timeIntervalSince(started))) s · "
+            + "\(words.count) entries · language \(response.languageCode ?? "?") · "
+            + "\(String(format: "%.2f", response.audioDurationSecs ?? 0)) s audio")
+        for (index, word) in words.enumerated() {
+            Swift.print(String(
+                format: "  %3d  %7.2f → %7.2f  %@",
+                index, word.start, word.end, word.text
+            ))
         }
     }
 }

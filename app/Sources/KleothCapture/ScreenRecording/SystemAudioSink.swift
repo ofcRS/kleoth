@@ -28,6 +28,10 @@ final class SystemAudioSink: @unchecked Sendable {
     private let clock: HostClockMath
     private let sampleRate: Double
     private var scratch: [Float] = []
+    /// Meter for the pill: the RMS of the most recent block, stored on the
+    /// audio queue and read from the main actor without a hop. See
+    /// ``LevelWord`` for the (deliberate, benign) race that buys.
+    let level = LevelWord()
 
     init(rings: AudioRingBox, clock: HostClockMath, sampleRate: Double) {
         self.rings = rings
@@ -37,12 +41,16 @@ final class SystemAudioSink: @unchecked Sendable {
 
     /// Audio-queue only.
     func handle(_ sampleBuffer: CMSampleBuffer) {
-        // Nothing to be in sync with until the writer's session has an origin.
-        guard let origin = rings.origin else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard pts.isValid, pts.isNumeric else { return }
-        let hostTime = CMClockConvertHostTimeToSystemUnits(pts)
-        let position = clock.samplePosition(hostTime: hostTime, origin: origin, sampleRate: sampleRate)
+        // Nothing to be in sync with until the writer's session has an origin
+        // (the first video frame), so the ring write waits for one — but the
+        // METER does not need a timeline, and is taken for every block that
+        // arrives, so the pill's system bar is live from the first one, the
+        // way the mic lane's is.
+        let position = rings.origin.map {
+            clock.samplePosition(hostTime: CMClockConvertHostTimeToSystemUnits(pts), origin: $0, sampleRate: sampleRate)
+        }
 
         try? sampleBuffer.withAudioBufferList { list, _ in
             let buffers = Array(list)
@@ -54,6 +62,8 @@ final class SystemAudioSink: @unchecked Sendable {
                 guard let data = first.mData else { return }
                 let samples = Int(first.mDataByteSize) / MemoryLayout<Float>.size
                 let pointer = data.assumingMemoryBound(to: Float.self)
+                level.storeRMS(of: pointer, count: samples)
+                guard let position else { return }
                 rings.writeSystem(
                     UnsafeBufferPointer(start: pointer, count: samples),
                     channels: channels,
@@ -82,6 +92,8 @@ final class SystemAudioSink: @unchecked Sendable {
             }
             scratch.withUnsafeBufferPointer { source in
                 guard let base = source.baseAddress else { return }
+                level.storeRMS(of: base, count: needed)
+                guard let position else { return }
                 rings.writeSystem(
                     UnsafeBufferPointer(start: base, count: needed),
                     channels: channels,

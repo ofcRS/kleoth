@@ -87,7 +87,7 @@ public struct LocalTranscriber: Transcriber {
             task: .transcribe,                          // transcribe, never translate
             language: resolvedLanguage,                 // concrete code → no per-chunk drift
             detectLanguage: resolvedLanguage == nil,    // last-resort auto-detect
-            wordTimestamps: false,
+            wordTimestamps: wordTimestamps,             // off for meetings — see the property
             chunkingStrategy: .vad                       // robust long-form handling
         )
 
@@ -236,8 +236,17 @@ public struct LocalTranscriber: Transcriber {
     }
 
     /// Transcribes one audio file with an already-loaded pipeline, returning
-    /// segment-timed words, the audio duration (seconds), the joined text, and
-    /// the detected language.
+    /// timed words, the audio duration (seconds), the joined text, and the
+    /// detected language.
+    ///
+    /// One `ScribeWord` per **segment** by default; per **word** when
+    /// `options.wordTimestamps` is on and WhisperKit actually returned
+    /// `segment.words` (it can be nil for a segment even with the option set,
+    /// e.g. when the alignment pass finds nothing), in which case that segment
+    /// falls back to the segment-level entry. Word timings are absolute
+    /// seconds into the file: the VAD chunker offsets them by each chunk's seek
+    /// time (`TranscriptionUtilities.updateSegmentTimings`), exactly as it does
+    /// the segment timings.
     private static func transcribeFile(
         _ url: URL,
         pipe: WhisperKit,
@@ -255,6 +264,29 @@ public struct LocalTranscriber: Transcriber {
         for result in results {
             if language == nil { language = result.language }
             for segment in result.segments {
+                if options.wordTimestamps, let timings = segment.words, !timings.isEmpty {
+                    var emitted = 0
+                    for timing in timings {
+                        // `WordTiming.word` carries WhisperKit's leading space
+                        // ("␣the") and can be a bare special token; `clean`
+                        // strips both (it trims and drops `<|…|>`).
+                        let text = WhisperText.clean(timing.word)
+                        guard !text.isEmpty else { continue }
+                        let start = Double(timing.start)
+                        words.append(ScribeWord(
+                            text: text,
+                            start: start,
+                            end: max(start, Double(timing.end)),
+                            type: "word",
+                            speakerId: nil,
+                            logprob: nil
+                        ))
+                        emitted += 1
+                    }
+                    // Only fall through to the segment entry if the whole
+                    // segment cleaned away to nothing (all special tokens).
+                    if emitted > 0 { continue }
+                }
                 // Strip WhisperKit special tokens (<|startoftranscript|>,
                 // <|en|>, <|transcribe|>, timestamp/<|endoftext|>, …) so the
                 // written transcript.json is clean at the source.
