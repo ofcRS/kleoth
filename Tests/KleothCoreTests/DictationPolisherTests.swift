@@ -307,7 +307,7 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
         #expect(messages[0]["content"] as? String == DictationPrompt.system)
         let user = try #require(messages[1]["content"] as? String)
         #expect(user.contains("Target application: Terminal (com.apple.Terminal)"))
-        #expect(user.contains("Mode: \(AppStyle.terminal.hint)"))
+        #expect(user.contains("Mode: \(AppStyle.compose.hint)"))   // a terminal is a compose target
         #expect(user.contains("<<<TRANSCRIPT\nuh ship it\nTRANSCRIPT>>>"))
     }
 

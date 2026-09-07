@@ -20,6 +20,12 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Changed
 
+- **Dictations into a terminal get the full clean-up.** Terminals (Ghostty, iTerm2, Terminal,
+  Warp, kitty, Alacritty) used to get a deliberately plain, single-line, keep-every-word polish.
+  Coding assistants such as Claude Code live inside a terminal, so long spoken prompts came back
+  as one unbroken paragraph with spoken self-corrections left in. Terminals now get the same
+  restructuring as editors and AI chats: paragraphs, lists where you enumerated, the word you
+  settled on. Messaging apps are unchanged.
 - **Faster pill motion.** Every rise, sink, morph and hover peek runs in roughly 0.2–0.35 s
   (was 0.5–0.55 s); the stretch and content reveal are scaled to match.
 - **Pill motion rebuilt.** The capsule's size is now an explicit animated value, so it grows out of
@@ -102,8 +108,8 @@ All notable changes to Kleoth are documented here. The format is based on
   brainstorming into the text you would have typed: ideas reordered, fragments merged, spoken
   lists rendered as lists, the word you settled on kept, thinking-out-loud dropped, every point
   preserved and nothing invented. Messaging apps get a light touch that keeps your sentence order
-  and voice; terminals get plain single-line text. The spoken language is always kept, including
-  Russian sentences with English technical terms.
+  and voice. The spoken language is always kept, including Russian sentences with English
+  technical terms.
 
 - **Choose the engine per meeting.** An untranscribed recording's detail pane now offers
   both **Transcribe** (free, on-device) and **Transcribe in cloud** (ElevenLabs Scribe, your
