@@ -15,14 +15,33 @@ final class DictationPillModel: ObservableObject {
     /// 0…1 mic level for the meter, already normalized + smoothed by the caller
     /// (`PillGeometry.normalizedLevel` / `smoothLevel`).
     @Published private(set) var level: Double = 0
+    /// 0…1 mic + system levels for the `.recording` toolbar's two meters.
+    /// Unlike `level` (which the dictation controller normalizes) these are
+    /// shaped by `DictationPillController.setRecordingLevels` from the raw RMS
+    /// the recorder reports, so the app hands the pill physics, not pixels.
+    @Published private(set) var recordingLevels: AudioLevels = .zero
     /// Drives the spring-in / fade-out. Set *after* the panel is on screen so
     /// SwiftUI has a state change to animate.
     @Published var isPresented: Bool = false
     /// The screen edge the pill lives on. A side edge stands the capsule up
-    /// (the view rotates it ±90° in EVERY phase, so a pill parked on the left
-    /// is a vertical bar that reads bottom-to-top) and turns the resting sheen
-    /// so its bright end faces into the screen.
+    /// (the view rotates it ±90°, so a pill parked on the left is a vertical
+    /// bar that reads bottom-to-top) and turns the resting sheen so its bright
+    /// end faces into the screen — UNLESS `flat` is set.
     @Published private(set) var edge: PillGeometry.Edge = .bottom
+    /// The capsule lies HORIZONTAL whatever the edge: no rotation, no swapped
+    /// panel dimensions, the bar hugging the edge and extending inward. True
+    /// for the screen-recording phases and — while a recording is in flight —
+    /// for every dictation phase, so a live recording toolbar never stands on
+    /// its end (a 220 pt vertical bar down a side edge is unreadable, and the
+    /// digits would have to be counter-rotated per glyph). Rides the shape
+    /// spring with `phase`/`capsuleSize` so a flip is a tumble, not a snap.
+    @Published private(set) var flat: Bool = false
+    /// Where the pointer is inside the panel, in the root view's coordinate
+    /// space (SwiftUI points, y down), or nil when it is outside. Fed by
+    /// `DictationPillHostingView`'s `.activeAlways` tracking area — SwiftUI's
+    /// own `.onHover` is dead while another app is frontmost, which is always.
+    /// The Stop button uses it for its own hover state.
+    @Published private(set) var pointer: CGPoint?
     /// Where the capsule sits inside the panel, as a displacement from the
     /// panel's center in SwiftUI points (y down). Zero whenever the panel is
     /// sized to the capsule; non-zero only while a transition is in flight and
@@ -55,6 +74,11 @@ final class DictationPillModel: ObservableObject {
     func apply(phase newPhase: DictationPillState) {
         guard phase != newPhase else { return }
         phase = newPhase
+        // The recording meters are meaningless outside the recording toolbar.
+        switch newPhase {
+        case .recording, .saving: break
+        default: if recordingLevels != .zero { recordingLevels = .zero }
+        }
         // The meter is meaningless outside `.listening`; zero it so a re-shown
         // pill never flashes the last frame of the previous session.
         if case .listening = newPhase { return }
@@ -63,6 +87,14 @@ final class DictationPillModel: ObservableObject {
 
     func apply(edge newEdge: PillGeometry.Edge) {
         if edge != newEdge { edge = newEdge }
+    }
+
+    func apply(flat newFlat: Bool) {
+        if flat != newFlat { flat = newFlat }
+    }
+
+    func apply(pointer newPointer: CGPoint?) {
+        if pointer != newPointer { pointer = newPointer }
     }
 
     func apply(offset newOffset: CGSize) {
@@ -95,6 +127,24 @@ final class DictationPillModel: ObservableObject {
         // an invisible change.
         guard abs(clamped - level) > 0.005 || (clamped == 0 && level != 0) else { return }
         level = clamped
+    }
+
+    /// Already normalized + smoothed by `DictationPillController`. Same 20 Hz
+    /// churn guard as `apply(level:)`: a sub-pixel change must not re-lay the
+    /// toolbar out.
+    func apply(recordingLevels newLevels: AudioLevels) {
+        let mic = clampUnit(newLevels.mic)
+        let system = clampUnit(newLevels.system)
+        let changed = abs(mic - recordingLevels.mic) > 0.005
+            || abs(system - recordingLevels.system) > 0.005
+            || (mic == 0 && system == 0 && recordingLevels != .zero)
+        guard changed else { return }
+        recordingLevels = AudioLevels(mic: mic, system: system)
+    }
+
+    private func clampUnit(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(max(value, 0), 1)
     }
 }
 

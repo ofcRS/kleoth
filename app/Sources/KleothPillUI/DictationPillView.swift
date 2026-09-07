@@ -22,12 +22,13 @@ import KleothCore
 ///
 /// Since the screen-recording pass the pill is also the recorder's control
 /// surface (screen-recording design §6):
-/// - `.recording(since:)` — the BACKDROP while a screen recording runs: a
-///   breathing red dot plus a monospaced `mm:ss` that ticks off the session's
-///   own `since`. Hovering swaps the dot for `stop.fill`; clicking anywhere on
-///   the capsule stops the recording.
-/// - `.saving` — the same capsule with a travelling wave while the movie is
-///   finalized.
+/// - `.recording(since:)` — the BACKDROP while a screen recording runs: a live
+///   TOOLBAR (`RecordingToolbar`) — a pulsing red dot, monospaced `mm:ss` off
+///   the session's own `since`, a mic and a system level meter, and a Stop
+///   button. ONLY the Stop button stops; the rest of the bar is the drag
+///   handle. It stays horizontal on every edge (`DictationPillModel.flat`).
+/// - `.saving` — the same capsule with a full-width travelling wave while the
+///   movie is finalized.
 /// - `.saved("2:14 · 48 MB")` — a green check and the text for 4 s; a click
 ///   reveals the file in Finder.
 /// A peeked `.idle` pill grows a red record glyph next to the mic: that (or a
@@ -70,6 +71,10 @@ struct DictationPillView: View {
         // and the controller stays the only thing that sizes the panel.
         Color.clear
             .overlay { pill }
+            // The pointer is reported in THIS space (see `PillSpace`), so the
+            // Stop button can work out whether it is under the cursor without
+            // SwiftUI's `.onHover`, which never fires for an inactive app.
+            .coordinateSpace(name: PillSpace.root)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Text(model.phase.pillText))
     }
@@ -96,11 +101,14 @@ struct DictationPillView: View {
                     controller.dismissFromUser()
                 case .idle where model.peeking:
                     controller.perform(.startScreenRecording)
-                case .recording:
-                    controller.perform(.stopScreenRecording)
                 case .saved:
                     controller.perform(.revealLastRecording)
                 default:
+                    // `.recording` deliberately does NOT stop here: the bar is
+                    // a toolbar with its own Stop button, and everything else
+                    // on it is the drag handle. A whole-capsule stop was one
+                    // slipped click away from ending a recording the user was
+                    // only trying to move.
                     break
                 }
             }
@@ -222,6 +230,9 @@ struct DictationPillView: View {
     /// up in every phase, turned so text reads the way a spine label does —
     /// bottom-to-top on the left, top-to-bottom on the right.
     private var edgeRotation: Angle {
+        // A flat phase (the recording toolbar, and every dictation phase over a
+        // live recording) never stands up — see `DictationPillModel.flat`.
+        guard !model.flat else { return .zero }
         switch model.edge {
         case .bottom, .top: return .zero
         case .left: return .degrees(-90)
@@ -323,16 +334,26 @@ struct DictationPillView: View {
             .buttonStyle(.borderless)
             .accessibilityLabel("Dismiss")
         case .recording(let since):
-            RecordingDot(stop: model.hovered, reduceMotion: reduceMotion)
-                .rotationEffect(-edgeRotation)
-                .transition(.opacity.combined(with: .scale(scale: 0.6)))
-                .accessibilityHidden(true)
-            elapsed(since: since)
+            RecordingToolbar(
+                since: since,
+                levels: model.recordingLevels,
+                barHovered: model.hovered,
+                pointer: model.pointer,
+                reduceMotion: reduceMotion,
+                onStop: { controller.perform(.stopScreenRecording) }
+            )
+            .transition(.opacity)
         case .saving:
             // Same capsule as `.recording` (the controller keeps the size), the
-            // dot and digits replaced by the travelling wave: "still working".
-            Waveform(mode: .wave(tint: PillStyle.ink, speed: 1.0), reduceMotion: reduceMotion)
-                .transition(.opacity)
+            // toolbar replaced by a travelling wave the full width of the bar:
+            // "still working". A 14-bar wave would float in 75 pt of empty dark
+            // at either end now that the bar is a toolbar.
+            Waveform(
+                mode: .wave(tint: PillStyle.ink, speed: 1.0),
+                reduceMotion: reduceMotion,
+                barCount: PillStyle.savingBarCount
+            )
+            .transition(.opacity)
         case .saved(let text):
             Image(systemName: "checkmark")
                 .font(.system(size: 13, weight: .bold))
@@ -341,23 +362,6 @@ struct DictationPillView: View {
                 .accessibilityHidden(true)
             label(text)
         }
-    }
-
-    /// The elapsed readout. `TimelineView(.periodic(from: since, by: 1))` ticks
-    /// on the session's own second boundary, so the digits change exactly when
-    /// the recording's seconds do; the fixed 56 pt box (wide enough for
-    /// `1:02:34` in caption monospaced) is what keeps the capsule from
-    /// re-measuring when the readout grows an hour field.
-    private func elapsed(since: Date) -> some View {
-        TimelineView(.periodic(from: since, by: 1)) { context in
-            Text(ElapsedFormatter.string(seconds: Int(context.date.timeIntervalSince(since))))
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(PillStyle.ink)
-                .lineLimit(1)
-        }
-        .frame(width: 56)
-        .rotationEffect(-edgeRotation)
     }
 
     /// No `.fixedSize()`: the panel width is capped to the screen
@@ -401,42 +405,193 @@ struct DictationPillView: View {
     }
 }
 
-// MARK: - Recording dot
+// MARK: - Recording toolbar
 
-/// The red "we are rolling" dot: an 8 pt circle that breathes once a second, in
-/// the universal record colour. Under the pointer it becomes a `stop.fill`
-/// square, because a click anywhere on this capsule stops the recording (§6.4)
-/// and the pill has to say so without words. A `TimelineView` is mounted only
-/// while this view is — the pill costs nothing when it is not recording.
-private struct RecordingDot: View {
-    /// The pointer is over the pill: show what a click will do.
-    let stop: Bool
+/// The pill's coordinate spaces. `root` is the whole panel — the space
+/// `DictationPillHostingView` reports the pointer in, so any control inside can
+/// ask "am I under the cursor?" without `.onHover` (dead for an inactive app).
+enum PillSpace {
+    static let root = "kleoth.pill.root"
+}
+
+/// The live screen-recording bar (2026-09-07 — the user on the old capsule:
+/// "ugly, small, non-responsive, not animated").
+///
+///     [● pulsing red dot] [02:14] [mic meter] [sys meter] [■ Stop]
+///
+/// Every width here mirrors `PillStyle.recordingContentWidth`, which is what
+/// `DictationPillController.layout` sizes the capsule from — change one and
+/// change the other, or the bar clips.
+///
+/// Only the Stop button stops the recording. The rest of the bar is the drag
+/// handle, so nudging the pill along its edge can never end a recording.
+private struct RecordingToolbar: View {
+    let since: Date
+    /// Already normalized + smoothed by the controller.
+    let levels: AudioLevels
+    /// The pointer is somewhere on the bar (from the panel-wide tracking area).
+    let barHovered: Bool
+    /// Where exactly, in `PillSpace.root`, so Stop can light up on its own.
+    let pointer: CGPoint?
     let reduceMotion: Bool
-
-    private static let size: CGFloat = 8
+    let onStop: () -> Void
 
     var body: some View {
-        if stop {
-            Image(systemName: "stop.fill")
-                .font(.system(size: 9, weight: .bold))
+        HStack(spacing: 0) {
+            RecordingDot(reduceMotion: reduceMotion)
+            gap(PillStyle.spacingS)
+            elapsed
+            gap(PillStyle.spacingM)
+            LevelMeter(symbol: "mic.fill", level: levels.mic, reduceMotion: reduceMotion)
+            gap(PillStyle.spacingS)
+            LevelMeter(symbol: "speaker.wave.2.fill", level: levels.system, reduceMotion: reduceMotion)
+            gap(PillStyle.spacingM)
+            StopButton(barHovered: barHovered, pointer: pointer, action: onStop)
+        }
+        .padding(.horizontal, PillStyle.compactPadding)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func gap(_ width: CGFloat) -> some View {
+        Color.clear.frame(width: width, height: 1)
+    }
+
+    /// `TimelineView(.periodic(from: since, by: 1))` ticks on the session's own
+    /// second boundary, so the digits change exactly when the recording's
+    /// seconds do; the fixed box (wide enough for `1:02:34` in caption
+    /// monospaced) keeps the bar from re-measuring when an hour field appears.
+    private var elapsed: some View {
+        TimelineView(.periodic(from: since, by: 1)) { context in
+            let text = ElapsedFormatter.string(seconds: Int(context.date.timeIntervalSince(since)))
+            Text(text)
+                .font(.caption)
+                .monospacedDigit()
                 .foregroundStyle(PillStyle.ink)
-                .frame(width: Self.size, height: Self.size)
-        } else if reduceMotion {
-            dot(scale: 1)
+                .lineLimit(1)
+                .accessibilityLabel(Text("Recording, \(text) elapsed"))
+        }
+        .frame(width: PillStyle.elapsedWidth)
+    }
+}
+
+/// The red "we are rolling" dot: a circle breathing on a ~1.2 s cycle in the
+/// universal record colour — scale AND opacity, so it reads at 9 pt. A
+/// `TimelineView` is mounted only while this view is, so the pill costs nothing
+/// when it is not recording. Static under Reduce Motion.
+private struct RecordingDot: View {
+    let reduceMotion: Bool
+
+    private static let period: Double = 1.2
+
+    var body: some View {
+        if reduceMotion {
+            dot(scale: 1, opacity: 1)
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-                // One slow breath a second: 1.0 → 0.78 → 1.0.
-                let t = context.date.timeIntervalSinceReferenceDate
-                dot(scale: 0.89 + 0.11 * cos(t * 2 * .pi))
+                let phase = cos(context.date.timeIntervalSinceReferenceDate * 2 * .pi / Self.period)
+                dot(scale: 0.86 + 0.14 * phase, opacity: 0.72 + 0.28 * phase)
             }
         }
     }
 
-    private func dot(scale: CGFloat) -> some View {
+    private func dot(scale: CGFloat, opacity: Double) -> some View {
         Circle()
             .fill(PillStyle.recordTint)
-            .frame(width: Self.size, height: Self.size)
+            .frame(width: PillStyle.recordDotSize, height: PillStyle.recordDotSize)
             .scaleEffect(scale)
+            .opacity(opacity)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A four-segment level meter behind a glyph: the mic and the system feed each
+/// get one, driven by `DictationPillController.setRecordingLevels` at 20 Hz.
+/// Segments light cumulatively (bar *i* fills as the level crosses `i/4`), so a
+/// glance says "both sides are live" without a number.
+private struct LevelMeter: View {
+    let symbol: String
+    /// 0…1, normalized + smoothed.
+    let level: Double
+    let reduceMotion: Bool
+
+    var body: some View {
+        HStack(spacing: PillStyle.spacingXS) {
+            Image(systemName: symbol)
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(PillStyle.ink.opacity(0.55))
+                .frame(width: PillStyle.meterGlyphWidth)
+            HStack(alignment: .center, spacing: PillStyle.meterBarSpacing) {
+                ForEach(0..<PillStyle.meterBarCount, id: \.self) { index in
+                    let fill = segment(index)
+                    Capsule(style: .continuous)
+                        .fill(PillStyle.ink.opacity(0.26 + 0.74 * fill))
+                        .frame(
+                            width: PillStyle.meterBarWidth,
+                            height: PillStyle.meterBarMinHeight
+                                + (PillStyle.meterBarMaxHeight - PillStyle.meterBarMinHeight) * fill
+                        )
+                }
+            }
+            .frame(height: PillStyle.meterBarMaxHeight)
+        }
+        // The levels already arrive smoothed at 20 Hz; this only takes the
+        // stair-step off the 50 ms grid.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: level)
+        .accessibilityHidden(true)
+    }
+
+    private func segment(_ index: Int) -> CGFloat {
+        let count = Double(PillStyle.meterBarCount)
+        let value = level.isFinite ? min(max(level, 0), 1) : 0
+        return CGFloat(min(max((value - Double(index) / count) * count, 0), 1))
+    }
+}
+
+/// The one control that stops a recording. Red, always visible, and lit when
+/// the pointer is actually over it.
+///
+/// Its own hover state cannot come from `.onHover` (SwiftUI's tracking area is
+/// key-window-only and this panel is never key), so it reads the pointer the
+/// panel's `.activeAlways` tracking area reports and compares it with its own
+/// frame in `PillSpace.root`. `GeometryProxy.frame(in:)` is LAYOUT geometry —
+/// which is exactly right here, because a flat recording bar carries no
+/// `rotationEffect`, and `offset`/`scaleEffect` are both zero once a transition
+/// has settled.
+private struct StopButton: View {
+    let barHovered: Bool
+    let pointer: CGPoint?
+    let action: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let hot = pointer.map {
+                proxy.frame(in: .named(PillSpace.root)).insetBy(dx: -4, dy: -4).contains($0)
+            } ?? false
+            button(hot: hot)
+        }
+        .frame(width: PillStyle.stopButtonSize, height: PillStyle.stopButtonSize)
+    }
+
+    private func button(hot: Bool) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle().fill(PillStyle.recordTint.opacity(hot ? 1.0 : (barHovered ? 0.32 : 0.18)))
+                Circle().strokeBorder(
+                    PillStyle.recordTint.opacity(hot ? 0 : (barHovered ? 0.85 : 0.5)),
+                    lineWidth: 1
+                )
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 8, weight: .black))
+                    .foregroundStyle(hot ? Color.white : PillStyle.recordTint)
+            }
+            .frame(width: PillStyle.stopButtonSize, height: PillStyle.stopButtonSize)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .animation(.easeOut(duration: 0.12), value: hot)
+        .animation(.easeOut(duration: 0.12), value: barHovered)
+        .help("Stop recording")
+        .accessibilityLabel("Stop recording")
     }
 }
 
@@ -536,6 +691,38 @@ enum PillStyle {
     // so these are the full shape's dimensions, not what the user sees.
     static let restingWidth: CGFloat = 68
     static let restingHeight: CGFloat = 22
+
+    // MARK: Recording toolbar
+    //
+    // `RecordingToolbar` lays these out left→right and
+    // `DictationPillController.layout(for: .recording…)` sizes the capsule from
+    // `recordingContentWidth` + two `compactPadding`s. THE TWO MUST AGREE.
+
+    static let recordDotSize: CGFloat = 9
+    /// Fixed digit box — wide enough for `1:02:34`, so the bar never
+    /// re-measures when a recording passes an hour.
+    static let elapsedWidth: CGFloat = 56
+    static let meterGlyphWidth: CGFloat = 12
+    static let meterBarCount = 4
+    static let meterBarWidth: CGFloat = 2.5
+    static let meterBarSpacing: CGFloat = 2.5
+    static let meterBarMinHeight: CGFloat = 4
+    static let meterBarMaxHeight: CGFloat = 14
+    static var meterWidth: CGFloat {
+        meterGlyphWidth + spacingXS
+            + CGFloat(meterBarCount) * meterBarWidth
+            + CGFloat(meterBarCount - 1) * meterBarSpacing
+    }
+    static let stopButtonSize: CGFloat = 22
+    /// ≈194 pt → a 222 pt capsule with the compact paddings.
+    static var recordingContentWidth: CGFloat {
+        recordDotSize + spacingS + elapsedWidth + spacingM
+            + meterWidth + spacingS + meterWidth + spacingM + stopButtonSize
+    }
+    /// `.saving` keeps the recording capsule's width, so its travelling wave
+    /// runs the whole bar rather than floating in the middle of it. Chosen so
+    /// `barCount * (barWidth + barSpacing) - barSpacing` ≈ `recordingContentWidth`.
+    static let savingBarCount = 39
 }
 
 // MARK: - Resting sheen
@@ -584,13 +771,22 @@ private struct Waveform: View {
 
     let mode: Mode
     let reduceMotion: Bool
+    /// `.saving` runs the wave the whole width of the recording toolbar
+    /// (`PillStyle.savingBarCount`); everything else uses the dictation bar.
+    var barCount: Int = PillStyle.barCount
 
-    private static let weights: [Double] = {
-        (0..<PillStyle.barCount).map { index in
-            let x = (Double(index) - Double(PillStyle.barCount - 1) / 2) / (Double(PillStyle.barCount) / 2)
+    /// Bell-shaped weight across the bars, computed for whatever count this
+    /// instance has (cheap: at most a few dozen `exp`s per render).
+    private var weights: [Double] {
+        (0..<barCount).map { index in
+            let x = (Double(index) - Double(barCount - 1) / 2) / (Double(barCount) / 2)
             return 0.35 + 0.65 * exp(-2.2 * x * x)
         }
-    }()
+    }
+
+    private var width: CGFloat {
+        CGFloat(barCount) * PillStyle.barWidth + CGFloat(barCount - 1) * PillStyle.barSpacing
+    }
 
     var body: some View {
         if reduceMotion {
@@ -603,14 +799,15 @@ private struct Waveform: View {
     }
 
     private func bars(at time: TimeInterval) -> some View {
-        HStack(alignment: .center, spacing: PillStyle.barSpacing) {
-            ForEach(0..<PillStyle.barCount, id: \.self) { index in
+        let weights = self.weights
+        return HStack(alignment: .center, spacing: PillStyle.barSpacing) {
+            ForEach(0..<barCount, id: \.self) { index in
                 Capsule(style: .continuous)
                     .fill(tint)
-                    .frame(width: PillStyle.barWidth, height: height(index: index, time: time))
+                    .frame(width: PillStyle.barWidth, height: height(index: index, time: time, weights: weights))
             }
         }
-        .frame(width: PillStyle.waveformWidth, height: PillStyle.barMaxHeight, alignment: .center)
+        .frame(width: width, height: PillStyle.barMaxHeight, alignment: .center)
         .accessibilityHidden(true)
     }
 
@@ -621,22 +818,25 @@ private struct Waveform: View {
         }
     }
 
-    private func height(index: Int, time: TimeInterval) -> CGFloat {
+    private func height(index: Int, time: TimeInterval, weights: [Double]) -> CGFloat {
         let span = PillStyle.barMaxHeight - PillStyle.barMinHeight
         let unit: Double
         switch mode {
         case .live(let level):
-            guard !reduceMotion else { unit = 0.45 * Self.weights[index]; break }
+            guard !reduceMotion else { unit = 0.45 * weights[index]; break }
             let clamped = level.isFinite ? min(max(level, 0), 1) : 0
             // Organic drift: two slow sines per bar, small enough that silence
             // is a soft shimmer and speech is clearly the mic.
             let drift = 0.5 + 0.5 * sin(time * 2.1 + Double(index) * 0.8) * sin(time * 0.9 + Double(index) * 0.35)
             let floor = 0.06 + 0.10 * drift
-            unit = floor + (1 - floor) * clamped * Self.weights[index] * (0.8 + 0.2 * drift)
+            unit = floor + (1 - floor) * clamped * weights[index] * (0.8 + 0.2 * drift)
         case .wave(_, let speed):
-            guard !reduceMotion else { unit = 0.45 * Self.weights[index]; break }
-            let phase = time * 2.6 * speed - Double(index) * 0.55
-            unit = 0.18 + 0.62 * (0.5 + 0.5 * sin(phase)) * Self.weights[index]
+            guard !reduceMotion else { unit = 0.45 * weights[index]; break }
+            // The travelling wave keeps a constant phase per POINT rather than
+            // per bar, so a 39-bar saving wave rolls at the same visible speed
+            // as the 14-bar dictation one.
+            let phase = time * 2.6 * speed - Double(index) * 0.55 * (Double(PillStyle.barCount) / Double(barCount))
+            unit = 0.18 + 0.62 * (0.5 + 0.5 * sin(phase)) * weights[index]
         }
         return PillStyle.barMinHeight + span * CGFloat(min(max(unit, 0), 1))
     }

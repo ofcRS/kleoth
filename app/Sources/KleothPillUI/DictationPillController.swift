@@ -15,7 +15,11 @@ import KleothCore
 /// it is off-screen (`PillGeometry.restingOrigin`), and a chord makes it rise
 /// back out. Dragging slides it along the edge; dragging clearly toward
 /// another edge re-docks it there (`PillGeometry.dragEdge`, with hysteresis).
-/// A pill on a side edge stands up — vertical in every phase.
+/// A pill on a side edge stands up — vertical in every phase, EXCEPT the FLAT
+/// family (the recording toolbar, and every dictation phase while a recording
+/// is in flight — `isFlat`): those stay horizontal and hug the side edge with
+/// their near end, because a 220 pt bar of digits and meters standing on its
+/// end is unreadable.
 ///
 /// Motion model: the panel's frame is NEVER animated. Every move is a
 /// `transition(to:phase:)`: the panel is set — instantly — to a *stage* that
@@ -128,7 +132,7 @@ public final class DictationPillController: DictationPillPresenting {
         let screen = (alreadyUp ? panelScreen() : nil) ?? anchorScreen()
         currentDisplayId = screen?.kleothDisplayId
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: layoutState(for: state), edge: edge, on: screen)
+        let layout = layout(for: state, edge: edge, on: screen)
         let target = CGRect(origin: origin(for: state, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
 
         // Not animated: the edge and label width describe the destination and
@@ -137,22 +141,26 @@ public final class DictationPillController: DictationPillPresenting {
         model.apply(labelWidth: layout.labelWidth)
 
         if alreadyUp {
-            transition(to: target, phase: state, capsule: layout.capsuleSize)
+            transition(to: target, phase: state, capsule: layout.capsuleSize, flat: layout.flat)
         } else {
             // A fresh show starts from the tucked spot and emerges, so even the
             // first pill of the day comes in from the edge rather than popping.
             settle()
             let tucked = CGRect(
-                origin: restingOrigin(activeOrigin: target.origin, panelSize: layout.panelSize, edge: edge, on: screen),
+                origin: restingOrigin(
+                    activeOrigin: target.origin, panelSize: layout.panelSize,
+                    edge: edge, flat: layout.flat, on: screen
+                ),
                 size: layout.panelSize
             )
             panel.setFrame(tucked, display: false)
             model.apply(phase: state)
             model.apply(capsuleSize: layout.capsuleSize)
+            model.apply(flat: layout.flat)
             panel.orderFrontRegardless()
             present()
             if target != tucked {
-                transition(to: target, phase: state, capsule: layout.capsuleSize)
+                transition(to: target, phase: state, capsule: layout.capsuleSize, flat: layout.flat)
             }
         }
 
@@ -166,12 +174,42 @@ public final class DictationPillController: DictationPillPresenting {
     }
 
     /// Live mic + system levels for the `.recording` toolbar's meters, raw RMS
-    /// 0…1 (the pill normalizes + smooths them). Ignored unless the pill is
-    /// visible in the `.recording` phase. (Contract stub — lane L3 renders it.)
+    /// 0…1 — the pill normalizes and smooths them itself, so the recorder can
+    /// hand over exactly what it measured (`ScreenRecorder.levels`) and the
+    /// meter's feel is tuned in one place. Ignored unless the recording
+    /// toolbar is on screen; a phase change zeroes the meters
+    /// (`DictationPillModel.apply(phase:)`), so a dictation interrupting a
+    /// recording never leaves a frozen bar behind.
+    ///
+    /// Same shaping as the dictation meter (`DictationController.setLevel`):
+    /// `PillGeometry.normalizedLevel` for the dB curve, `smoothLevel` for the
+    /// 20 Hz one-pole. Levels arrive at 20 Hz.
     public func setRecordingLevels(_ levels: AudioLevels) {
         guard panel?.isVisible == true else { return }
-        _ = levels
+        switch model.phase {
+        case .recording, .saving: break
+        default:
+            // A dictation is showing over the recording. Forget the filter
+            // state too, or the meters would ease down from the pre-dictation
+            // level when the toolbar comes back.
+            smoothedMicLevel = 0
+            smoothedSystemLevel = 0
+            return
+        }
+        smoothedMicLevel = PillGeometry.smoothLevel(
+            previous: smoothedMicLevel,
+            target: PillGeometry.normalizedLevel(rms: Float(levels.mic))
+        )
+        smoothedSystemLevel = PillGeometry.smoothLevel(
+            previous: smoothedSystemLevel,
+            target: PillGeometry.normalizedLevel(rms: Float(levels.system))
+        )
+        model.apply(recordingLevels: AudioLevels(mic: smoothedMicLevel, system: smoothedSystemLevel))
     }
+
+    /// The one-pole state behind `setRecordingLevels`.
+    private var smoothedMicLevel: Double = 0
+    private var smoothedSystemLevel: Double = 0
 
     public func dismiss() {
         hideTask?.cancel()
@@ -230,21 +268,21 @@ public final class DictationPillController: DictationPillPresenting {
     }
 
     /// The state a phase borrows its LAYOUT from. `.armed` on a `.recording`
-    /// backdrop keeps the recording capsule (§6.1 graft 6): without it the
-    /// pill shrinks from 100×28 to the 68×22 sliver for `minHold` (0.2 s) and
-    /// blooms straight back — two reshapes for a press that changed nothing
-    /// the user can see. `model.phase` is still `.armed`; only the size is
-    /// inherited.
+    /// backdrop must not collapse to the 68×22 sliver for `minHold` (0.2 s) and
+    /// bloom straight back — two reshapes for a press that changed nothing the
+    /// user can see (T2 filmed and rejected exactly that, §6.1 graft 6).
     ///
-    /// Filmed both ways (T2, `--edge bottom --backdrop recording --sequence
-    /// idle,recording,armed,listening,…`): WITH the inheritance the panel frame
-    /// is byte-identical across `recording → armed` (642,13 156×64 in both, no
-    /// transition at all) and only the content swaps dot+digits for the mic
-    /// glyph; WITHOUT it the panel drops to 658,16 124×58 for the 0.2 s hold
-    /// and grows to 152×68 at `.listening` — a visible shrink-and-regrow. Kept.
+    /// T2 solved it by inheriting the RECORDING capsule, which then was 100 pt
+    /// wide — narrower than `.listening`, so the pill grew once at `.listening`
+    /// and never shrank. The recording toolbar is 222 pt now, so inheriting it
+    /// would put a lone mic glyph in a bar 70 pt wider than the listening one
+    /// and shrink at `.listening` instead. `.armed` therefore borrows the
+    /// LISTENING size: the bar answers the press on its first frame (222 → 152,
+    /// mic glyph) and the bars then bloom in place. Still exactly one reshape.
+    /// `model.phase` is still `.armed`; only the size is inherited.
     private func layoutState(for state: DictationPillState) -> DictationPillState {
-        if case .armed = state, case .recording(let since) = backdrop {
-            return .recording(since: since)
+        if case .armed = state, case .recording = backdrop {
+            return .listening(handsFree: false)
         }
         return state
     }
@@ -279,11 +317,11 @@ public final class DictationPillController: DictationPillPresenting {
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
+        let layout = layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
-        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize, flat: layout.flat)
     }
 
     // MARK: View-facing API (DictationPillView)
@@ -291,11 +329,16 @@ public final class DictationPillController: DictationPillPresenting {
     /// Called once at drag start: finishes any in-flight transition (so the
     /// panel is exactly the capsule and the drag moves what the user sees) and
     /// remembers where along the edge the pointer grabbed it.
+    ///
+    /// The grab is measured against the PANEL's own centre rather than
+    /// `anchorCenter`: settled, the two are the same for an upright phase, and
+    /// for a flat recording bar on a side edge the panel is the only thing
+    /// that knows where the along-axis clamp actually put it.
     func beginDrag() {
         settle()
-        guard let screen = panelScreen() ?? defaultScreen() else { return }
+        guard let panel else { return }
         let mouse = NSEvent.mouseLocation
-        let center = anchorCenter(edge: model.edge, on: screen)
+        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
         dragGrabOffset = model.edge.isVertical ? mouse.y - center.y : mouse.x - center.x
     }
 
@@ -314,18 +357,22 @@ public final class DictationPillController: DictationPillPresenting {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
             ?? panelScreen() ?? defaultScreen() else { return }
         let edge = PillGeometry.dragEdge(current: model.edge, pointer: mouse, in: screen.frame)
+        let layout = layout(for: model.phase, edge: edge, on: screen)
         if edge != model.edge || screen.kleothDisplayId != currentDisplayId {
+            // The along axis itself swaps (x on bottom/top, y on the sides), so
+            // a grab measured on the old one is meaningless — flat or not.
             if edge.isVertical != model.edge.isVertical { dragGrabOffset = 0 }
             currentDisplayId = screen.kleothDisplayId
             model.apply(edge: edge)
-            model.apply(labelWidth: Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen).labelWidth)
+            model.apply(labelWidth: layout.labelWidth)
         }
         let along = (edge.isVertical ? mouse.y : mouse.x) - dragGrabOffset
+        let size = layout.panelSize
         let center = PillGeometry.dockedCenter(
-            edge: edge, along: along, panelSize: Self.referenceSize(edge: edge, on: screen),
+            edge: edge, along: along,
+            panelSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: layout.flat, on: screen),
             shadowPadding: Self.shadowPadding, in: Self.bounds(of: screen)
         )
-        let size = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen).panelSize
         panel.setFrame(
             CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height),
             display: true
@@ -353,11 +400,11 @@ public final class DictationPillController: DictationPillPresenting {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
+        let layout = layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
-        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize, flat: layout.flat)
     }
 
     /// The pill's action button. The handler lives in `DictationController`;
@@ -389,7 +436,7 @@ public final class DictationPillController: DictationPillPresenting {
 
     private func ensurePanel() -> DictationPanel {
         if let panel { return panel }
-        let size = Self.layout(for: .idle, edge: .bottom, on: nil).panelSize
+        let size = Self.layout(for: .idle, edge: .bottom, on: nil, flat: false).panelSize
         let panel = DictationPanel(contentRect: CGRect(origin: .zero, size: size))
         let hosting = DictationPillHostingView(
             rootView: AnyView(DictationPillView(controller: self).environmentObject(model))
@@ -402,6 +449,7 @@ public final class DictationPillController: DictationPillPresenting {
         // root-view note in `DictationPillView.body` for the fix that did.
         hosting.sizingOptions = []
         hosting.onHoverChange = { [weak self] hovering in self?.handleHover(hovering) }
+        hosting.onPointerMove = { [weak self] point in self?.model.apply(pointer: point) }
         panel.contentView = hosting
         self.panel = panel
         return panel
@@ -469,11 +517,11 @@ public final class DictationPillController: DictationPillPresenting {
         }
         guard let panel, panel.isVisible else { return }
         currentDisplayId = screen.kleothDisplayId
-        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
+        let layout = layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
-        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize)
+        transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize, flat: layout.flat)
     }
 
     // MARK: Film (sandbox)
@@ -555,7 +603,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// Moves the capsule to `target` (a panel rect: capsule + shadow margin)
     /// and switches it to `phase`, on one spring. See the type comment for the
     /// stage technique. Under Reduce Motion the panel simply jumps.
-    private func transition(to target: CGRect, phase: DictationPillState, capsule: CGSize) {
+    private func transition(to target: CGRect, phase: DictationPillState, capsule: CGSize, flat: Bool) {
         guard let panel else { return }
         transitionGeneration += 1
         let generation = transitionGeneration
@@ -565,6 +613,7 @@ public final class DictationPillController: DictationPillPresenting {
             model.apply(offset: .zero)
             model.apply(phase: phase)
             model.apply(capsuleSize: capsule)
+            model.apply(flat: flat)
             panel.setFrame(target, display: true)
             return
         }
@@ -605,6 +654,7 @@ public final class DictationPillController: DictationPillPresenting {
             guard let self, self.transitionGeneration == generation else { return }
             let moves = self.model.offset != destination
             let reshapes = self.model.phase != phase || self.model.capsuleSize != capsule
+                || self.model.flat != flat
             guard moves || reshapes else {
                 self.settle()
                 return
@@ -637,6 +687,10 @@ public final class DictationPillController: DictationPillPresenting {
             let reshape = {
                 self.model.apply(phase: phase)
                 self.model.apply(capsuleSize: capsule)
+                // Rides the shape spring so a bar arriving on (or leaving) a
+                // side edge TUMBLES between upright and flat with its size,
+                // instead of snapping 90° a frame before the spring starts.
+                self.model.apply(flat: flat)
             }
             if moves {
                 if completeOnMove {
@@ -691,9 +745,10 @@ public final class DictationPillController: DictationPillPresenting {
         settle()
         currentDisplayId = screen.kleothDisplayId
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
+        let layout = layout(for: model.phase, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
+        model.apply(flat: layout.flat)
         let target = CGRect(origin: origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
         panel.setFrame(target, display: true)
     }
@@ -708,11 +763,40 @@ public final class DictationPillController: DictationPillPresenting {
     /// on the right edge near the bottom rose while growing and sank while
     /// shrinking — the "levitating" the user saw.
     private static func referenceSize(edge: PillGeometry.Edge, on screen: NSScreen?) -> CGSize {
-        let long = layout(for: .listening(handsFree: true), edge: edge, on: screen).panelSize
-        let thick = layout(for: .warning(""), edge: edge, on: screen).panelSize
-        return (edge == .left || edge == .right)
-            ? CGSize(width: thick.width, height: long.height)
-            : CGSize(width: long.width, height: thick.height)
+        let long = layout(for: .listening(handsFree: true), edge: edge, on: screen, flat: false).panelSize
+        let thick = layout(for: .warning(""), edge: edge, on: screen, flat: false).panelSize
+        guard !edge.isVertical else {
+            // A side edge has TWO families — the upright dictation capsules
+            // (this anchor) and the flat recording bar, which hugs the edge
+            // with its near end and is placed by `dockReferenceSize` instead.
+            // Folding the bar's 250 pt length in here would clamp the upright
+            // anchor 128 pt away from the top and bottom of the screen.
+            return CGSize(width: thick.width, height: long.height)
+        }
+        // Bottom/top: the recording toolbar is now the LONGEST phase, so the
+        // one anchor is resolved against it — otherwise a pill docked near a
+        // corner would have the bar clamped (and every other phase shifted by
+        // the difference: the "levitating" bug this reference size exists for).
+        let bar = layout(for: .recording(since: .distantPast), edge: edge, on: screen, flat: true).panelSize
+        return CGSize(width: max(long.width, bar.width), height: max(thick.height, bar.height))
+    }
+
+    /// The panel size the DOCK is resolved against for one phase. Upright
+    /// phases share the single `referenceSize` anchor; a flat bar on a side
+    /// edge keeps its own width (so its near end hugs the edge whatever the
+    /// phase's length) and borrows only a common thickness for the along-axis
+    /// clamp, so phase-to-phase morphs never slide along the edge.
+    private static func dockReferenceSize(
+        panelSize: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?
+    ) -> CGSize {
+        guard flat, edge.isVertical else { return referenceSize(edge: edge, on: screen) }
+        return CGSize(width: panelSize.width, height: flatThickness)
+    }
+
+    /// The thickest a flat bar gets (a `.warning` over a recording backdrop),
+    /// panel included — the along-axis clamp for the whole flat family.
+    private static var flatThickness: CGFloat {
+        capsuleHeight(for: .warning("")) + 2 * shadowPadding
     }
 
     /// The anchor's center: the reference panel docked on `edge` at the saved
@@ -722,26 +806,42 @@ public final class DictationPillController: DictationPillPresenting {
     /// (for an `.accessory` app with no key window `NSScreen.main` is whatever
     /// screen last had one — unreliable — while the mouse is where the user
     /// is looking).
-    private func anchorCenter(edge: PillGeometry.Edge, on screen: NSScreen) -> CGPoint {
+    private func anchorCenter(
+        edge: PillGeometry.Edge, panelSize: CGSize, flat: Bool, on screen: NSScreen
+    ) -> CGPoint {
         let bounds = Self.bounds(of: screen)
-        let reference = Self.referenceSize(edge: edge, on: screen)
-        let along: CGFloat
-        if let placement = savedPlacement(), self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
-            along = PillGeometry.along(for: placement, edge: edge, in: bounds)
-        } else {
-            along = edge.isVertical ? bounds.midY : bounds.midX
-        }
         return PillGeometry.dockedCenter(
-            edge: edge, along: along, panelSize: reference, shadowPadding: Self.shadowPadding, in: bounds
+            edge: edge,
+            along: savedAlong(edge: edge, on: screen, in: bounds),
+            panelSize: Self.dockReferenceSize(panelSize: panelSize, edge: edge, flat: flat, on: screen),
+            shadowPadding: Self.shadowPadding,
+            in: bounds
         )
+    }
+
+    /// Where along its edge the pill is parked: the saved fraction if the saved
+    /// placement is for this screen, else the middle of the edge.
+    private func savedAlong(edge: PillGeometry.Edge, on screen: NSScreen, in bounds: CGRect) -> CGFloat {
+        if let placement = savedPlacement(),
+           self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
+            return PillGeometry.along(for: placement, edge: edge, in: bounds)
+        }
+        return edge.isVertical ? bounds.midY : bounds.midX
     }
 
     /// A phase's active origin: its panel centered on the anchor. Clamping is
     /// a no-op for anything no larger than the reference size; only an
     /// over-long text pill can still be nudged.
-    private func activeOrigin(panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?) -> CGPoint {
+    ///
+    /// A flat bar on a side edge is placed differently on purpose: it is not
+    /// centered on the upright anchor but pinned by its NEAR END, so a 250 pt
+    /// toolbar lies along the edge and grows inward instead of hanging half
+    /// off the display.
+    private func activeOrigin(
+        panelSize size: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?
+    ) -> CGPoint {
         guard let screen else { return .zero }
-        let center = anchorCenter(edge: edge, on: screen)
+        let center = anchorCenter(edge: edge, panelSize: size, flat: flat, on: screen)
         let origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
         return PillGeometry.clamp(origin, panelSize: size, in: Self.bounds(of: screen))
     }
@@ -764,19 +864,35 @@ public final class DictationPillController: DictationPillPresenting {
     /// The anchor slid into `edge` of `screen` until half the panel is
     /// off-screen — where `.idle` lives.
     private func restingOrigin(
-        activeOrigin: CGPoint, panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?
+        activeOrigin: CGPoint, panelSize size: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?
     ) -> CGPoint {
         guard let screen else { return activeOrigin }
-        return PillGeometry.restingOrigin(activeOrigin: activeOrigin, panelSize: size, edge: edge, in: screen.frame)
+        guard flat, edge.isVertical else {
+            return PillGeometry.restingOrigin(activeOrigin: activeOrigin, panelSize: size, edge: edge, in: screen.frame)
+        }
+        // A flat bar tucks along the edge's NORMAL like every other phase, but
+        // centring a 250 pt panel on the edge would start it 125 pt off-screen
+        // and slide it in like a drawer. It leaves only a resting-sliver's
+        // worth of its near end outside instead, so it grows out of the edge
+        // over the same ~37 pt a bottom-edge pill does.
+        let peek = PillStyle.restingHeight / 2
+        var origin = activeOrigin
+        switch edge {
+        case .left: origin.x = screen.frame.minX - Self.shadowPadding - peek
+        case .right: origin.x = screen.frame.maxX + Self.shadowPadding + peek - size.width
+        case .bottom, .top: break
+        }
+        return origin
     }
 
     /// Where a phase sits: active phases on the anchor, `.idle` tucked.
     private func origin(
         for state: DictationPillState, panelSize size: CGSize, edge: PillGeometry.Edge, on screen: NSScreen?
     ) -> CGPoint {
-        let active = activeOrigin(panelSize: size, edge: edge, on: screen)
+        let flat = isFlat(state)
+        let active = activeOrigin(panelSize: size, edge: edge, flat: flat, on: screen)
         guard state == .idle, !peeking else { return active }
-        return restingOrigin(activeOrigin: active, panelSize: size, edge: edge, on: screen)
+        return restingOrigin(activeOrigin: active, panelSize: size, edge: edge, flat: flat, on: screen)
     }
 
     /// The area an active pill may occupy on `screen` — the full display minus
@@ -851,9 +967,9 @@ public final class DictationPillController: DictationPillPresenting {
         case .idle, .armed: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
         case .warning, .failed: return 38
-        // Between resting (22) and a motion phase (32): the recording backdrop
-        // is "resting family, but alive". T0 placeholder — T2 films it.
-        case .recording, .saving: return 28
+        // The live recording toolbar: tall enough for the digits, the two
+        // meters and the Stop button to breathe without becoming a window.
+        case .recording, .saving: return 30
         // The motion thickness, so the text confirmation is ONE morph.
         case .saved: return 32
         }
@@ -871,15 +987,49 @@ public final class DictationPillController: DictationPillPresenting {
         var labelWidth: CGFloat?
         /// The capsule itself, un-rotated (width = its length along the edge).
         var capsuleSize: CGSize
+        /// The capsule stays horizontal even on a side edge — see
+        /// `DictationPillModel.flat`.
+        var flat: Bool
+    }
+
+    /// Whether a phase lies FLAT (horizontal on every edge).
+    ///
+    /// The recording toolbar is a wide horizontal bar — a red dot, monospaced
+    /// digits, two meters and a Stop button. Standing that on its end down a
+    /// side edge (as every dictation phase does) makes a 250 pt vertical strip
+    /// with sideways digits: the user called the old side-edge behaviour
+    /// "non-responsive" and asked for it to respond properly to an edge
+    /// change, and horizontal is the only readable answer. While a recording
+    /// is in flight the dictation phases join it, so a chord mid-recording
+    /// morphs the bar in place instead of tumbling it 90° and back.
+    ///
+    /// `.idle` is deliberately NOT flat: the resting sliver still stands up in
+    /// a side edge. (It never coexists with a recording — the backdrop then is
+    /// `.recording`, not `.idle`.)
+    private func isFlat(_ state: DictationPillState) -> Bool {
+        switch state {
+        case .recording, .saving, .saved: return true
+        case .hidden, .idle: return false
+        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed:
+            if case .recording = backdrop { return true }
+            return false
+        }
+    }
+
+    /// `layout(for:edge:on:flat:)` for a phase of THIS pill: resolves the
+    /// borrowed layout state (`.armed` over a recording backdrop) and the
+    /// flatness, which both depend on the backdrop.
+    private func layout(for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?) -> Layout {
+        Self.layout(for: layoutState(for: state), edge: edge, on: screen, flat: isFlat(state))
     }
 
     /// The most a text label may take: a share of the screen along the pill's
     /// axis (its height on a side edge). Bounded below so a tiny or unknown
     /// screen still shows something.
-    static func labelCap(edge: PillGeometry.Edge, on screen: NSScreen?) -> CGFloat {
+    static func labelCap(edge: PillGeometry.Edge, on screen: NSScreen?, flat: Bool) -> CGFloat {
         guard let screen else { return 600 }
         let bounds = bounds(of: screen)
-        let axis = (edge == .left || edge == .right) ? bounds.height : bounds.width
+        let axis = (edge.isVertical && !flat) ? bounds.height : bounds.width
         guard axis.isFinite, axis > 0 else { return 600 }
         return max(PillGeometry.minPanelWidth, floor(axis * 0.6))
     }
@@ -889,7 +1039,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// (`labelCap`). Computed rather than read from `fittingSize` so the frame
     /// is known synchronously, before SwiftUI has laid the new phase out. On a
     /// side edge the capsule is rotated 90°, so the panel swaps its dimensions.
-    static func layout(for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?) -> Layout {
+    static func layout(
+        for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?, flat: Bool
+    ) -> Layout {
         var length: CGFloat
         var labelWidth: CGFloat?
         switch state {
@@ -902,15 +1054,16 @@ public final class DictationPillController: DictationPillPresenting {
             // `.done` keeps the bar's width so the check appears in place of the wave.
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
         case .recording, .saving:
-            // Dot 8 + spacingS + the fixed 56 pt digit box + the compact
-            // paddings = 100 pt, under the hands-free listening capsule, so the
-            // single anchor's `referenceSize` still covers it (§6.1 graft 7).
-            length = 8 + PillStyle.spacingS + 56 + 2 * PillStyle.compactPadding
+            // The live recording TOOLBAR: dot · digits · mic meter · system
+            // meter · Stop, mirrored exactly by `RecordingToolbar` in the view
+            // (≈222 pt). It is now the longest phase, so `referenceSize`
+            // resolves the bottom/top anchor against it.
+            length = PillStyle.recordingContentWidth + 2 * PillStyle.compactPadding
         case .warning, .failed, .saved:
             // +1: SwiftUI's ideal text width can round up a hair past AppKit's
             // measurement; a frame narrower than the ideal would truncate.
             let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
-            let label = min(measured, labelCap(edge: edge, on: screen))
+            let label = min(measured, labelCap(edge: edge, on: screen, flat: flat))
             labelWidth = label
             length = 20 + PillStyle.spacingS + label
             if let action = state.fault?.action {
@@ -924,10 +1077,12 @@ public final class DictationPillController: DictationPillPresenting {
         let capsule = CGSize(width: ceil(length), height: capsuleHeight(for: state))
         length = ceil(length + 2 * shadowPadding + widthSlack)
         let thickness = capsuleHeight(for: state) + 2 * shadowPadding
-        let size = (edge == .left || edge == .right)
+        // A flat phase keeps its dimensions on every edge — the capsule is not
+        // rotated, so the panel must not be transposed either.
+        let size = (edge.isVertical && !flat)
             ? CGSize(width: thickness, height: length)
             : CGSize(width: length, height: thickness)
-        return Layout(panelSize: size, labelWidth: labelWidth, capsuleSize: capsule)
+        return Layout(panelSize: size, labelWidth: labelWidth, capsuleSize: capsule, flat: flat)
     }
 
     private static func textWidth(_ text: String, style: NSFont.TextStyle, weight: NSFont.Weight) -> CGFloat {
@@ -983,7 +1138,7 @@ extension DictationPillState {
         case .done: return "Pasted"
         case .warning(let message): return message
         case .failed(let fault): return fault.text
-        case .recording: return "Recording the screen — click to stop"
+        case .recording: return "Recording the screen"
         case .saving: return "Saving the recording…"
         case .saved(let text): return text
         }
