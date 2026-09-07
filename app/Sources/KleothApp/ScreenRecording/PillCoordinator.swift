@@ -80,6 +80,12 @@ final class PillCoordinator {
         recompute()
     }
 
+    /// Live meters for the `.recording` toolbar — a straight pass-through; the
+    /// pill ignores levels while a dictation phase is showing.
+    func setRecordingLevels(_ levels: AudioLevels) {
+        pill.setRecordingLevels(levels)
+    }
+
     /// `.saving` / `.saved` / `.recording` / a recording `.warning` or
     /// `.failed`: applied now when no dictation phase is live, otherwise a
     /// `.saved` is QUEUED (≤ `savedConfirmationMaxDelay`) and anything else is

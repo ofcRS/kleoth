@@ -165,6 +165,14 @@ public final class DictationPillController: DictationPillPresenting {
         model.apply(level: level)
     }
 
+    /// Live mic + system levels for the `.recording` toolbar's meters, raw RMS
+    /// 0…1 (the pill normalizes + smooths them). Ignored unless the pill is
+    /// visible in the `.recording` phase. (Contract stub — lane L3 renders it.)
+    public func setRecordingLevels(_ levels: AudioLevels) {
+        guard panel?.isVisible == true else { return }
+        _ = levels
+    }
+
     public func dismiss() {
         hideTask?.cancel()
         hideTask = nil

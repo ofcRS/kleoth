@@ -99,6 +99,13 @@ public final class ScreenRecorder {
         firstFrameSink = frames.continuation
     }
 
+    /// The most recent mic and system RMS (0…1 linear), for the pill's live
+    /// meters. Cheap enough to poll at 20 Hz from the main actor: the lanes
+    /// store into two heap words on their own queues, nothing is `sync`ed.
+    /// Zero when the session is not live. (Contract stub — lane L2 wires the
+    /// measurement into `MicrophoneSource` / `SystemAudioSink`.)
+    public var levels: AudioLevels { .zero }
+
     /// Live counters — the `screenrec` probe's per-second line.
     ///
     /// It reads the writer's and pump's state through a brief `sync` onto their

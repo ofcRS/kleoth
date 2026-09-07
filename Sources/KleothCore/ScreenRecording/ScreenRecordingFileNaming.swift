@@ -69,6 +69,35 @@ public enum ScreenRecordingFileNaming {
         return String(format: "%.1f GB", Double(value) / 1_000_000_000)
     }
 
+    /// The transcript sidecar for a finished movie: same stem, `.json`
+    /// ("screen-….mp4" → "screen-….json").
+    public static func sidecarURL(for movieURL: URL) -> URL {
+        movieURL.deletingPathExtension().appendingPathExtension("json")
+    }
+
+    /// True for a finished movie name the Recordings list should show: an
+    /// `.mp4` that is not still in flight. Recovered files count.
+    public static func isFinishedRecordingName(_ name: String) -> Bool {
+        name.hasSuffix(".mp4") && !isInFlightName(name)
+    }
+
+    /// The recording date encoded in a stem produced by `baseName(for:)`
+    /// ("screen-2026-09-06-143012[-2][-recovered]"), `nil` for anything else.
+    /// Interpreted in the current time zone, the same one that named it.
+    public static func date(fromStemOf url: URL) -> Date? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        let prefix = ScreenRecordingDefaults.filePrefix + "-"
+        guard stem.hasPrefix(prefix) else { return nil }
+        let rest = String(stem.dropFirst(prefix.count))
+        // yyyy-MM-dd-HHmmss is exactly 17 characters.
+        guard rest.count >= 17 else { return nil }
+        let stamp = String(rest.prefix(17))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        return formatter.date(from: stamp)
+    }
+
     // MARK: - Internals
 
     /// A base is taken when the directory already holds it bare, in flight, or

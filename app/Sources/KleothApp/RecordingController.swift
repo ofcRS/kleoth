@@ -841,7 +841,11 @@ public final class RecordingController: ObservableObject {
     /// Appends a job to the strict FIFO pipeline queue (see `pipelineQueueTail`).
     /// Jobs hop onto the main actor for state updates; the heavy lifting inside
     /// (WhisperKit, uploads) suspends it rather than blocking.
-    private func enqueuePipelineJob(_ job: @escaping @MainActor @Sendable () async -> Void) {
+    ///
+    /// Internal (not private) so the screen-recording transcription job can
+    /// share the queue: every `LocalTranscriber` run loads its own ~600 MB
+    /// WhisperKit, so two engines must never run at once.
+    func enqueuePipelineJob(_ job: @escaping @MainActor @Sendable () async -> Void) {
         let previous = pipelineQueueTail
         pipelineQueueTail = Task { @MainActor in
             await previous?.value

@@ -27,6 +27,10 @@ public struct LocalTranscriber: Transcriber {
     public let model: String
     /// Forced language code (e.g. `"ru"`). `nil` → automatic detection.
     public let language: String?
+    /// Ask WhisperKit for per-word timings and emit one `ScribeWord` per WORD
+    /// (default: one per segment). Screen recordings need this for the
+    /// current-word highlight; meetings keep the cheaper segment path.
+    public let wordTimestamps: Bool
 
     /// Default model: multilingual large-v3 turbo (~626 MB), strong on Russian.
     public static let defaultModel = "large-v3-v20240930_626MB"
@@ -34,11 +38,13 @@ public struct LocalTranscriber: Transcriber {
     public init(
         channelFiles: [URL] = [],
         model: String = LocalTranscriber.defaultModel,
-        language: String? = nil
+        language: String? = nil,
+        wordTimestamps: Bool = false
     ) {
         self.channelFiles = channelFiles
         self.model = model
         self.language = language
+        self.wordTimestamps = wordTimestamps
     }
 
     /// On-device transcription is free.
