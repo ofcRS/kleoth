@@ -434,3 +434,23 @@ struct KleothIllustration: View {
             .accessibilityHidden(true)
     }
 }
+
+// MARK: - Row button style
+
+/// `.plain` for the popover's text rows, with one fix: the whole label frame is
+/// the hit target. A plain `Label` only hit-tests its glyph and its text — the
+/// gap between them, and any padding, is transparent to clicks, so "History"
+/// registered only on the letters. `contentShape` fills the frame; the press
+/// feedback matches `.plain`.
+struct KleothRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+extension ButtonStyle where Self == KleothRowButtonStyle {
+    /// Popover rows: icon + text buttons whose entire frame should click.
+    static var kleothRow: KleothRowButtonStyle { KleothRowButtonStyle() }
+}

@@ -241,7 +241,7 @@ struct MenuView: View {
                 .font(.caption)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.kleothRow)
             .foregroundStyle(KleothPalette.recordingTint)
             .help("Stop the screen recording and save it to ~/Kleoth/screen-recordings")
         } else {
@@ -250,7 +250,7 @@ struct MenuView: View {
                     .font(.caption)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.kleothRow)
             .foregroundStyle(.secondary)
             .help("Record the screen with system audio and your microphone. Pick a display or drag a region; macOS may ask for Screen Recording access the first time.")
         }
@@ -359,7 +359,7 @@ struct MenuView: View {
                 .font(.caption)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.kleothRow)
         .foregroundStyle(KleothPalette.pendingTint)
         .help("Grant Kleoth Accessibility access so the fn+shift dictation hotkey and paste can work")
     }
@@ -385,7 +385,7 @@ struct MenuView: View {
                         Button { openHistory(select: meeting.id) } label: {
                             RecentMeetingRow(meeting: meeting)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.kleothRow)
 
                         if index < shown.count - 1 {
                             Divider().padding(.leading, KleothMetrics.spacingM)
@@ -446,7 +446,7 @@ struct MenuView: View {
             .help("Quit Kleoth")
         }
         .font(.callout)
-        .buttonStyle(.plain)
+        .buttonStyle(.kleothRow)
         .foregroundStyle(.secondary)
         .confirmationDialog(
             quitDialogTitle,
