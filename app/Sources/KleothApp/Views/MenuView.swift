@@ -269,6 +269,8 @@ struct MenuView: View {
 
                 Spacer(minLength: KleothMetrics.spacingS)
 
+                Button("Open") { openRecordings(select: summary.url) }
+                    .help("Watch this recording with its transcript in the History window")
                 Button("Reveal") { screenRecording.revealLast() }
                     .help("Show the recording in Finder")
                 Button(copiedLastPath ? "Copied!" : "Copy Path") { copyLastPath() }
@@ -477,6 +479,16 @@ struct MenuView: View {
             message += " A meeting is still transcribing, and quitting stops that — its audio stays saved."
         }
         return message
+    }
+
+    /// Opens History on the **Recordings** scope with `url` selected — the
+    /// `openHistory(select:)` idiom for the other list. The id a recording is
+    /// keyed by is its standardized path (`ScreenRecordingItem.id`).
+    private func openRecordings(select url: URL?) {
+        screenRecording.selectedRecordingID = url?.standardizedFileURL.path
+        screenRecording.recordingsHistoryRequest += 1
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        openWindow(id: "kleoth-history")
     }
 
     /// Opens History on the Meetings scope. The popover's entry points are all

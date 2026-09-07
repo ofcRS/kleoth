@@ -498,6 +498,10 @@ public final class RecordingController: ObservableObject {
         Keychain.set(url.path, Keychain.Account.outputDir)
         settings.outputDir = url
         loadRecentMeetings()
+        // The screen-recordings folder lives under the output dir, so the
+        // Recordings list is now looking at the wrong place
+        // (`DictationController.syncLogStore` makes the same promise).
+        ScreenRecordingController.shared?.reloadRecordings()
         startWatchingOutputDir()
     }
 
