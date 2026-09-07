@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-07
+
 ### Added
 
 - **Screen recording.** Hover the pill and click the red record glyph — or pick "Record screen…"
@@ -14,16 +16,18 @@ All notable changes to Kleoth are documented here. The format is based on
   the pill then shows a live timer, and hovering it turns the timer into a stop button. When you
   stop, the pill confirms with the length and file size — click it to reveal the recording in
   Finder. Files land in `~/Kleoth/screen-recordings/` as 1080p H.264 MP4s (about 22 MB per minute)
-  that you own outright: nothing is uploaded, nothing is transcribed. Quitting mid-recording asks
+  that you own outright: nothing is uploaded. Quitting mid-recording asks
   first and still saves the file, and a recording interrupted by a crash is recovered on the next
   launch. Recording and dictation coexist — dictating during a recording morphs the pill in place
   and hands it back when you are done.
-- **Recordings viewer.** History gained a Recordings scope listing every screen recording. Each
+- **Recordings viewer (proof of concept).** History gained a Recordings scope listing every screen recording. Each
   recording is transcribed on device right after it is saved (word timings included); the viewer plays
   the video with the transcript beside it, highlights the word being spoken, seeks when you click a
   word, and lets you double-click a word or the title to correct it. Older recordings can be
   transcribed on device or in the cloud from the viewer. The transcript lives in a small `.json`
-  next to the `.mp4`; the movie itself is never modified.
+  next to the `.mp4`; the movie itself is never modified. This is deliberately a first cut: no
+  trimming, no sharing, no export, no live subtitles — the recording is the file, the transcript is
+  the sidecar, and the viewer just shows them side by side.
 - **A live recording toolbar.** While recording, the pill becomes a bar with a pulsing dot, the
   elapsed time, live microphone and system-audio meters, and an explicit Stop button — only Stop
   stops, so a stray click cannot end a recording. The bar stays horizontal on every screen edge and

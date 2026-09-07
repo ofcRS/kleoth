@@ -10,7 +10,7 @@ The single source of truth for the version is `CFBundleShortVersionString` in
 ## 1. Pre-flight
 
 - [ ] Working tree clean, on the release branch (usually `main`), everything intended is committed.
-- [ ] Decide the version (semver). Current: `0.2.0`.
+- [ ] Decide the version (semver). Current: `0.3.0`.
 
 ## 2. Bump the version
 

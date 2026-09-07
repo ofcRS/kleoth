@@ -39,6 +39,13 @@ and keeps the transcript and summary as files in `~/Kleoth`.
   translated), and pastes it into whatever app has focus. Double-tap for hands-free. Text-only
   history in `~/Kleoth/dictations/`; a personal dictionary biases recognition toward your names
   and jargon. Audio is never kept.
+- **Screen recording, Loom-style** — hover the pill (or pick "Record screen…" in the popover),
+  drag a region or take the whole display, and Kleoth records it with system audio **and** your
+  microphone as one small H.264 MP4 (about 22 MB per minute) in `~/Kleoth/screen-recordings/`. A
+  live toolbar shows the elapsed time and both audio levels; only its Stop button stops. Each
+  recording is transcribed on device afterwards and opens in a viewer with the transcript beside the
+  video: the spoken word is highlighted, clicking a word seeks, double-clicking edits it. The viewer
+  is a proof of concept — no trimming, sharing or export yet.
 
 ## Requirements
 
@@ -62,8 +69,8 @@ and keeps the transcript and summary as files in `~/Kleoth`.
 
 ## Install
 
-**[⬇ Download Kleoth-0.2.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.2.0/Kleoth-0.2.0.dmg)**
-(8.2 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.2.0/Kleoth-0.2.0.dmg.sha256))
+**[⬇ Download Kleoth-0.3.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.3.0/Kleoth-0.3.0.dmg)**
+(12.2 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.3.0/Kleoth-0.3.0.dmg.sha256))
 — or browse all [Releases](../../releases).
 
 Open the DMG and drag **Kleoth.app** onto the **Applications** folder. Kleoth lives in the menu bar
@@ -95,6 +102,7 @@ brew install --cask kleoth
 | **Keychain** | Store your optional API keys securely. **Click "Always Allow"** so you are not re-prompted. | When you save a key, or on a re-signed build. |
 | Calendar *(optional)* | Name a meeting from the calendar event you're in. Decline freely. | If you grant it. |
 | Accessibility *(optional)* | Dictation only: watch for the fn+shift chord system-wide and send the ⌘V that pastes the dictated text. | When you turn dictation on in Settings. |
+| Screen Recording *(optional)* | Screen recording only: capture the display or region you picked. Kleoth's own pill and picker are never in the frame. | The first time you start a screen recording. |
 
 Everything except the microphone and system-audio grants is optional. Kleoth never uploads audio
 unless you trigger the cloud transcription action yourself.
@@ -183,6 +191,10 @@ Dictations are text-only: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw 
 text, the target app, language, and models per utterance; the audio clip is deleted as soon as it
 has been transcribed (it only ever lives in `$TMPDIR/kleoth-dictation/`). The personal dictionary
 is a plain JSON array at `~/.config/kleoth/dictionary.json`.
+
+Screen recordings are plain files in `~/Kleoth/screen-recordings/`: `screen-<timestamp>.mp4` plus a
+`screen-<timestamp>.json` sidecar holding the title and the word-timed transcript. Editing a word in
+the viewer rewrites only the sidecar; the movie is never touched.
 
 **Consent:** recording conversations is regulated and the rules vary by jurisdiction — many places
 require **all-party consent**. Kleoth records both sides without a visible bot; that is a UX choice,

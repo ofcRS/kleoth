@@ -374,6 +374,16 @@ sidecar: tier/model/language/cost) — the six root filenames stay THE active se
 source of truth for which tiers exist (no new meta key).
 
 ## Current status (2026-09-07 — recordings viewer + live recording toolbar, phase 2)
+✅ **v0.3.0 RELEASED (2026-09-07):** `feat/recordings-viewer` fast-forwarded into `main`, tag `v0.3.0`,
+https://github.com/ofcRS/kleoth/releases/tag/v0.3.0 — `Kleoth-0.3.0.dmg` (12.2 MB, SHA-256
+`00fd1be6…`) + `.sha256` attached; README download link + Homebrew cask draft point at 0.3.0; CHANGELOG
+`[0.3.0]` cut from `[Unreleased]` (the recordings viewer is labelled a proof of concept there and in the
+README). `CFBundleVersion` 3. Self-signed tier (right-click → Open). The user tested the toolbar +
+recordings live before the cut ("more than fine"); after the AVKit fix, two recordings auto-transcribed
+on device (RU, 19 + 100 words). ⚠️ Gotcha seen during the cut: the FIRST WhisperKit load after a new
+binary is installed took **243 s** ("Loaded models for whisper size: large-v3 in 242.98s" — Core ML
+re-specializes the ANE plan per binary), the next 1.4 s — a fresh install looks stuck on its first
+transcription for ~4 min with the app at ~170 MB RSS; nothing is wrong.
 Branch `feat/recordings-viewer` (T0 contract b909a45 + four Opus lanes L2/L3/L4/L5 in worktrees,
 merged; `main` holds v1 at eaa815f + the popover fix 80b15f9). Design doc
 `docs/plans/2026-09-07-recordings-viewer.md`. **346 core tests green** (+7 `ScreenRecordingRecordTests`);
@@ -443,7 +453,7 @@ both packages build with zero warnings; release app installed (running instance 
      click a word → seeks; double-click → edit → Return → relaunch → the edit is still there.
   5. An old recording → "Transcribe on device" → words; "Transcribe in cloud" → words (needs the key).
   6. Move to Trash → both the `.mp4` and the `.json` are in the Trash.
-  Then: merge `feat/recordings-viewer` → `main` (user's call; nothing is pushed).
+  Merged → `main` and released as v0.3.0 (see the top of this block).
 
 ## Current status (2026-09-06 — screen recording v1)
 Branch `feat/screen-recording` (T0 contract + six parallel lanes T1–T6 + a T7 integration/review

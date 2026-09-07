@@ -7,7 +7,7 @@ summary: 'Loom-style screen recording (screen or region + mic + system audio, sm
 # video-recording-thread — video recording for Kleoth · handoff state
 
 **Hub:** [[INDEX]]
-**Status:** 2026-09-07 — phase 2 INTEGRATED on feat/recordings-viewer (T0 + L2/L3/L4/L5 merged, 346 tests, both packages build, release app installed, docs + CHANGELOG updated). Waiting on the user's checklist (design doc §7 / CLAUDE.md 2026-09-07 status); then merge → main. Nothing pushed.
+**Status:** 2026-09-07 — RELEASED as v0.3.0 (feat/recordings-viewer → main, tag pushed, GitHub release with the DMG). The recordings viewer ships labelled a proof of concept. Open: v1 checklist depth items (quit/kill -9 mid-recording, fMP4 in Slack/Telegram), "02:14" vs "2:14", `.scratch/` gitignore decision.
 
 > **Read this first if context was cleared.** All video-recording-thread work lives in `.scratch/video-recording-thread/` —
 > throwaway scripts, probes, and notes stay here, organized per thread, never in the repo or a PR.
