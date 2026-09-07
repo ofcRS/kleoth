@@ -11,16 +11,16 @@ import Foundation
         #expect(PolishGate.decide(rawText: short, style: .chat, alwaysPolish: false) != .polish)
     }
 
-    @Test func shortUtterancesSkipInEveryOtherMode() {
+    @Test func shortComposeUtterancesSkip() {
         #expect(PolishGate.wordCount(short) < DictationDefaults.minimumWordsToPolish)
         #expect(PolishGate.decide(rawText: short, style: .compose, alwaysPolish: false) != .polish)
-        #expect(PolishGate.decide(rawText: short, style: .terminal, alwaysPolish: false) != .polish)
     }
 
-    @Test func longComposeAndTerminalInputStillPolishes() {
+    @Test func longComposeInputStillPolishes() {
         #expect(PolishGate.wordCount(long) >= DictationDefaults.minimumWordsToPolish)
         #expect(PolishGate.decide(rawText: long, style: .compose, alwaysPolish: false) == .polish)
-        #expect(PolishGate.decide(rawText: long, style: .terminal, alwaysPolish: false) == .polish)
+        // A terminal is a compose target, so a long prompt into Ghostty polishes.
+        #expect(PolishGate.decide(rawText: long, style: AppStyle.classify(bundleId: "com.mitchellh.ghostty"), alwaysPolish: false) == .polish)
     }
 
     @Test func thresholdIsInclusiveAtTheMinimum() {

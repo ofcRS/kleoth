@@ -666,7 +666,7 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   INTENSITY — `compose` (AI chats, editors/IDEs, notes/docs, mail, browsers, unknown/nil: reorder, merge,
   split, list, resolve word hunts, drop thinking-out-loud, keep every point + the speaker's stance, add
   nothing) / `chat` (messengers: fillers, self-corrections, punctuation, keep sentence order + voice) /
-  `terminal` (plain text, one line unless enumerated, never turn a description into a command). Was
+  ~~`terminal`~~ (REMOVED 2026-09-07 — terminals are `compose`, see the bullet below). Was
   `code/chat/prose/neutral` with browsers → neutral (§10.3 item 8 in the design doc records it). System
   prompt is static (cacheable) with the MODES section + a compose few-shot; the user message carries
   `Mode: <hint>`. **Benchmark (6 inputs: rambling ESL coding prompt, UX notes, Slack, RU prompt, mixed
@@ -822,6 +822,17 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   §10.3 item 14. Bluetooth log recipe: `/usr/bin/log show --predicate 'process == "bluetoothd" AND
   (eventMessage CONTAINS "SCO" OR eventMessage CONTAINS "coexChanged")'` — `hfp:1` = headset mode;
   `AVAudioEngine.mm … start/stop` lines under `process == "Kleoth"` (needs `--info --debug`).
+- **Terminal polish mode removed (2026-09-07; user: "polishing of my voice messages is not being polished
+  anymore… no paragraphs, no polishing at all" on a 255-word prompt into Claude Code):** the day file showed
+  the polish HAD run (`gemini-3.5-flash-lite`, 2.3 s, no fallback) and changed only two fillers + two
+  mishearings — exactly what the `terminal` mode (light touch, one line, keep the speaker's words) asked
+  for, because Ghostty is a terminal bundle id and the classifier can't see Claude Code inside it. The
+  user: "I'm not going to dictate the shell prompt anyway… I don't need it." `AppStyle` is now
+  `compose`/`chat` only; the six terminal ids moved to `knownComposeBundleIds`; the MODES line and the two
+  terminal few-shots left the system prompt (the RU one became a compose example). A per-app Settings
+  override and window-title sniffing were offered and declined. Design doc §10.3 item 15; §8.2 #14 now
+  expects two formats. Diagnosis recipe: `bun -e` over `~/Kleoth/dictations/<day>.json` comparing
+  `raw_text`/`polished_text`/`polish_model`/`polish_seconds`/`fallback_reason` per row.
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —

@@ -6,8 +6,14 @@ import Foundation
 /// The user dictates mostly when *composing* — prompts for AI assistants,
 /// notes, documents, mail — thinking out loud with restarts, word hunts and
 /// ideas out of order. There the polisher must restructure: reorder, merge,
-/// split, list. In a chat window or a terminal the same treatment would sound
-/// wrong (and Markdown breaks a shell), so those get a light touch.
+/// split, list. In a chat window the same treatment would sound wrong, so
+/// messengers get a light touch.
+///
+/// Terminals are `.compose` too (2026-09-07). They used to have their own
+/// plain-text, one-line, never-a-command mode, but the user's main dictation
+/// target is Claude Code running inside Ghostty — a prompt box that happens to
+/// live in a terminal — and nobody dictates shell commands. The mode only
+/// suppressed the restructuring the user wanted (§10.3 item 15).
 ///
 /// Browsers are `.compose` on purpose: a tab could be Gmail, a GitHub comment
 /// or a chat, but most prompt-writing (claude.ai, chatgpt.com, Gemini) happens
@@ -16,24 +22,12 @@ import Foundation
 /// the same reason — the rules keep short input a single paragraph, so a
 /// one-liner into a rename field is unaffected.
 public enum AppStyle: String, Sendable, CaseIterable {
-    /// AI chats, editors, IDEs, notes, docs, mail, browsers, unknown: full
-    /// restructuring allowed, nothing invented.
+    /// AI chats, editors, IDEs, terminals, notes, docs, mail, browsers,
+    /// unknown: full restructuring allowed, nothing invented.
     case compose
     /// Messaging clients: fillers / false starts / punctuation only; keep the
     /// sentence order and the speaker's voice.
     case chat
-    /// Terminals: the plainest — no Markdown, one line unless enumerated.
-    case terminal
-
-    /// Bundle ids that are terminals.
-    private static let terminalBundleIds: Set<String> = [
-        "com.apple.terminal",
-        "com.googlecode.iterm2",
-        "dev.warp.warp-stable",
-        "net.kovidgoyal.kitty",
-        "io.alacritty",
-        "com.mitchellh.ghostty",
-    ]
 
     /// Bundle ids of chat / messaging clients.
     private static let chatBundleIds: Set<String> = [
@@ -55,11 +49,20 @@ public enum AppStyle: String, Sendable, CaseIterable {
     /// `com.jetbrains.*`), notes and docs (`com.apple.notes`, `md.obsidian`,
     /// `notion.id`, `net.shinyfrog.bear`, `com.lukilabs.lukiapp` = Craft,
     /// `com.apple.iwork.*`, `com.microsoft.word`), mail (`com.apple.mail`,
-    /// `com.microsoft.outlook`, `com.superhuman.mail`), and browsers
-    /// (`com.apple.safari`, `com.google.chrome`, `company.thebrowser.browser`).
+    /// `com.microsoft.outlook`, `com.superhuman.mail`), browsers
+    /// (`com.apple.safari`, `com.google.chrome`, `company.thebrowser.browser`),
+    /// and terminals (`com.apple.terminal`, `com.googlecode.iterm2`,
+    /// `dev.warp.warp-stable`, `net.kovidgoyal.kitty`, `io.alacritty`,
+    /// `com.mitchellh.ghostty` — where Claude Code lives).
     public static let knownComposeBundleIds: Set<String> = [
         "com.anthropic.claudefordesktop",
         "com.openai.chat",
+        "com.apple.terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.warp-stable",
+        "net.kovidgoyal.kitty",
+        "io.alacritty",
+        "com.mitchellh.ghostty",
         "com.microsoft.vscode",
         "com.todesktop.230313mzl4w4u92",
         "com.exafunction.windsurf",
@@ -80,13 +83,12 @@ public enum AppStyle: String, Sendable, CaseIterable {
     ]
 
     /// Classifies a frontmost application. Matching is case-insensitive;
-    /// terminals → `.terminal`, messaging clients → `.chat`, everything else
-    /// (including `nil`, empty and unknown) → `.compose`.
+    /// messaging clients → `.chat`, everything else (including terminals,
+    /// `nil`, empty and unknown) → `.compose`.
     public static func classify(bundleId: String?) -> AppStyle {
         guard let raw = bundleId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !raw.isEmpty else { return .compose }
 
-        if terminalBundleIds.contains(raw) { return .terminal }
         if chatBundleIds.contains(raw) { return .chat }
         return .compose
     }
@@ -100,8 +102,6 @@ public enum AppStyle: String, Sendable, CaseIterable {
             return "compose — the speaker is composing; restructure freely (reorder, merge, split, list) so the text reads as if typed, but keep every point and add nothing."
         case .chat:
             return "chat — light touch only: fillers, self-corrections and punctuation; keep the sentence order and the casual voice."
-        case .terminal:
-            return "terminal — plain text, no Markdown, one line unless the speaker enumerated; light touch only, keep the speaker's words (never turn a description into a command)."
         }
     }
 }
@@ -141,7 +141,6 @@ public enum DictationPrompt {
     MODES
     compose — the user is composing something: a prompt for an AI assistant, a note, a document, an email, a comment. They thought out loud, so rewrite the transcript as the text they would have typed with time to edit: keep every substantive point, put the points in a logical order, merge fragments and restarts into complete sentences, and split into short paragraphs by topic. Use a numbered or "-" list when the speaker enumerated ("first … second … and also …") or listed parallel items; otherwise plain paragraphs. No headings and no bold unless the speaker asked for them. Drop thinking-out-loud that carries no content ("let me think", "how do I say it", "um yeah", "my idea is"); keep hedges, questions and requests that are content ("I'm not sure", "what do you think?", "don't do it yet"). Keep the speaker's stance: a suggestion stays a suggestion ("maybe we should"), a question stays a question — never turn a tentative idea into an instruction, and never add a label or heading the speaker did not say. Keep the speaker's register and roughly their length — tighten, never pad.
     chat — a message in a chat app. Light touch only: the cleanups above plus punctuation. Keep the speaker's sentences in their original order and their casual voice; do not restructure, merge or split beyond removing false starts. Sentence case, no salutation and no sign-off unless the speaker said one. A "-" list only if the speaker clearly enumerated.
-    terminal — a terminal or command line. Plain text only: no Markdown, no bullet characters, no bold, no headings. The same light touch as chat, written as one line; if the speaker enumerated, one item per line with no numbers or bullet characters. Write the speaker's words: a spoken description of a command stays a description in words — never turn it into a command.
 
     NEVER, IN ANY MODE
     - Never add facts, requirements, names, numbers, conclusions, greetings, sign-offs or closing sentences the speaker did not say. Restructuring reuses the speaker's own content only.
@@ -168,19 +167,13 @@ public enum DictationPrompt {
     TRANSCRIPT>>>
     OUT: {"text":"I think we should probably ship the fix today, before the release freeze.","language":"en"}
 
-    Mode: terminal.
-    <<<TRANSCRIPT
-    ok so three things first we need to fix the login bug second uh update the docs and third ping the design team about the icons
-    TRANSCRIPT>>>
-    OUT: {"text":"Three things:\nFix the login bug.\nUpdate the docs.\nPing the design team about the icons.","language":"en"}
-
     Mode: chat.
     <<<TRANSCRIPT
     ну короче нам нужно как бы задеплоить этот пул-реквест на стейджинг сегодня эм то есть не сегодня а завтра утром и потом посмотреть логи
     TRANSCRIPT>>>
     OUT: {"text":"Нам нужно задеплоить этот пул-реквест на стейджинг завтра утром, а потом посмотреть логи.","language":"ru"}
 
-    Mode: terminal.
+    Mode: compose.
     <<<TRANSCRIPT
     я запушил бранч в гитхаб надо чтобы кто-то сделал code review до эээ до стендапа
     TRANSCRIPT>>>
