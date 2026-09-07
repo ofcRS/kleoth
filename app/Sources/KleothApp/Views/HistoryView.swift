@@ -7,7 +7,7 @@ import KleothCore
 /// own `NavigationSplitView` behind a scope picker, rather than one list over a
 /// union ID type threaded through the meetings sidebar.
 enum HistoryScope: String, CaseIterable, Identifiable {
-    case meetings, dictations
+    case meetings, dictations, recordings
 
     var id: String { rawValue }
 
@@ -15,6 +15,7 @@ enum HistoryScope: String, CaseIterable, Identifiable {
         switch self {
         case .meetings: return "Meetings"
         case .dictations: return "Dictations"
+        case .recordings: return "Recordings"
         }
     }
 }
@@ -50,6 +51,7 @@ struct HistoryScopePicker: View {
 /// double-click renames the meeting inline.
 struct HistoryView: View {
     @EnvironmentObject private var controller: RecordingController
+    @EnvironmentObject private var screenRecording: ScreenRecordingController
     @State private var scope: HistoryScope = .meetings
     @State private var selection = Set<RecentMeeting.ID>()
     @State private var search = ""
@@ -69,6 +71,7 @@ struct HistoryView: View {
             switch scope {
             case .meetings: meetingsScope
             case .dictations: DictationsListView(scope: $scope)
+            case .recordings: RecordingsListView(scope: $scope)
             }
         }
         .task {
@@ -97,6 +100,12 @@ struct HistoryView: View {
             guard let newValue else { return }
             scope = .meetings
             selection = [newValue]
+        }
+        // The popover's "Last screen recording" row, same idiom: the counter
+        // flips the scope (a repeat click on the already-selected recording
+        // changes no id), and `RecordingsListView` observes the id itself.
+        .onChange(of: screenRecording.recordingsHistoryRequest) { _, _ in
+            scope = .recordings
         }
     }
 

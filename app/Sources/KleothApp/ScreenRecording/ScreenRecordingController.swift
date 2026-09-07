@@ -29,6 +29,24 @@ final class ScreenRecordingController: ObservableObject {
     @Published private(set) var lastStopDetail: String?
     @Published private(set) var permissionState: ScreenRecordingPermission.State = .notDetermined
 
+    // MARK: - Recordings library state
+
+    /// Every finished movie in the recordings folder, newest first — what the
+    /// History window's **Recordings** scope lists. Reloaded off the main actor
+    /// (`reloadRecordings()`), never scanned from a view.
+    @Published private(set) var recordings: [ScreenRecordingItem] = []
+    /// Standardized movie paths whose transcription is queued or running — the
+    /// `RecordingController.processingPaths` idiom, and in-memory for the same
+    /// reason: a quit mid-job leaves the row untranscribed, which is the truth.
+    @Published private(set) var transcribingPaths: Set<String> = []
+    /// Set by the popover to deep-link History to one recording.
+    @Published var selectedRecordingID: ScreenRecordingItem.ID?
+    /// Bumped every time the popover opens History *for recordings*. The window
+    /// observes it to flip its scope — `selectedRecordingID` alone cannot carry
+    /// a repeat click on the recording that is already selected. Mirrors
+    /// `RecordingController.meetingsHistoryRequest`.
+    @Published var recordingsHistoryRequest: Int = 0
+
     /// Where a start came from — the pill or the popover row (§2.2).
     enum Origin {
         case pill
@@ -71,6 +89,12 @@ final class ScreenRecordingController: ObservableObject {
     private var finalizeTask: Task<Void, Never>?
     private var eventsTask: Task<Void, Never>?
     private var refusalTask: Task<Void, Never>?
+
+    /// The in-flight library listing — cancelled by the next reload so a burst
+    /// (save → reload, trash → reload) publishes once.
+    private var reloadTask: Task<Void, Never>?
+    /// The 20 Hz `recorder.levels` → pill pump, alive only while recording.
+    private var levelPumpTask: Task<Void, Never>?
 
     private var terminationCompletion: (@MainActor () -> Void)?
     private var terminationTimeoutTask: Task<Void, Never>?
@@ -170,6 +194,292 @@ final class ScreenRecordingController: ObservableObject {
         if permissionState != state { permissionState = state }
     }
 
+    // MARK: - Recordings library
+
+    /// Re-lists the recordings folder. The directory walk (one `stat` and one
+    /// sidecar read per file) runs off the main actor; only the finished array
+    /// is published, so a big folder never stutters the History window.
+    func reloadRecordings() {
+        let dir = recordingsDirectory()
+        reloadTask?.cancel()
+        reloadTask = Task { @MainActor [weak self] in
+            let items = await Task.detached(priority: .utility) {
+                ScreenRecordingStore.listRecordings(in: dir)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.reloadTask = nil
+            if self.recordings != items { self.recordings = items }
+        }
+    }
+
+    /// True while a transcription for this recording is queued or running.
+    func isTranscribing(_ item: ScreenRecordingItem) -> Bool {
+        transcribingPaths.contains(item.id)
+    }
+
+    /// Persists a sidecar the viewer edited (a word, a title) and republishes
+    /// the row in place, so the detail pane and the list agree before the
+    /// (asynchronous) reload lands. The library is the ONLY writer of a
+    /// sidecar — the viewer hands its record here.
+    func saveRecord(_ record: ScreenRecordingRecord, for item: ScreenRecordingItem) {
+        do {
+            try ScreenRecordingStore.saveRecord(record, for: item.url)
+        } catch {
+            log.error("could not write a recording sidecar: \(String(describing: error), privacy: .public)")
+            return
+        }
+        republish(record, for: item.id)
+        reloadRecordings()
+    }
+
+    /// Moves the movie and its sidecar to the Trash (recoverable — so, like the
+    /// meetings list, no confirmation).
+    func trash(_ item: ScreenRecordingItem) {
+        do {
+            try ScreenRecordingStore.trash(item.url)
+        } catch {
+            log.error("could not trash a recording: \(String(describing: error), privacy: .public)")
+            return
+        }
+        // The popover's "Last screen recording" row must not point at a file in
+        // the Trash.
+        if lastSummary?.url.standardizedFileURL == item.url.standardizedFileURL {
+            lastSummary = nil
+            lastStopDetail = nil
+        }
+        recordings.removeAll { $0.id == item.id }
+        reloadRecordings()
+    }
+
+    func reveal(_ item: ScreenRecordingItem) {
+        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+
+    /// Replaces one row's record without re-listing the folder.
+    private func republish(_ record: ScreenRecordingRecord, for id: ScreenRecordingItem.ID) {
+        guard let index = recordings.firstIndex(where: { $0.id == id }) else { return }
+        recordings[index].record = record
+    }
+
+    // MARK: - Transcription
+
+    /// Queues ONE transcription of `item` on the shared pipeline queue
+    /// (`RecordingController.enqueuePipelineJob`): every `LocalTranscriber` run
+    /// loads its own ~600 MB WhisperKit, so a screen recording and a meeting must
+    /// never transcribe at the same time.
+    ///
+    /// `tier` is `TranscriptTier.local` (on-device, free) or `.sotaScribe`
+    /// (ElevenLabs). No spend confirmation, matching the meetings surface.
+    func transcribe(_ item: ScreenRecordingItem, tier: String) {
+        let path = item.id
+        guard !transcribingPaths.contains(path) else { return }
+        guard FileManager.default.fileExists(atPath: item.url.path) else {
+            log.error("cannot transcribe a recording that is gone: \(path, privacy: .public)")
+            reloadRecordings()
+            return
+        }
+
+        var elevenKey: String?
+        if TranscriptTier.isSOTA(tier) {
+            let key = AppConfig.credentials().elevenLabsKey ?? ""
+            guard !key.isEmpty else {
+                // Refused before anything is queued — but the row has to say
+                // why, so the refusal is written like any other failure.
+                writeTranscriptFailure(
+                    "Add an ElevenLabs API key in Settings to transcribe in the cloud.",
+                    movieURL: item.url,
+                    existing: item.record
+                )
+                reloadRecordings()
+                return
+            }
+            elevenKey = key
+        }
+        // The SAME normalization the meetings pipeline uses: empty / "auto" is
+        // nil (detect), anything else is a pinned Whisper code.
+        let language = RecordingController.normalizedTranscriptionLanguage(
+            AppConfig.settings().transcriptionLanguage
+        )
+
+        guard let queue = RecordingController.shared else {
+            log.error("no RecordingController to queue a transcription on")
+            return
+        }
+        transcribingPaths.insert(path)
+        let url = item.url
+        let existing = item.record
+        queue.enqueuePipelineJob { [weak self] in
+            await self?.runTranscription(
+                movieURL: url,
+                existing: existing,
+                tier: tier,
+                language: language,
+                elevenKey: elevenKey
+            )
+        }
+    }
+
+    /// The queued worker: extract the audio, run the engine, write the sidecar.
+    /// Everything expensive (the export, the model, the upload) is a
+    /// `nonisolated` async call, so it suspends this main-actor job rather than
+    /// blocking the UI.
+    private func runTranscription(
+        movieURL: URL,
+        existing: ScreenRecordingRecord?,
+        tier: String,
+        language: String?,
+        elevenKey: String?
+    ) async {
+        let path = movieURL.standardizedFileURL.path
+        defer {
+            transcribingPaths.remove(path)
+            reloadRecordings()
+        }
+
+        let tempDir = Self.transcriptionScratchDirectory
+        let audioURL = tempDir
+            .appendingPathComponent(movieURL.deletingPathExtension().lastPathComponent)
+            .appendingPathExtension("m4a")
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        } catch {
+            log.error("recordings temp dir unusable: \(String(describing: error), privacy: .public)")
+            writeTranscriptFailure(error.localizedDescription, movieURL: movieURL, existing: existing)
+            return
+        }
+        // The movie is the artifact the user keeps; the extracted audio is
+        // scratch and goes on every exit, thrown or not.
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        do {
+            try await RecordingAudioExtractor.extractAudio(from: movieURL, to: audioURL)
+
+            let transcriber: any Transcriber
+            var options = ScribeOptions()
+            if let elevenKey {
+                transcriber = ScribeClient(apiKey: elevenKey, transport: URLSessionTransport())
+                // One mixed track, one channel — and the viewer highlights
+                // WORDS, not speaker turns, so diarization would only cost time.
+                options.diarize = false
+                options.useMultiChannel = false
+                options.tagAudioEvents = false
+                options.languageCode = language
+            } else {
+                transcriber = LocalTranscriber(language: language, wordTimestamps: true)
+            }
+
+            let response = try await transcriber.transcribe(fileURL: audioURL, options: options)
+            let words = ScreenRecordingRecord.words(from: response)
+            let duration = await Self.duration(
+                reported: response.audioDurationSecs,
+                of: audioURL,
+                fallback: existing?.durationSecs
+            )
+
+            var record = existing ?? ScreenRecordingRecord()
+            record.schemaVersion = ScreenRecordingRecord.currentSchemaVersion
+            record.durationSecs = duration
+            record.languageCode = response.languageCode
+            record.transcriptTier = tier
+            record.transcriptModel = transcriber.modelIdentifier(for: options)
+            record.transcribedAt = Date()
+            record.words = words
+            // A run that produced nothing is not something the viewer can show,
+            // and leaving the row "Untranscribed" would look like the button did
+            // nothing — so the empty result says so out loud.
+            record.transcriptError = words.isEmpty ? "No speech was found in this recording." : nil
+            try ScreenRecordingStore.saveRecord(record, for: movieURL)
+            republish(record, for: path)
+            log.notice("transcribed \(movieURL.lastPathComponent, privacy: .public): \(words.count) words (\(tier, privacy: .public))")
+        } catch {
+            log.error("transcription failed for \(movieURL.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+            writeTranscriptFailure(error.localizedDescription, movieURL: movieURL, existing: existing)
+        }
+    }
+
+    /// `$TMPDIR/kleoth-recordings` — where a recording's audio is extracted to
+    /// before it is transcribed. Scratch: emptied at launch, and every job
+    /// deletes its own file in a `defer`.
+    private static var transcriptionScratchDirectory: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("kleoth-recordings", isDirectory: true)
+    }
+
+    /// Wall clock for the recording: what the engine reported, else the file
+    /// itself (probed off the main actor — it opens the audio), else whatever
+    /// the sidecar already knew.
+    private static func duration(reported: Double?, of audioURL: URL, fallback: Double?) async -> Double? {
+        if let reported { return reported }
+        let probed = await Task.detached(priority: .utility) {
+            AudioProbe.durationSeconds(of: audioURL)
+        }.value
+        return probed ?? fallback
+    }
+
+    /// Records WHY a transcription could not be produced. An existing transcript
+    /// is never wiped by a failed retry — the words stay and the error rides
+    /// alongside them.
+    private func writeTranscriptFailure(_ message: String, movieURL: URL, existing: ScreenRecordingRecord?) {
+        var record = existing ?? ScreenRecordingRecord()
+        record.transcriptError = message
+        do {
+            try ScreenRecordingStore.saveRecord(record, for: movieURL)
+            republish(record, for: movieURL.standardizedFileURL.path)
+        } catch {
+            log.error("could not record a transcription failure: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// A recording the user just finished: seed its sidecar with the duration
+    /// the session already measured (so the row reads right even if the
+    /// transcription fails), list it, and start the on-device pass
+    /// automatically. Recovered files and older untranscribed ones are left
+    /// alone — the viewer's button is how those get transcribed.
+    private func handleFreshRecording(_ summary: ScreenRecordingSummary) {
+        let stored = ScreenRecordingStore.loadRecord(for: summary.url)
+        let record = stored ?? ScreenRecordingRecord(durationSecs: summary.duration)
+        if stored == nil {
+            do {
+                try ScreenRecordingStore.saveRecord(record, for: summary.url)
+            } catch {
+                log.error("could not seed a recording sidecar: \(String(describing: error), privacy: .public)")
+            }
+        }
+        let item = ScreenRecordingItem(
+            url: summary.url,
+            recordedAt: ScreenRecordingFileNaming.date(fromStemOf: summary.url) ?? Date(),
+            sizeBytes: summary.fileSizeBytes,
+            record: record
+        )
+        reloadRecordings()
+        transcribe(item, tier: TranscriptTier.local)
+    }
+
+    // MARK: - Level pump
+
+    /// 20 Hz `recorder.levels` → the pill's recording meters. Deliberately a
+    /// polling loop rather than a callback out of the capture lanes: the meter
+    /// only needs the most recent value, and a dropped tick is invisible.
+    private func startLevelPump() {
+        levelPumpTask?.cancel()
+        levelPumpTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, let recorder = self.recorder else { return }
+                self.coordinator.setRecordingLevels(recorder.levels)
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    /// Stops the pump and parks the meters at zero, so a stopped session can
+    /// never leave the pill holding the last live level.
+    private func stopLevelPump() {
+        guard levelPumpTask != nil else { return }
+        levelPumpTask?.cancel()
+        levelPumpTask = nil
+        coordinator.setRecordingLevels(.zero)
+    }
+
     /// Launch: sweep leftover `*.recording.mp4` → `-recovered` / trash, then
     /// `refreshPermission()`.
     func startIfNeeded() {
@@ -180,7 +490,15 @@ final class ScreenRecordingController: ObservableObject {
         // is no risk of the process exiting before the hop runs.
         Task { @MainActor [weak self] in
             await self?.sweepInterruptedRecordings()
+            // After the sweep, so a recovered file is listed under its final
+            // name. Recovered and older untranscribed files are NOT
+            // auto-transcribed — only a recording this launch just finished is.
+            self?.reloadRecordings()
         }
+        // A process killed mid-extraction leaves an .m4a behind; nothing can be
+        // using the folder at launch, so it goes wholesale (the dictation
+        // temp-clip sweep's reasoning).
+        try? FileManager.default.removeItem(at: Self.transcriptionScratchDirectory)
     }
 
     /// Quit path. Returns false immediately when nothing is recording;
@@ -371,6 +689,7 @@ final class ScreenRecordingController: ObservableObject {
     private func showRecording() {
         guard let since = machine.since else { return }
         coordinator.setRecordingBackdrop(since: since)
+        startLevelPump()
         NSAccessibility.post(
             element: NSApp as Any,
             notification: .announcementRequested,
@@ -463,6 +782,7 @@ final class ScreenRecordingController: ObservableObject {
         }
         cleanUpSession()
         finishTermination()
+        handleFreshRecording(summary)
     }
 
     private func showFailed() {
@@ -585,6 +905,7 @@ final class ScreenRecordingController: ObservableObject {
     }
 
     private func cleanUpSession() {
+        stopLevelPump()
         pickTask?.cancel(); pickTask = nil
         startTask?.cancel(); startTask = nil
         eventsTask?.cancel(); eventsTask = nil
