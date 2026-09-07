@@ -68,16 +68,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // on the main thread, so assume — never hop — so the hotkey monitor is
         // installed before the first chord can arrive.
         MainActor.assumeIsolated { DictationController.shared?.startIfEnabled() }
-        // Accessibility trust has no change notification: re-check whenever the
-        // user comes back from System Settings, so a fresh grant installs the
-        // monitors without a relaunch.
+
+        // Screen recording: sweep any `*.recording.mp4` left by a crash or a
+        // `kill` (neither terminate delegate runs for those) and read the
+        // current Screen Recording grant.
+        MainActor.assumeIsolated { ScreenRecordingController.shared?.startIfNeeded() }
+
+        // Neither Accessibility trust nor Screen Recording has a change
+        // notification: re-check whenever the user comes back from System
+        // Settings, so a fresh grant installs the monitors without a relaunch
+        // (Screen Recording still needs one — the row says so).
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { _ in
-            MainActor.assumeIsolated { DictationController.shared?.refreshTrust() }
+            MainActor.assumeIsolated {
+                DictationController.shared?.refreshTrust()
+                ScreenRecordingController.shared?.refreshPermission()
+            }
         }
+    }
+
+    /// A screen recording in flight is the one thing worth delaying quit for:
+    /// `finishWriting` needs a moment, and an unfinalized file is debris the
+    /// launch sweep has to rescue. Returns `.terminateLater` and replies once
+    /// the file is closed — or after `finalizeTimeout`, whichever comes first.
+    ///
+    /// Reached by ⌘Q, the popover's Quit, logout and Apple-Event quit. NOT by
+    /// `kill -TERM`/`-9`: AppKit installs no SIGTERM handler, so the process
+    /// dies before any delegate runs and the fragmented file is the safety net.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Synchronous, like `applicationWillTerminate`: a `Task` hop may never
+        // run once the app is on its way out.
+        let waiting = MainActor.assumeIsolated {
+            ScreenRecordingController.shared?.beginTerminationStop {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            } ?? false
+        }
+        return waiting ? .terminateLater : .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {

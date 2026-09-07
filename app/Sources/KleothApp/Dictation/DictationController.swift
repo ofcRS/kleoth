@@ -127,7 +127,10 @@ final class DictationController: ObservableObject {
         let settings = AppConfig.settings()
         self.init(
             monitor: DictationHotkeyMonitor(),
-            pill: DictationPillController(),
+            // NOT a fresh `DictationPillController()`: there is one pill, and
+            // `PillCoordinator` owns it so a screen recording's backdrop and a
+            // dictation phase can share it (screen-recording design §3.4).
+            pill: PillCoordinator.shared.dictationFace,
             inserter: TextInserter.shared,
             logStore: DictationLogStore(outputDir: settings.outputDir),
             dictionary: PersonalDictionaryStore(),
@@ -865,6 +868,12 @@ final class DictationController: ObservableObject {
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         case .openAccessibilitySettings:
             AccessibilityPermission.openSystemSettings()
+        case .startScreenRecording, .stopScreenRecording, .revealLastRecording,
+             .openScreenRecordingSettings:
+            // Never reaches here: `PillCoordinator` routes the recording
+            // actions to `ScreenRecordingController` instead of the dictation
+            // face (§3.4). Listed so the switch stays exhaustive.
+            break
         }
         pill.dismiss()
     }

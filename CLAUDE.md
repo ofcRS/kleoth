@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-09-03. This file is living context for future sessions — keep it current._
+_Last updated: 2026-09-06. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -16,30 +16,41 @@ _Last updated: 2026-09-03. This file is living context for future sessions — k
 - `KleothCore` (lib): Models, `HTTPTransport` seam, `Transcription` (ScribeClient, Multipart,
   TranscriptNormalizer, **Transcriber protocol**), Summarization (OpenRouterClient, Summarizer),
   Rendering, SpeakerMapping, Storage (MeetingStore), Config (Credentials, Settings), Pipeline
-  (MeetingPipeline).
+  (MeetingPipeline), `Dictation/`, **`ScreenRecording/`** (Defaults, Types, ElapsedFormatter,
+  FileNaming, CaptureGeometry, SessionMachine, HostClockMath, AudioRing, MixMath),
+  `Concurrency/` (`withTimeout`, `withDeadline`).
 - `kleoth` (exe): subcommands `transcribe`, `summarize`, `rename`, `render`. (Slack removed 2026-06-08.)
 - `KleothCoreTests` (51 tests, all green).
 
 **Package 2 (`app/`)** — `platforms: [.macOS("14.4")]`, deps: `..` (KleothCore),
 `sindresorhus/KeyboardShortcuts`, `argmaxinc/argmax-oss-swift` (WhisperKit @ 0.18.0).
 - `KleothCapture` (lib): Recorder (writes `mic.m4a` + `system.m4a`, builds 2-channel
-  `meeting.m4a`), MicCapture, SystemAudioTap (Core Audio process tap), ScreenshotCapture,
-  **LocalTranscriber** (WhisperKit), **DictationCapture** (own AVAudioEngine input tap → temp m4a).
-- `KleothPillUI` (lib): the dictation pill — `DictationPanel`, `DictationPillController`,
-  `DictationPillModel`, `DictationPillView`, `PillTypes` (the pill contract). Shared by the app and
+  `meeting.m4a`), MicCapture, SystemAudioTap (Core Audio process tap),
+  **LocalTranscriber** (WhisperKit), **DictationCapture** (own AVAudioEngine input tap → temp m4a),
+  **`ScreenRecording/`** (`@MainActor ScreenRecorder` + MicrophoneSource, SystemAudioSink,
+  AudioMixPump, VideoFrameGate, MovieWriter, VideoFormat, ScreenRecordingPermission, Contract).
+  (`ScreenshotCapture` was deleted 2026-09-06 — dead code.)
+- `KleothPillUI` (lib): the pill — `DictationPanel`, `DictationPillController`,
+  `DictationPillModel`, `DictationPillView`, `PillTypes` (the pill contract, incl. the
+  `DictationPillBackdrop` and the `.recording`/`.saving`/`.saved` states). Shared by the app and
   `pillsandbox`.
-- `pillsandbox` (exe): pill playground + `--film` filmstrip renderer (see the 2026-09-03 status).
+- `pillsandbox` (exe): pill playground + `--film` filmstrip renderer (see the 2026-09-03 status);
+  `--backdrop hidden|idle|recording` films the screen-recording backdrop states.
 - `KleothApp` (exe): MenuBarExtra agent, `RecordingController` (`@MainActor`, owns capture +
   pipeline, app-lifetime `shared`), `DictationController` (`@MainActor`, see "Dictation" below),
   `AppConfig` (Settings/Credentials + Keychain overlay, shared by both controllers), Views
-  (MenuView, HistoryView, MeetingDetailView, Settings, Consent, SpeakerRename, Dictation*),
-  `Dictation/` (hotkey monitor, pill panel, text inserter), App Intents, `kleoth://` URL scheme,
-  global hotkey.
+  (MenuView, HistoryView, MeetingDetailView, Settings, Consent, SpeakerRename, Dictation*,
+  SettingsScreenRecordingSection), `Dictation/` (hotkey monitor, pill panel, text inserter),
+  **`ScreenRecording/`** (`ScreenRecordingController` `@MainActor`, `PillCoordinator` — the single
+  face in front of the pill, `RegionPicker`), App Intents, `kleoth://` URL scheme, global hotkey.
 - `taptest` (exe): dev probe for the audio tap.
 - `localtranscribe` (exe): headless recovery tool — re-transcribe a meeting folder with the
   same engine the app uses. `localtranscribe <meeting-dir> [scribe]`.
 - `dictate` (exe): headless dictation pipeline probe — record N s → prepare → Scribe → polish,
   print the result, no paste. `dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish]`.
+- `screenrec` (exe): headless screen-recording probe — frames/audio blocks/writer failures, track
+  durations, bit rate. `screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic] [--out file]
+  [--inspect file]`.
 - `app/Package.swift` declares the root dependency as `.package(name: "kleoth-app", path: "..")` —
   the explicit `name:` is what lets the app package build from a worktree/checkout NOT named
   `kleoth-app` (SwiftPM otherwise derives the identity from the directory name).
@@ -146,6 +157,110 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
   `log stream --predicate 'subsystem == "dev.kleoth" AND (category == "DictationHotkey" OR
   category == "Dictation")'` is the live hotkey/controller probe.
 
+## Screen recording (v1, 2026-09-06)
+Design doc = `docs/plans/2026-09-06-screen-recording.md` (single source of truth; §2 behavior,
+§3 the binding interface contract, §4 audio, §5 video/encode, §6 pill integration, §7 the error
+matrix, §8 the manual checklist, §10 the per-lane implementation notes).
+- **Flow:** hover the resting pill → a red **record glyph** appears next to the mic (or popover
+  **"Record screen…"**) → `ScreenRecordingController.start(from: .pill/.popover)` → preflight
+  (Screen Recording TCC → free disk ≥ 500 MB → output dir) → **`RegionPicker`** (one borderless
+  `.screenSaver`-level overlay per `NSScreen`, 30 % dim with the selection punched out, live
+  "W×H pt → w×h px" label; Esc cancels, Return = whole display under the pointer, a drag < 64 pt
+  on either side = whole display) → `.recording(since:)` pill with live `mm:ss` digits → hover →
+  stop glyph → click (or the popover's stop row) → `.saving` → **`.saved("02:14 · 48 MB")`** for
+  4 s → click reveals the file in Finder → back to `.idle` (dictation armed) or hidden.
+- **Architecture per target:**
+  - **KleothCore `ScreenRecording/`** (pure, tested): `ScreenRecordingDefaults` (THE constants),
+    `ScreenRecordingTypes` (`ScreenRecordingSummary.pillText`, failures, backdrop payloads),
+    `ElapsedFormatter` (zero-padded `mm:ss`/`h:mm:ss`), `ScreenRecordingFileNaming`
+    (`screen-<yyyy-MM-dd-HHmmss>`, in-flight `.recording.mp4` → final `.mp4` /
+    `-recovered.mp4`, uniquing, `sizeText`), `CaptureGeometry` (`outputPixelSize`, `sourceRect`,
+    region normalize/clamp, `videoBitRate`), `ScreenRecordingSessionMachine` (9 states × 12
+    events, effects, totality-tested), `HostClockMath`, `AudioRing`, `MixMath`.
+  - **KleothCapture `ScreenRecording/`:** `@MainActor ScreenRecorder` (owns the SCStream, the
+    writer and the session origin; `start()` / `stop(reason:)` / `events` AsyncStream / `stats`)
+    + `MicrophoneSource` (its own `AVAudioEngine`, per-device `presentationLatency` offset),
+    `SystemAudioSink`, `AudioMixPump` (960-frame blocks at 20 ms, 0.25 s read latency, partial
+    tail flush on stop), `VideoFrameGate` (monotonic PTS, stop-time re-append, optional
+    keepalive), `MovieWriter` (`AVAssetWriter`), `VideoFormat`, `ScreenRecordingPermission`,
+    `ScreenRecordingContract`. `ScreenshotCapture.swift` was **deleted** (dead since 2026-06).
+  - **KleothPillUI:** the pill gained a **backdrop** (`DictationPillBackdrop` .hidden/.idle/
+    `.recording(since:)`) plus the `.recording` / `.saving` / `.saved(String)` states;
+    `DictationPillController.setBackdrop(_:)` and `currentState` are the public contract, and
+    `dismiss()`/`collapseToResting()` land on the backdrop instead of `.idle`. Digits stay
+    upright on a side edge (counter-rotated like the mic glyph); `.recording`/`.saving` capsule
+    height 28 pt.
+  - **KleothApp:** `ScreenRecordingController` (`@MainActor`, `@EnvironmentObject` on all four
+    scenes — drives the machine, owns the recorder, the launch sweep and the quit handshake),
+    `PillCoordinator` (the single face in front of the pill: merges dictation phases with the
+    recording backdrop, queues a `.saved` behind a live dictation), `RegionPicker`,
+    `SettingsScreenRecordingSection`, MenuView rows (record / stop-with-digits / "Saving screen
+    recording…" / "Last screen recording · 02:14 · 48 MB" + header subtitle with live digits).
+  - **`screenrec` (exe):** headless probe — `screenrec <seconds> [--display N]
+    [--region x,y,w,h] [--no-mic] [--out file] [--inspect file]`; prints frames appended/dropped,
+    audio blocks emitted/dropped, writer failures, track durations, bit rate.
+- **Keys/paths:** output = `<Settings output dir>/screen-recordings/` (default
+  `~/Kleoth/screen-recordings/`), resolved fresh per session so moving the folder in Settings
+  takes effect immediately; files `screen-<yyyy-MM-dd-HHmmss>.mp4`. **No Settings/Keychain key
+  at all** — screen recording is always available (only TCC gates it); the one persisted value is
+  UserDefaults `dev.kleoth.screenRecording.permissionRequestedAt`
+  (`ScreenRecordingDefaults.permissionRequestedDefaultsKey`) for the stale-grant detector.
+  `~/Kleoth/screen-recordings/` never shows in History (no audio inside).
+- **Decisions:** SCStream `.screen` + `.audio` **plus a third `AVAudioEngine` mic tap**, mixed to
+  **ONE AAC track** (48 kHz stereo, 128 kbps) — no separate lanes, so a post-hoc per-lane offset
+  is not measurable. H.264, long edge ≤ **1920 px**, **30 fps**, 3 Mbps at 1080p scaled by area
+  with a **1 Mbps floor** (short clips read a few percent over 3 Mbps because of the leading
+  keyframe — it is an average, not a ceiling). **fMP4** (`fragmentInterval` 10 s) +
+  `shouldOptimizeForNetworkUse` so a crash still leaves a playable file — **player/uploader
+  compatibility is UNVERIFIED**; flipping `fragmentInterval` to nil is the one-constant retreat.
+  **Whole-app SCK exclusion** (`SCContentFilter(excludingApplications:)` on Kleoth's bundle id),
+  so the pill and the picker are never in the frame — and neither is the History window (v1
+  accepted). Quit mid-recording → `.terminateLater`, and the reply is **deferred one main-queue
+  turn** (`beginTerminationStop` can complete synchronously when the picker is up).
+  The pill is visible ⇔ `dictation.isMonitoring || recording is live`, merged in
+  `PillCoordinator.recompute()` — a recording outranks the resting capsule.
+- **Measured (this Mac, 2026-09-06):** `screenrec 10` → **10.05 s** file (video) / 10.00 s audio,
+  296 frames / 0 dropped, 500 audio blocks / 1 dropped, H.264 3.07 Mbps + AAC 48 kHz stereo.
+  Real 5-min work session → **22.2–22.6 MB/min** (target was ≤ 25). Clap test: the mic copy
+  trails the system copy by **≈30 ms** (budget < 60 ms wired) → `micOffsetCompensation` stays 0.
+  First `.screen` sample 0.38 s after start. **334 core tests green**; both packages build.
+- **Lane deviations worth knowing** (full list in the design doc §10):
+  - `CaptureGeometry.outputPixelSize` assigns the cap to the long edge **verbatim** (the old
+    `scale = cap/longEdge` then even-floor produced 1918, not 1920, on any source that does not
+    divide 1920 exactly).
+  - The machine accepts `startRequested` from the terminal `.saved`/`.failed` states (a sticky
+    fault must not block a retry) and `stopRequested` from `.checkingPermission`/`.pickingRegion`
+    (quit with the picker up → `.idle`, no file); it carries a private `pendingSince` so the
+    elapsed clock counts from the click, not the first frame.
+  - `ScreenRecorderStats.sessionOriginHostTime` was added: without anchoring on the origin the
+    probe measured 10.23 s for a 10 s recording (SCK hands the first frame over ~0.19 s in the past).
+  - `AudioMixPump` flushes a **partial tail block** on stop (whole 960-frame blocks left the audio
+    track up to 20 ms short of the video's retimed stop frame).
+  - `MicrophoneSource.handleConfigurationChange` recomputes the latency offset from the NEW
+    device (built-in → Bluetooth HFP would otherwise keep the old shift for the rest of the run).
+  - `ScreenRecorder.stop()`'s `eventSink.finish()` moved into a `defer` — a throwing exit used to
+    hang the controller's `for await recorder.events` loop forever.
+  - `RegionPicker` debounces cancel-on-lost-key by one main-queue turn (crossing to a sibling
+    overlay on a second display posts `didResignKey` on the first) and falls back to the key
+    overlay's screen when `NSEvent.mouseLocation` lands in a gap between displays.
+  - Preflight failures other than TCC ride `.permissionMissing(ScreenRecordingFailure)` — it is
+    the generic `checkingPermission` failure carrier and also delivers `.diskFull`.
+  - A stop requested while `recorder.start()` is in flight **awaits** the start task rather than
+    cancelling it (cancelling would tear a half-built SCStream apart behind `ScreenRecorder`'s back).
+  - The queued `.saved` is flushed on a forwarded dictation `dismiss()` **and** polled at 250 ms,
+    because `DictationPillController.scheduleAutoHide` calls `dismiss()` directly (so `.done` and
+    `.warning` — the two common endings — never reach the coordinator's face).
+  - `finalizeTimedOut` shows `.warning("Saved with a delay")` via a `faultOverride`, and a
+    `micLost` during the session turns the confirmation into "Saved — the microphone dropped out
+    at m:ss".
+  - The popover row renders **"02:14"**, not "2:14": it reuses `ScreenRecordingSummary.pillText`
+    verbatim so the pill and the row can never desync. If unpadded minutes are wanted, fix
+    `ElapsedFormatter`/`pillText`, never the popover.
+  - `MenuView.headerSubtitleView` is a `@ViewBuilder` (live digits need a `TimelineView`); the
+    1 Hz tick exists ONLY on the recording branch, so a resting popover schedules no redraw.
+  - `SettingsScreenRecordingSection` carries its own copy of the 5-line `captionFooter` helper
+    (`SettingsView`'s is private) — a tidy-up could hoist it into `KleothTheme.swift`.
+
 ## Summarization
 - OpenRouter chat-completions. **Default model: `z-ai/glm-5.3-flash`** = `ModelCatalog.defaultModel`
   (the ONE place the literal lives; `Settings.load`, `Summarizer.init` read it).
@@ -228,6 +343,17 @@ bash app/make-dmg.sh                            # → app/dist/Kleoth-<version>.
 # Recovery / headless transcribe (NOTE: --product, not --target — see gotchas)
 swift build --package-path app --product localtranscribe
 app/.build/debug/localtranscribe <meeting-dir> [scribe]
+
+# Screen-recording probe (the shell's own Screen Recording grant applies — NOT proof of Kleoth's;
+# see §8 #0). --inspect prints bitrate / fps / track durations of an existing file and exits.
+swift build --package-path app --product screenrec
+app/.build/debug/screenrec 10 [--display N] [--region x,y,w,h] [--no-mic] [--out file]
+app/.build/debug/screenrec --inspect ~/Kleoth/screen-recordings/screen-….mp4
+
+# Pill playground / filmstrip, incl. the screen-recording backdrop
+swift run --package-path app pillsandbox
+app/.build/debug/pillsandbox --film <dir> --edge right --backdrop recording \
+  --sequence idle,armed,listening,recording,saving,saved,idle
 ```
 
 ## Meeting folder layout (`~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`)
@@ -237,6 +363,96 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
 also hold `variants/<tier>/` (archived transcript set of the non-active tier + `variant.json`
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
+
+## Current status (2026-09-06 — screen recording v1)
+Branch `feat/screen-recording` (T0 contract + six parallel lanes T1–T6 + a T7 integration/review
+pass). Design doc `docs/plans/2026-09-06-screen-recording.md`. **338 core tests green** (was 257:
++46 T1 geometry/machine/naming/formatter, +31 T3 HostClockMath/AudioRing/MixMath, +4 `DeadlineTests`); both packages
+build with zero warnings; `screenrec 10` → 10.05 s file, 296 frames / 0 dropped, 500 audio blocks /
+1 dropped, H.264 3.07 Mbps + AAC 48 kHz stereo, 22.2–22.6 MB/min on a real 5-min session; the
+`pillsandbox` film of `recording/armed/listening/done/peek/saving/saved/idle` reads right.
+- **Review fixes applied in the integration pass:** `withDeadline(seconds:operation:)` added to
+  KleothCore (`Sources/KleothCore/Concurrency/Timeout.swift`) — a one-shot continuation raced by the
+  operation task, a deadline task and outer cancellation, so it resumes WITHOUT waiting for a
+  non-cancellable child; `ScreenRecorder.stop()` races `writer.finish()` through it and
+  `shareableContent()` uses it too (`withTimeout` only ever bounded cancellation-aware work, now
+  documented). A late-but-successful finalize no longer strands a complete movie under the in-flight
+  name (`renameWhenFinishLands`). `showSaved()` drops the backdrop BEFORE showing the confirmation,
+  so a `.recording` backdrop can no longer collapse the just-scheduled `.saved` to `.idle`. A retried
+  recording calls `coordinator.dismissRecordingPhase()` before `perform(effect)`, so a sticky
+  `.failed`/stale `.saved` is gone by the time `.recording(since:)` lands. `RegionPicker` records the
+  frontmost non-Kleoth app on `begin` and re-activates it in `teardown()`, so a pick or an Esc hands
+  focus back (Kleoth staying active with zero windows also made a following dictation paste land
+  nowhere).
+- **Two low findings fixed by hand after the review (traced, not runtime-verified):** (1)
+  `DictationPillController.dismissFromUser()` now pins `currentState` to the phase being dismissed
+  for the duration of the `onDismiss` callback (`dismissingState`) — under Reduce Motion the collapse
+  applies the new phase synchronously inside `dismiss()`, so `PillCoordinator.routeDismiss()` read
+  `.idle`/`.hidden` and skipped `DictationController.handlePillDismiss` for a dictation ✕ (and
+  cancelled a queued `.saved` instead of flushing it). (2) `ScreenRecordingController.startFailure`
+  keeps WHY `recorder.start()` threw when a stop had already moved the machine past `.starting`, so
+  `finalize()` surfaces `.permissionStale`/`.noDisplay`/… instead of a generic "Nothing was recorded.".
+  Reset with the rest of the per-session state in `cleanUpSession()`.
+- **Known leftovers from the review (low, unverified, deliberately not chased):** the first 20 ms
+  audio block can be dropped by the writer's `pts >= firstPTS` guard because the origin PTS
+  round-trips through host ticks (`ScreenRecorder.swift` ~:420); mic-vs-host clock drift is never
+  absorbed by `AudioRing` — it becomes a 2 ms discontinuity every N seconds (`AudioRing.swift` ~:80;
+  the 10-min drift check below will show whether it is audible); `isDictationPhaseLive` trails
+  `show()` by one turn so a same-turn recording phase can overwrite a just-shown dictation phase
+  (`PillCoordinator.swift` ~:117); the terminate budget equals the writer's finalize budget so a
+  quit can exit mid-`finishWriting` (fragments make it recoverable). Also: `SettingsScreenRecordingSection`
+  duplicates `captionFooter`; the popover/pill say "02:14" (see #8).
+- ⚠️ **NOT runtime-verified (honest list) — nothing here has been exercised by a human in the signed
+  release app.** Every lane is compile-checked, unit-tested and probe-measured only; the T5 controller
+  and T6 popover/Settings surfaces have never had a session run through them, and the pill films come
+  from `pillsandbox`'s own `CGWindowListCreateImage` capture, not the app. In particular: the TCC
+  grant on Kleoth's own identity, the region picker by eye (dim / crosshair / hint / label
+  repositioning), the picker on two displays, the quit and `kill -9` paths, dictation interleaved with
+  a recording, the fMP4 in real players/uploaders, three concurrent `AVAudioEngine`s, long-run A/V
+  drift, and the Settings permission row's 1 Hz poll + "Open Recordings Folder".
+- **TODO for the user — §8 manual checklist.** Prereq: `bash app/setup-signing.sh` once,
+  `bash app/make-app.sh release`, `pkill -x Kleoth; open -a Kleoth`, `codesign -dv` shows
+  "Kleoth Self-Signed". Reset flows with `tccutil reset ScreenCapture dev.kleoth.app`.
+  0. **DO THIS FIRST — it gates the whole feature. Screen Recording TCC on the self-signed
+     (no Team ID) identity, in the RELEASE APP.** A shell-launched `screenrec` is TCC-attributed to
+     the terminal and proves nothing. So: `tccutil reset ScreenCapture dev.kleoth.app` →
+     `make-app.sh release` → relaunch → popover **"Record screen…"** → the system prompt appears →
+     grant → the sticky "quit and reopen Kleoth" pill → relaunch → "Record screen…" → Return → 5 s →
+     stop → the file plays. **If the relaunched app still gets `-3801` / no frames, STOP and report
+     "Developer ID required"** (Cap reports Sequoia silently rejecting ad-hoc SCK).
+     **✅ PASSED 2026-09-06 (user, release app on macOS 26.5, "Kleoth Self-Signed", no Team ID):** the
+     prompt appeared, the grant took, and a recording from the popover produced a playable file — the
+     self-signed identity is NOT blocked by SCK on this Mac. The feature is unblocked; items 1–8 still open.
+  1. Quit via the popover mid-recording → dialog → Quit Anyway → the app exits within 5 s and the
+     file plays; ⌘Q from the History window → same. Quit while the REGION PICKER is up → prompt exit,
+     no file, no `-recovered.mp4`.
+  2. `kill -9 Kleoth` mid-recording → relaunch → "Recovered a screen recording" row → the sweep
+     renames to `-recovered.mp4` and it plays up to the last fragment (≤ 10 s lost). `kill -TERM` →
+     identical.
+  3. Dictation mid-recording: fn+shift → the capsule morphs in place through
+     `.armed/.listening/…/.done` and returns to `.recording` with the right digits; the text pastes;
+     the recording's mic track has the dictated words. Then stop the recording while a hands-free
+     dictation is live → the `.saved` confirmation appears after it (exercises the queue AND the
+     250 ms auto-hide poll).
+  4. Two displays: an overlay on both, a drag on the secondary returns that display's ID/frame, the
+     picker covers a full-screen app's Space, and the app drops back to `.accessory` after a cancel.
+  5. Play a produced file in **QuickTime, Chrome, Safari, Slack inline, Telegram and iMessage** — the
+     fMP4 risk is untested. Any refusal → flip `ScreenRecordingDefaults.fragmentInterval` to nil (one
+     constant) and re-verify the crash/quit paths (the file is then moov-at-front, crash = total loss).
+  6. **Three concurrent `AVAudioEngine`s** — a meeting recording running + a dictation + a screen
+     recording on one input device: all three get audio, `mic.m4a` has no dropouts. Untested
+     extrapolation.
+  7. **10-minute drift** (§8 #14/#15): metronome flash + click within one frame at the start AND at
+     10 min; the mic echo trails the system copy by a constant < 60 ms wired / < 200 ms Bluetooth with
+     no drift. Only a single-click ≈30 ms offset has been measured. Then decide
+     `micOffsetCompensation` (currently 0).
+  8. Decide **"02:14" vs "2:14"** in the popover row / pill (cosmetic; the fix belongs in
+     `ElapsedFormatter`/`ScreenRecordingSummary.pillText` so both stay identical).
+  Plus, from §8: static screen 60 s mid-recording (scrubbing → maybe `keepaliveInterval = 1`), the
+  stale-grant detector, mic unplug/replug and display disconnect details, output-device and AirPods
+  switches mid-recording, moving `~/Kleoth` in Settings, colors/5K downscale, Reduce Motion +
+  VoiceOver, idle CPU with the `.recording` pill up, and the macOS 26 monthly "bypass the private
+  window picker" alert.
 
 ## Current status (2026-09-03 — dictation v1)
 ✅ **v0.2.0 RELEASED (2026-09-03):** `feat/dictation` fast-forwarded into `main` (29 commits), tag

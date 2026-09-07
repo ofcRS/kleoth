@@ -8,6 +8,16 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Added
 
+- **Screen recording.** Hover the pill and click the red record glyph — or pick "Record screen…"
+  from the menu-bar popover — to record your screen with system audio and your microphone in one
+  file. A dimmed picker lets you drag a region or press Return for the whole display (Esc cancels);
+  the pill then shows a live timer, and hovering it turns the timer into a stop button. When you
+  stop, the pill confirms with the length and file size — click it to reveal the recording in
+  Finder. Files land in `~/Kleoth/screen-recordings/` as 1080p H.264 MP4s (about 22 MB per minute)
+  that you own outright: nothing is uploaded, nothing is transcribed. Quitting mid-recording asks
+  first and still saves the file, and a recording interrupted by a crash is recovered on the next
+  launch. Recording and dictation coexist — dictating during a recording morphs the pill in place
+  and hands it back when you are done.
 - **The resting pill reacts to the pointer.** Hovering the half-tucked capsule pulls it fully on
   screen with a mic glyph; it tucks back shortly after the pointer leaves.
 - **The pill answers the hotkey on the first frame.** Pressing fn+shift now hops the resting

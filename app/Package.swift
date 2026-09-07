@@ -114,5 +114,22 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Headless screen-recording probe: capture N seconds of a display (or a
+        // region) through the same `ScreenRecorder` the app uses and print the
+        // resolved pixel size, bit rate, frames appended/dropped, audio blocks,
+        // mic gaps, duration, size and MB/min. The A/V-sync and file-size
+        // harness — not a permission spike (a binary run from a shell is
+        // TCC-attributed to the shell). `screenrec <seconds> [--display N]
+        // [--region x,y,w,h] [--no-mic] [--out file] [--inspect file]`
+        .executableTarget(
+            name: "screenrec",
+            dependencies: [
+                "KleothCapture",
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
     ]
 )

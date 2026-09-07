@@ -17,9 +17,15 @@ import KleothPillUI
 ///         its own defaults suite, never the app's.
 ///
 ///     swift run --package-path app pillsandbox --film <dir> [--edge bottom|top|left|right]
-///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--sequence idle,listening,transcribing,done,idle]
-///         (sequence items: idle listening handsfree transcribing polishing done warning failed hidden,
-///          plus peek / unpeek = pointer enters / leaves the resting pill)
+///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--backdrop hidden|idle|recording]
+///         [--sequence idle,listening,transcribing,done,idle]
+///         (sequence items: idle armed listening handsfree transcribing polishing done warning
+///          failed recording saving saved hidden, plus peek / unpeek = pointer enters / leaves
+///          the resting pill)
+///         `--backdrop` is what the pill collapses to between phases: `idle` (the
+///         dictation resting sliver, the default and today's behavior),
+///         `recording` (a screen recording in flight — the pill never tucks) or
+///         `hidden` (no pill at all between phases).
 ///         Headless: runs the sequence, renders the panel every 1/fps s
 ///         (`DictationPillController.captureFrame` — no screen-recording
 ///         permission needed), composes each frame on a fixed canvas around the
@@ -35,6 +41,11 @@ struct Arguments {
     var fraction: Double = 0.5
     var fps: Double = 30
     var hold: TimeInterval = 1.2
+    /// What the pill collapses to between phases. `.idle` is the dictation
+    /// resting sliver (today's behavior); `.recording` puts a screen recording
+    /// in flight, so the pill never tucks and every `dismiss()` lands back on
+    /// the dot-and-digits capsule.
+    var backdrop: DictationPillBackdrop = .idle
     var sequence: [String] = ["idle", "listening", "transcribing", "polishing", "done", "idle"]
 
     static func parse(_ args: [String]) -> Arguments {
@@ -48,12 +59,31 @@ struct Arguments {
             case "--fraction": out.fraction = value().flatMap(Double.init) ?? 0.5; i += 1
             case "--fps": out.fps = value().flatMap(Double.init) ?? 30; i += 1
             case "--hold": out.hold = value().flatMap(Double.init) ?? 1.2; i += 1
+            case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
             default: break
             }
             i += 1
         }
         return out
+    }
+}
+
+/// One date per process so every `.recording` re-show compares equal — the
+/// same rule the real session follows (§6.1).
+enum SandboxClock {
+    static let filmStart = Date()
+}
+
+/// `--backdrop` / the control window's toggle. `recording` always uses
+/// `SandboxClock.filmStart`, so the backdrop the pill collapses to and the
+/// `recording` sequence item are the SAME value and never re-transition.
+func backdrop(named name: String) -> DictationPillBackdrop? {
+    switch name.lowercased() {
+    case "hidden": return .hidden
+    case "idle": return .idle
+    case "recording": return .recording(since: SandboxClock.filmStart)
+    default: return nil
     }
 }
 
@@ -69,6 +99,9 @@ func pillState(named name: String) -> DictationPillState? {
     case "warning": return .warning("Pasted the raw transcript — the clean-up model timed out.")
     case "failed": return .failed(.missingElevenLabsKey)
     case "hidden": return .hidden
+    case "recording": return .recording(since: SandboxClock.filmStart)
+    case "saving": return .saving
+    case "saved": return .saved("2:14 · 48 MB")
     default: return nil
     }
 }
@@ -84,6 +117,9 @@ func phaseName(_ state: DictationPillState) -> String {
     case .done: return "done"
     case .warning: return "warning"
     case .failed: return "failed"
+    case .recording: return "recording"
+    case .saving: return "saving"
+    case .saved: return "saved"
     }
 }
 
@@ -96,6 +132,13 @@ final class SandboxDriver: ObservableObject {
     @Published var fraction: Double = 0.5 { didSet { controller.dock(edge: edge, fraction: fraction) } }
     @Published var level: Double = 0 { didSet { controller.setLevel(level) } }
     @Published var simulateSpeech = false { didSet { simulateSpeech ? startSpeech() : stopSpeech() } }
+    /// "Recording backdrop": a screen recording in flight. The pill then never
+    /// tucks — every phase collapses back to the dot-and-digits capsule.
+    @Published var backdropRecording = false {
+        didSet {
+            controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle)
+        }
+    }
     @Published var phase: String = "idle"
     @Published var lastFilm: String = ""
     private var speechTask: Task<Void, Never>?
@@ -181,6 +224,12 @@ struct ControlPanel: View {
                     }
                 }
                 HStack {
+                    ForEach(["recording", "saving", "saved"], id: \.self) { name in
+                        Button(name) { driver.show(pillState(named: name)!) }
+                    }
+                    Toggle("Recording backdrop", isOn: $driver.backdropRecording)
+                }
+                HStack {
                     Button("Run a whole dictation") { driver.runCycle() }
                         .buttonStyle(.borderedProminent)
                     Button("Reset position") { driver.controller.resetPosition() }
@@ -201,6 +250,7 @@ struct ControlPanel: View {
                     args.filmDirectory = dir
                     args.edge = driver.edge
                     args.fraction = driver.fraction
+                    args.backdrop = driver.backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle
                     driver.lastFilm = "Filming…"
                     Task { @MainActor in
                         let summary = await film(args, controller: driver.controller, exitWhenDone: false)
@@ -238,8 +288,11 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     guard let dir = args.filmDirectory else { return "no --film directory" }
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     controller.dock(edge: args.edge, fraction: args.fraction)
-    controller.setResting(true)
-    controller.show(.idle)
+    // The backdrop IS the starting state: `setBackdrop` takes over a down
+    // panel on the spot, so `.idle` reproduces the old `setResting(true)` +
+    // `show(.idle)` exactly and `.recording` starts the film with a recording
+    // already in flight.
+    controller.setBackdrop(args.backdrop)
     try? await Task.sleep(for: .seconds(1.0))
 
     var captured: [CapturedFrame] = []
@@ -411,9 +464,16 @@ final class SandboxDelegate: NSObject, NSApplicationDelegate {
                 Task { @MainActor in _ = await film(arguments, controller: driver.controller, exitWhenDone: true) }
                 return
             }
-            driver.controller.setResting(true)
+            // `backdropRecording` mirrors the toggle in the control window and
+            // its `didSet` applies the backdrop; `--backdrop hidden` has no
+            // toggle state, so it goes straight to the controller (routing it
+            // through the toggle would show the resting pill and hide it again).
+            if case .recording = arguments.backdrop {
+                driver.backdropRecording = true
+            } else {
+                driver.controller.setBackdrop(arguments.backdrop)
+            }
             driver.controller.dock(edge: arguments.edge, fraction: arguments.fraction)
-            driver.controller.show(.idle)
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
                 styleMask: [.titled, .closable, .miniaturizable],

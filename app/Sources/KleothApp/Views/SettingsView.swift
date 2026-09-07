@@ -111,6 +111,7 @@ struct SettingsView: View {
                 dictionaryText: $dictionaryText,
                 availableModels: availableModels
             )
+            SettingsScreenRecordingSection()
             calendarSection
             onboardingSection
         }

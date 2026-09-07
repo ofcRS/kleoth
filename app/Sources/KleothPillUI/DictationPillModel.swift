@@ -42,7 +42,10 @@ final class DictationPillModel: ObservableObject {
     /// The last motion cue — drives the view's keyframed squash-and-stretch
     /// and content reveal. `id` changes on every beat so equal kinds retrigger.
     @Published private(set) var beat = MotionBeat(kind: .morph, id: 0)
-    /// Pointer over the panel (any phase).
+    /// Pointer over the panel (any phase). Set in every phase by
+    /// `DictationPillController.handleHover`; the view reads it in
+    /// `.recording` to swap the red dot for a `stop.fill` glyph, because a
+    /// click anywhere on that capsule stops the recording (§6.4).
     @Published private(set) var hovered = false
     /// The resting capsule is pulled fully on screen by the pointer.
     @Published private(set) var peeking = false

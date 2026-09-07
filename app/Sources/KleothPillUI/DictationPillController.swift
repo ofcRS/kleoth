@@ -70,9 +70,12 @@ public final class DictationPillController: DictationPillPresenting {
     /// the fade. Cancel-and-restart: one slot, cancelled by every `show`.
     private var hideTask: Task<Void, Never>?
     private var screenObserver: (any NSObjectProtocol)?
-    /// `setResting(true)`: the compact capsule stays up between sessions and
-    /// `dismiss()` collapses to it instead of hiding the panel.
-    private var restingVisible = false
+    /// What the pill falls back to when no phase is live (screen-recording
+    /// design §3.3, §6.1) — the generalization of the old `restingVisible`
+    /// Bool. `.idle` is the dictation resting capsule; `.recording(since:)` is
+    /// a screen recording in flight, which outranks it; `.hidden` means the
+    /// panel goes away between sessions. `dismiss()` lands here.
+    private var backdrop: DictationPillBackdrop = .hidden
     /// `NSScreenNumber` of the display the panel was last anchored on. A tucked
     /// panel's frame straddles a screen edge, so deriving its screen from the
     /// frame is unreliable; this is the source of truth while it is up.
@@ -125,7 +128,7 @@ public final class DictationPillController: DictationPillPresenting {
         let screen = (alreadyUp ? panelScreen() : nil) ?? anchorScreen()
         currentDisplayId = screen?.kleothDisplayId
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: state, edge: edge, on: screen)
+        let layout = Self.layout(for: layoutState(for: state), edge: edge, on: screen)
         let target = CGRect(origin: origin(for: state, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
 
         // Not animated: the edge and label width describe the destination and
@@ -165,31 +168,77 @@ public final class DictationPillController: DictationPillPresenting {
     public func dismiss() {
         hideTask?.cancel()
         hideTask = nil
-
-        if restingVisible {
-            collapseToResting()
-            return
-        }
-        hideCompletely()
+        collapseToBackdrop()
     }
 
-    public func setResting(_ visible: Bool) {
-        guard restingVisible != visible else { return }
-        restingVisible = visible
-        if visible {
-            // Only take over an empty or already-resting panel — never
-            // interrupt a live phase; `dismiss()` lands on `.idle` later.
-            if model.phase == .hidden || model.phase == .idle { show(.idle) }
-        } else if model.phase == .idle {
+    /// The backdrop the pill collapses to when no phase is live (§3.3, §6.1).
+    /// Mirrors what `setResting` used to do, one level up: it takes over the
+    /// panel NOW only when the pill is in the resting family (`.hidden`,
+    /// `.idle`, `.recording` — nothing the user is waiting on); on any live
+    /// dictation phase it is only stored and lands at the next `dismiss()`.
+    public func setBackdrop(_ newBackdrop: DictationPillBackdrop) {
+        guard backdrop != newBackdrop else { return }
+        backdrop = newBackdrop
+        guard Self.isRestingFamily(model.phase) else { return }
+        if let state = newBackdrop.state {
+            show(state)
+        } else if model.phase != .hidden {
             hideCompletely()
         }
     }
 
-    /// Phase → `.idle` on the visible panel (sinks back into the edge), or a
-    /// fresh spring-in if the panel is down.
-    private func collapseToResting() {
-        if model.phase == .idle, panel?.isVisible == true, model.isPresented { return }
-        show(.idle)
+    /// What the pill is showing right now — the coordinator's "is a dictation
+    /// phase live?" input.
+    public var currentState: DictationPillState { dismissingState ?? model.phase }
+    private var dismissingState: DictationPillState?
+
+    public func setResting(_ visible: Bool) {
+        setBackdrop(visible ? .idle : .hidden)
+    }
+
+    /// The phases a backdrop change may take over on the spot: the panel is
+    /// either down or showing a backdrop itself. Every other phase is a live
+    /// dictation the user is watching.
+    private static func isRestingFamily(_ state: DictationPillState) -> Bool {
+        switch state {
+        case .hidden, .idle, .recording: return true
+        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved:
+            return false
+        }
+    }
+
+    /// Phase → the stored backdrop (`.idle` sinks into the edge,
+    /// `.recording` stays on the anchor), or the panel goes away. A fresh
+    /// spring-in if the panel is down. Because `.recording(since:)` carries a
+    /// FIXED date, re-landing on it after every dictation compares equal and
+    /// fires no spring, beat, re-layout or announcement.
+    private func collapseToBackdrop() {
+        guard let state = backdrop.state else {
+            hideCompletely()
+            return
+        }
+        if model.phase == state, panel?.isVisible == true, model.isPresented { return }
+        show(state)
+    }
+
+    /// The state a phase borrows its LAYOUT from. `.armed` on a `.recording`
+    /// backdrop keeps the recording capsule (§6.1 graft 6): without it the
+    /// pill shrinks from 100×28 to the 68×22 sliver for `minHold` (0.2 s) and
+    /// blooms straight back — two reshapes for a press that changed nothing
+    /// the user can see. `model.phase` is still `.armed`; only the size is
+    /// inherited.
+    ///
+    /// Filmed both ways (T2, `--edge bottom --backdrop recording --sequence
+    /// idle,recording,armed,listening,…`): WITH the inheritance the panel frame
+    /// is byte-identical across `recording → armed` (642,13 156×64 in both, no
+    /// transition at all) and only the content swaps dot+digits for the mic
+    /// glyph; WITHOUT it the panel drops to 658,16 124×58 for the 0.2 s hold
+    /// and grows to 152×68 at `.listening` — a visible shrink-and-regrow. Kept.
+    private func layoutState(for state: DictationPillState) -> DictationPillState {
+        if case .armed = state, case .recording(let since) = backdrop {
+            return .recording(since: since)
+        }
+        return state
     }
 
     private func hideCompletely() {
@@ -222,7 +271,7 @@ public final class DictationPillController: DictationPillPresenting {
         guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
@@ -261,14 +310,14 @@ public final class DictationPillController: DictationPillPresenting {
             if edge.isVertical != model.edge.isVertical { dragGrabOffset = 0 }
             currentDisplayId = screen.kleothDisplayId
             model.apply(edge: edge)
-            model.apply(labelWidth: Self.layout(for: model.phase, edge: edge, on: screen).labelWidth)
+            model.apply(labelWidth: Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen).labelWidth)
         }
         let along = (edge.isVertical ? mouse.y : mouse.x) - dragGrabOffset
         let center = PillGeometry.dockedCenter(
             edge: edge, along: along, panelSize: Self.referenceSize(edge: edge, on: screen),
             shadowPadding: Self.shadowPadding, in: Self.bounds(of: screen)
         )
-        let size = Self.layout(for: model.phase, edge: edge, on: screen).panelSize
+        let size = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen).panelSize
         panel.setFrame(
             CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height),
             display: true
@@ -296,7 +345,7 @@ public final class DictationPillController: DictationPillPresenting {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
@@ -317,6 +366,13 @@ public final class DictationPillController: DictationPillPresenting {
 
     /// ✕, or a click anywhere on a `.failed` pill.
     func dismissFromUser() {
+        // `currentState` keeps reporting the phase the user dismissed for the
+        // duration of the callback. Without this the answer depends on motion
+        // settings: a spring applies the collapsed phase on the next main-queue
+        // turn, Reduce Motion applies it synchronously inside `dismiss()`, and
+        // the coordinator would then misroute a dictation ✕ as a recording one.
+        dismissingState = model.phase
+        defer { dismissingState = nil }
         dismiss()
         onDismiss?()
     }
@@ -405,7 +461,7 @@ public final class DictationPillController: DictationPillPresenting {
         }
         guard let panel, panel.isVisible else { return }
         currentDisplayId = screen.kleothDisplayId
-        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
@@ -627,7 +683,7 @@ public final class DictationPillController: DictationPillPresenting {
         settle()
         currentDisplayId = screen.kleothDisplayId
         let edge = dockEdge(on: screen)
-        let layout = Self.layout(for: model.phase, edge: edge, on: screen)
+        let layout = Self.layout(for: layoutState(for: model.phase), edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
         let target = CGRect(origin: origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen), size: layout.panelSize)
@@ -787,6 +843,11 @@ public final class DictationPillController: DictationPillPresenting {
         case .idle, .armed: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
         case .warning, .failed: return 38
+        // Between resting (22) and a motion phase (32): the recording backdrop
+        // is "resting family, but alive". T0 placeholder — T2 films it.
+        case .recording, .saving: return 28
+        // The motion thickness, so the text confirmation is ONE morph.
+        case .saved: return 32
         }
     }
     /// Slack so a font or locale wider than measured never clips: the capsule
@@ -832,7 +893,12 @@ public final class DictationPillController: DictationPillPresenting {
         case .transcribing, .polishing, .done:
             // `.done` keeps the bar's width so the check appears in place of the wave.
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
-        case .warning, .failed:
+        case .recording, .saving:
+            // Dot 8 + spacingS + the fixed 56 pt digit box + the compact
+            // paddings = 100 pt, under the hands-free listening capsule, so the
+            // single anchor's `referenceSize` still covers it (§6.1 graft 7).
+            length = 8 + PillStyle.spacingS + 56 + 2 * PillStyle.compactPadding
+        case .warning, .failed, .saved:
             // +1: SwiftUI's ideal text width can round up a hair past AppKit's
             // measurement; a frame narrower than the ideal would truncate.
             let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
@@ -873,7 +939,15 @@ public final class DictationPillController: DictationPillPresenting {
     /// The pill is not a key window, so VoiceOver never focuses it: each phase
     /// has to be spoken explicitly.
     private func announce(_ state: DictationPillState) {
-        guard state != .idle, state != .armed else { return }
+        // `.idle`/`.armed` are not events. `.recording`/`.saving` are silent
+        // here on purpose: the recording backdrop is re-shown after every
+        // dictation and would otherwise re-announce itself each time —
+        // `ScreenRecordingController` posts the one "Screen recording started"
+        // announcement instead (§6.1). `.saved` announces itself.
+        switch state {
+        case .idle, .armed, .recording, .saving: return
+        case .hidden, .listening, .transcribing, .polishing, .done, .warning, .failed, .saved: break
+        }
         NSAccessibility.post(
             element: NSApp as Any,
             notification: .announcementRequested,
@@ -901,6 +975,9 @@ extension DictationPillState {
         case .done: return "Pasted"
         case .warning(let message): return message
         case .failed(let fault): return fault.text
+        case .recording: return "Recording the screen — click to stop"
+        case .saving: return "Saving the recording…"
+        case .saved(let text): return text
         }
     }
 
@@ -913,6 +990,9 @@ extension DictationPillState {
         case .done: return "checkmark.circle.fill"
         case .warning: return "exclamationmark.triangle.fill"
         case .failed: return "xmark.octagon.fill"
+        case .recording: return "record.circle.fill"
+        case .saving: return "waveform"
+        case .saved: return "checkmark.circle.fill"
         }
     }
 
