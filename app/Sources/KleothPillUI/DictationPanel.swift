@@ -95,6 +95,11 @@ final class DictationPillHostingView<Content: View>: NSHostingView<Content> {
     /// SwiftUI's `.onHover` only fires while the app is active, and Kleoth is
     /// almost never the active app while its pill is on screen.
     var onHoverChange: ((Bool) -> Void)?
+    /// Where the pointer is inside this view, in SwiftUI's root coordinate
+    /// space (origin top-left, y down), or nil once it leaves. The pill's Stop
+    /// button needs a hover state of its own and `.onHover` cannot give it one
+    /// for the same reason `onHoverChange` exists.
+    var onPointerMove: ((CGPoint?) -> Void)?
     private var hoverArea: NSTrackingArea?
 
     override func updateTrackingAreas() {
@@ -102,7 +107,7 @@ final class DictationPillHostingView<Content: View>: NSHostingView<Content> {
         if let hoverArea { removeTrackingArea(hoverArea) }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -113,11 +118,26 @@ final class DictationPillHostingView<Content: View>: NSHostingView<Content> {
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         onHoverChange?(true)
+        onPointerMove?(pillPoint(for: event))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onPointerMove?(pillPoint(for: event))
     }
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         onHoverChange?(false)
+        onPointerMove?(nil)
+    }
+
+    /// AppKit event location → SwiftUI root-space point. `NSHostingView` is
+    /// normally flipped, but reading `isFlipped` rather than assuming it keeps
+    /// this correct if that ever changes.
+    private func pillPoint(for event: NSEvent) -> CGPoint {
+        let local = convert(event.locationInWindow, from: nil)
+        return isFlipped ? local : CGPoint(x: local.x, y: bounds.height - local.y)
     }
 
     required init(rootView: Content) {

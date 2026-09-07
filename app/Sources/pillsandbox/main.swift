@@ -18,10 +18,13 @@ import KleothPillUI
 ///
 ///     swift run --package-path app pillsandbox --film <dir> [--edge bottom|top|left|right]
 ///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--backdrop hidden|idle|recording]
-///         [--sequence idle,listening,transcribing,done,idle]
+///         [--levels off|speech|steady] [--sequence idle,listening,transcribing,done,idle]
 ///         (sequence items: idle armed listening handsfree transcribing polishing done warning
 ///          failed recording saving saved hidden, plus peek / unpeek = pointer enters / leaves
 ///          the resting pill)
+///         `--levels` feeds synthetic mic + system RMS into the REAL
+///         `setRecordingLevels`, so the recording toolbar's meters move in the
+///         film; `off` (the default) leaves them at rest.
 ///         `--backdrop` is what the pill collapses to between phases: `idle` (the
 ///         dictation resting sliver, the default and today's behavior),
 ///         `recording` (a screen recording in flight — the pill never tucks) or
@@ -47,6 +50,16 @@ struct Arguments {
     /// the dot-and-digits capsule.
     var backdrop: DictationPillBackdrop = .idle
     var sequence: [String] = ["idle", "listening", "transcribing", "polishing", "done", "idle"]
+    /// Synthetic mic + system levels for the `.recording` toolbar's meters, fed
+    /// through the real `setRecordingLevels` (raw RMS in, the pill shapes it).
+    /// `speech` = syllable bursts on the mic over a steadier system feed;
+    /// `steady` = two constant mid levels; `off` = silence (the default, so the
+    /// old films are unchanged).
+    var levels: LevelPattern = .off
+
+    enum LevelPattern: String {
+        case off, speech, steady
+    }
 
     static func parse(_ args: [String]) -> Arguments {
         var out = Arguments()
@@ -61,6 +74,14 @@ struct Arguments {
             case "--hold": out.hold = value().flatMap(Double.init) ?? 1.2; i += 1
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
+            // `--levels` on its own means "speech"; a following pattern name wins.
+            case "--levels":
+                if let name = value(), let pattern = LevelPattern(rawValue: name.lowercased()) {
+                    out.levels = pattern
+                    i += 1
+                } else {
+                    out.levels = .speech
+                }
             default: break
             }
             i += 1
@@ -73,6 +94,25 @@ struct Arguments {
 /// same rule the real session follows (§6.1).
 enum SandboxClock {
     static let filmStart = Date()
+}
+
+/// Synthetic RAW RMS for the recording meters — the same units
+/// `ScreenRecorder.levels` reports, so the pill's own normalize + smooth runs
+/// exactly as it does live. RMS 0.02 ≈ a quarter meter, 0.30 ≈ nearly full.
+func syntheticLevels(_ pattern: Arguments.LevelPattern, at t: Double) -> AudioLevels {
+    switch pattern {
+    case .off:
+        return .zero
+    case .steady:
+        return AudioLevels(mic: 0.09, system: 0.045)
+    case .speech:
+        // Mic: syllables inside slower breath groups. System: a calmer bed
+        // (music/voice from the machine) so the two meters never move together.
+        let syllable = max(0, sin(t * 9.0)) * (0.5 + 0.5 * sin(t * 1.3))
+        let mic = 0.008 + 0.34 * syllable
+        let system = 0.02 + 0.09 * (0.5 + 0.5 * sin(t * 0.7 + 1.1))
+        return AudioLevels(mic: mic, system: system)
+    }
 }
 
 /// `--backdrop` / the control window's toggle. `recording` always uses
@@ -132,6 +172,14 @@ final class SandboxDriver: ObservableObject {
     @Published var fraction: Double = 0.5 { didSet { controller.dock(edge: edge, fraction: fraction) } }
     @Published var level: Double = 0 { didSet { controller.setLevel(level) } }
     @Published var simulateSpeech = false { didSet { simulateSpeech ? startSpeech() : stopSpeech() } }
+    /// Raw RMS pushed straight into `setRecordingLevels` — the recording
+    /// toolbar's two meters. Sliders are live only while the pill is
+    /// `.recording`/`.saving` (the controller ignores them otherwise).
+    @Published var micRms: Double = 0.08 { didSet { pushRecordingLevels() } }
+    @Published var systemRms: Double = 0.04 { didSet { pushRecordingLevels() } }
+    @Published var simulateRecordingLevels = false {
+        didSet { simulateRecordingLevels ? startRecordingLevels() : stopRecordingLevels() }
+    }
     /// "Recording backdrop": a screen recording in flight. The pill then never
     /// tucks — every phase collapses back to the dot-and-digits capsule.
     @Published var backdropRecording = false {
@@ -143,6 +191,7 @@ final class SandboxDriver: ObservableObject {
     @Published var lastFilm: String = ""
     private var speechTask: Task<Void, Never>?
     private var cycleTask: Task<Void, Never>?
+    private var recordingLevelTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults(suiteName: "dev.kleoth.pillsandbox") ?? .standard
@@ -193,6 +242,30 @@ final class SandboxDriver: ObservableObject {
         speechTask = nil
         controller.setLevel(0)
     }
+
+    private func pushRecordingLevels() {
+        guard !simulateRecordingLevels else { return }
+        controller.setRecordingLevels(AudioLevels(mic: micRms, system: systemRms))
+    }
+
+    /// 20 Hz, exactly like `ScreenRecordingController`'s poll.
+    private func startRecordingLevels() {
+        recordingLevelTask?.cancel()
+        recordingLevelTask = Task { [weak self] in
+            var t = 0.0
+            while !Task.isCancelled {
+                self?.controller.setRecordingLevels(syntheticLevels(.speech, at: t))
+                t += 0.05
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private func stopRecordingLevels() {
+        recordingLevelTask?.cancel()
+        recordingLevelTask = nil
+        controller.setRecordingLevels(.zero)
+    }
 }
 
 // MARK: - Control window
@@ -240,6 +313,15 @@ struct ControlPanel: View {
                 Slider(value: $driver.level, in: 0...1) { Text("Level") }
                     .disabled(driver.simulateSpeech)
             }
+            Section("Recording meters") {
+                Text("Raw RMS into setRecordingLevels — only visible in the recording/saving phases.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Simulate a live recording", isOn: $driver.simulateRecordingLevels)
+                Slider(value: $driver.micRms, in: 0...0.5) { Text("Mic RMS") }
+                    .disabled(driver.simulateRecordingLevels)
+                Slider(value: $driver.systemRms, in: 0...0.5) { Text("System RMS") }
+                    .disabled(driver.simulateRecordingLevels)
+            }
             Section("Film (for the agent)") {
                 Text("Renders the current edge's rise → work → sink to PNG frames + a contact sheet in ~/Desktop.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -251,6 +333,7 @@ struct ControlPanel: View {
                     args.edge = driver.edge
                     args.fraction = driver.fraction
                     args.backdrop = driver.backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle
+                    args.levels = driver.simulateRecordingLevels ? .speech : .off
                     driver.lastFilm = "Filming…"
                     Task { @MainActor in
                         let summary = await film(args, controller: driver.controller, exitWhenDone: false)
@@ -311,10 +394,14 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
         let state = pillState(named: name) ?? .idle
         let phaseStart = Date()
         while Date().timeIntervalSince(phaseStart) < args.hold {
+            speechClock += interval
             if case .listening = state {
-                speechClock += interval
                 let syllable = max(0, sin(speechClock * 9.0)) * (0.5 + 0.5 * sin(speechClock * 1.3))
                 controller.setLevel(min(1, 0.15 + 0.85 * syllable))
+            }
+            // The recording toolbar's meters, through the real entry point.
+            if args.levels != .off {
+                controller.setRecordingLevels(syntheticLevels(args.levels, at: speechClock))
             }
             if let frame = controller.captureFrame() {
                 captured.append(CapturedFrame(time: Date().timeIntervalSince(start), frame: frame))
