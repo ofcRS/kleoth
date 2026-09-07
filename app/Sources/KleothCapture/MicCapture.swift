@@ -11,7 +11,14 @@ import AVFoundation
 /// surfaced from ``stop()`` after the engine has stopped (which establishes a
 /// happens-before with the render thread).
 public final class MicCapture {
-    private let engine = AVAudioEngine()
+    /// The engine of the session in flight — created in `start(writingTo:)`,
+    /// released in `stop()`. Per session for the same reason as
+    /// `DictationCapture.engine`: a stopped-but-alive engine keeps the input
+    /// device open, which holds a Bluetooth headset in its hands-free
+    /// (phone-quality) profile. The `Recorder` that owns this capture outlives
+    /// `stop()` by the whole 2-channel combine, so the release cannot be
+    /// left to deinit.
+    private var engine: AVAudioEngine?
 
     /// The destination file. Opened on `start`, released on `stop`. Only the
     /// render thread writes to it between start and stop.
@@ -45,6 +52,9 @@ public final class MicCapture {
         guard !isRunning else { return }
         writeFailed.reset()
 
+        // A local until the session is live: every throw below frees it.
+        releaseEngine()
+        let engine = AVAudioEngine()
         let input = engine.inputNode
         // Capture at the HARDWARE format (`inputFormat`); the AAC writer
         // transcodes. `outputFormat` keeps the previous run's format after the
@@ -62,20 +72,23 @@ public final class MicCapture {
         guard let writer = TapWriter(file: audioFile, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
             throw ChannelAudio.AudioError.formatUnavailable
         }
-        try installTap(writer)   // an AVFoundation refusal surfaces as a Swift error, nothing to roll back
+        try installTap(writer, on: engine)   // an AVFoundation refusal surfaces as a Swift error, nothing to roll back
         self.file = audioFile
 
         do {
             engine.prepare()
             try engine.start()
         } catch {
-            // Roll back the tap/file so the instance stays reusable.
+            // Roll back the tap/file so the instance stays reusable (the
+            // engine dies with this scope).
             input.removeTap(onBus: 0)
+            tapFormat = nil
             self.file = nil
             throw error
         }
+        self.engine = engine
         isRunning = true
-        observeConfigurationChange()
+        observeConfigurationChange(engine)
     }
 
     private static let tapBufferSize: AVAudioFrameCount = 4096
@@ -85,8 +98,7 @@ public final class MicCapture {
     ///
     /// - Throws: ``ObjCExceptionError`` when AVFoundation raises on a format
     ///   that does not match the hardware (see `DictationCapture.installTap`).
-    private func installTap(_ writer: TapWriter) throws {
-        tapFormat = writer.sourceFormat
+    private func installTap(_ writer: TapWriter, on engine: AVAudioEngine) throws {
         let failed = writeFailed
         let input = engine.inputNode
         try catchingObjCExceptions {
@@ -98,6 +110,18 @@ public final class MicCapture {
                 }
             }
         }
+        tapFormat = writer.sourceFormat   // only once AVFoundation accepted it
+    }
+
+    /// Removes the tap (if any), stops the engine and releases it. Idempotent.
+    private func releaseEngine() {
+        guard let engine else { return }
+        if tapFormat != nil {
+            engine.inputNode.removeTap(onBus: 0)
+            tapFormat = nil
+        }
+        engine.stop()
+        self.engine = nil
     }
 
     // MARK: - Device changes
@@ -106,7 +130,7 @@ public final class MicCapture {
     private var tapFormat: AVAudioFormat?
     private var configurationObserver: (any NSObjectProtocol)?
 
-    private func observeConfigurationChange() {
+    private func observeConfigurationChange(_ engine: AVAudioEngine) {
         removeConfigurationObserver()
         let box = OwnerBox(self)
         configurationObserver = NotificationCenter.default.addObserver(
@@ -133,28 +157,33 @@ public final class MicCapture {
     /// silently at the switch. If no input is left, the file simply stops
     /// growing (the system channel keeps recording).
     private func handleConfigurationChange() {
-        guard isRunning, let file else { return }
+        guard isRunning, let engine, let file else { return }
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)   // the hardware format — see `start()`
         if engine.isRunning, let current = tapFormat, TapWriter.matches(format, current) {
             return
         }
-        input.removeTap(onBus: 0)
+        if tapFormat != nil {
+            input.removeTap(onBus: 0)
+            tapFormat = nil
+        }
         engine.stop()
         guard format.channelCount > 0, format.sampleRate > 0,
               let writer = TapWriter(file: file, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
+            releaseEngine()   // no input left; don't keep the device pinned
             return
         }
         do {
-            try installTap(writer)
+            try installTap(writer, on: engine)
         } catch {
-            return   // no input left worth reopening; the system channel keeps recording
+            releaseEngine()   // no input left worth reopening; the system channel keeps recording
+            return
         }
         do {
             engine.prepare()
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
+            releaseEngine()
         }
     }
 
@@ -179,9 +208,9 @@ public final class MicCapture {
     public func stop() {
         guard isRunning else { return }
         removeConfigurationObserver()
-        engine.inputNode.removeTap(onBus: 0)
-        // Quiesces the render thread; establishes ordering with the flag below.
-        engine.stop()
+        // Quiesces the render thread (ordering with the flag below) and frees
+        // the engine, which is what lets a headset leave hands-free mode.
+        releaseEngine()
         // Releasing the last reference flushes and closes the AAC file.
         file = nil
         isRunning = false

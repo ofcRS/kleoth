@@ -68,9 +68,25 @@ public struct DictationCaptureResult: Sendable {
 /// The type is deliberately **not** `Sendable`: it is created by, and read only
 /// from, the `@MainActor` dictation controller. The pieces the render thread
 /// touches are the `@unchecked Sendable` heap words above.
+///
+/// The `AVAudioEngine` is **per session, not per instance**. An engine whose
+/// `inputNode` has been touched keeps its input audio unit — and with it the
+/// input device — alive until the engine object itself is deallocated;
+/// `engine.stop()` does not let go. On a Bluetooth headset that alone pins the
+/// link in the hands-free profile (16 kHz mic, phone-quality playback), so a
+/// long-lived engine left every headset "uglified" after a dictation until
+/// Kleoth was quit. Probed 2026-09-07 with a WH-1000XM5: the output stayed at
+/// 16 kHz for as long as a stopped engine existed (even one that was never
+/// started, only its input format read) and returned to 44.1 kHz within a
+/// second of the engine being freed. A fresh engine costs ~150 ms more at
+/// chord-down on that headset (~200 ms vs ~55 ms warm), which the controller
+/// hides by acknowledging the press before the mic opens.
 @available(macOS 14.4, *)
 public final class DictationCapture {
-    private let engine = AVAudioEngine()
+    /// The engine of the session in flight. Created in `start()`, released by
+    /// `quiesce()` on every exit — see the type comment for why it must die
+    /// with the session.
+    private var engine: AVAudioEngine?
 
     /// Destination for the session in flight. Released in `stop`/`cancel`,
     /// which flushes and closes the AAC file.
@@ -85,11 +101,6 @@ public final class DictationCapture {
 
     /// `true` between a successful `start()` and `stop`/`cancel`.
     private var running = false
-
-    /// `true` once the engine has been stopped and the tap removed for this
-    /// session — either by `stop`/`cancel` or by a configuration change.
-    /// Starts `true` so `quiesce()` is a no-op before the first `start()`.
-    private var engineQuiesced = true
 
     /// Raised when a device switch quiesced this session early; read out into
     /// ``DictationCaptureResult/interrupted`` by `stop`. Main-thread only (the
@@ -142,14 +153,18 @@ public final class DictationCapture {
             throw DictationCaptureError.microphoneDenied
         }
 
-        // 2. A usable input format (no device selected ⇒ 0 channels / 0 Hz).
-        //    `inputFormat`, NOT `outputFormat`: the output bus keeps the
-        //    format of the last run, so after the default input device
-        //    changed while this engine was idle (a Bluetooth headset
-        //    connecting) it still said 48 kHz while the hardware was at
-        //    44.1 kHz, and `installTap` at that format raises an
-        //    NSException — the 2026-09-06 crashes. The input bus follows the
-        //    hardware (probed: stale 48 k output vs correct 44.1 k input).
+        // 2. A fresh engine and a usable input format (no device selected ⇒
+        //    0 channels / 0 Hz). The engine is a local until the session is
+        //    live, so every throw below frees it — and with it the input
+        //    device (see the type comment). `inputFormat`, NOT `outputFormat`:
+        //    the output bus keeps the format of the last run, so after the
+        //    default input device changed while an engine was idle (a
+        //    Bluetooth headset connecting) it still said 48 kHz while the
+        //    hardware was at 44.1 kHz, and `installTap` at that format raises
+        //    an NSException — the 2026-09-06 crashes. The input bus follows
+        //    the hardware (probed: stale 48 k output vs correct 44.1 k input).
+        quiesce()   // never two engines
+        let engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
@@ -188,7 +203,7 @@ public final class DictationCapture {
             throw DictationCaptureError.writeFailed
         }
         do {
-            try installTap(writer)
+            try installTap(writer, on: engine)
         } catch {
             // AVFoundation refused the tap (format mismatch): a `.failed` pill,
             // not a swallowed NSException that kills the app a moment later.
@@ -200,20 +215,22 @@ public final class DictationCapture {
             engine.prepare()
             try engine.start()
         } catch {
-            // Roll all the way back: no tap, no file, instance still reusable.
+            // Roll all the way back: no tap, no file, no engine (it is freed
+            // with this scope), instance still reusable.
             input.removeTap(onBus: 0)
+            tapFormat = nil
             Self.discard(url)
             throw DictationCaptureError.engineFailed(error)
         }
 
+        self.engine = engine
         file = audioFile
         currentURL = url
         // Frames are counted at the FILE's rate (see `TapWriter.write`), so the
         // duration stays right even if the device — and its rate — changes.
         captureSampleRate = audioFile.processingFormat.sampleRate
         running = true
-        engineQuiesced = false
-        observeConfigurationChange()
+        observeConfigurationChange(engine)
         return url
     }
 
@@ -226,8 +243,7 @@ public final class DictationCapture {
     ///   does not match the hardware). `installTap` is documented to raise;
     ///   left uncaught, the exception is swallowed by AppKit and the process
     ///   crashes on its next main-actor check.
-    private func installTap(_ writer: TapWriter) throws {
-        tapFormat = writer.sourceFormat
+    private func installTap(_ writer: TapWriter, on engine: AVAudioEngine) throws {
         let failed = writeFailed
         let meter = level
         let counter = frames
@@ -252,6 +268,7 @@ public final class DictationCapture {
                 }
             }
         }
+        tapFormat = writer.sourceFormat   // only once AVFoundation accepted it
     }
 
     /// Stops the engine, finalizes the file, and describes the clip.
@@ -386,18 +403,23 @@ public final class DictationCapture {
 
     // MARK: - Engine lifecycle
 
-    /// Removes the tap and stops the engine exactly once per session.
+    /// Removes the tap, stops the engine and **releases it** — the release is
+    /// what hands a Bluetooth headset back to its music profile (see the type
+    /// comment). Idempotent; a no-op when no engine is alive.
     private func quiesce() {
-        guard !engineQuiesced else { return }
-        engineQuiesced = true
-        engine.inputNode.removeTap(onBus: 0)
+        guard let engine else { return }
+        if tapFormat != nil {
+            engine.inputNode.removeTap(onBus: 0)
+            tapFormat = nil
+        }
         engine.stop()
+        self.engine = nil
     }
 
     /// Watches for a device change under the live session — a Bluetooth
     /// headset switching profiles ~0.1 s after its mic is opened (every cold
     /// start on such a headset), AirPods connecting, a dock unplugged.
-    private func observeConfigurationChange() {
+    private func observeConfigurationChange(_ engine: AVAudioEngine) {
         removeConfigurationObserver()
         let box = OwnerBox(self)
         configurationObserver = NotificationCenter.default.addObserver(
@@ -419,13 +441,16 @@ public final class DictationCapture {
     /// meter is zeroed then because the owner polls `currentLevel` at 20 Hz
     /// and a frozen last-RMS reading keeps the pill looking live.
     private func handleConfigurationChange() {
-        guard running, !engineQuiesced, let file else { return }
+        guard running, let engine, let file else { return }
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)   // the hardware format — see `start()`
         if engine.isRunning, let current = tapFormat, TapWriter.matches(format, current) {
             return
         }
-        input.removeTap(onBus: 0)
+        if tapFormat != nil {
+            input.removeTap(onBus: 0)
+            tapFormat = nil
+        }
         engine.stop()
         guard format.channelCount > 0, format.sampleRate > 0,
               let writer = TapWriter(file: file, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
@@ -433,23 +458,23 @@ public final class DictationCapture {
             return
         }
         do {
-            try installTap(writer)
+            try installTap(writer, on: engine)
         } catch {
             giveUpAfterConfigurationChange()
             return
         }
-        tapFormat = format
         do {
             engine.prepare()
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
             giveUpAfterConfigurationChange()
         }
     }
 
+    /// The session keeps what it captured but the engine is released now —
+    /// a dead engine would still pin the headset's profile until `stop()`.
     private func giveUpAfterConfigurationChange() {
-        engineQuiesced = true
+        quiesce()
         interrupted = true
         level.reset()
     }
