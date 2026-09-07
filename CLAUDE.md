@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-09-06. This file is living context for future sessions — keep it current._
+_Last updated: 2026-09-07. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -17,7 +17,8 @@ _Last updated: 2026-09-06. This file is living context for future sessions — k
   TranscriptNormalizer, **Transcriber protocol**), Summarization (OpenRouterClient, Summarizer),
   Rendering, SpeakerMapping, Storage (MeetingStore), Config (Credentials, Settings), Pipeline
   (MeetingPipeline), `Dictation/`, **`ScreenRecording/`** (Defaults, Types, ElapsedFormatter,
-  FileNaming, CaptureGeometry, SessionMachine, HostClockMath, AudioRing, MixMath),
+  FileNaming, CaptureGeometry, SessionMachine, HostClockMath, AudioRing, MixMath, **Record** +
+  **Store** — the per-recording transcript sidecar, 2026-09-07),
   `Concurrency/` (`withTimeout`, `withDeadline`).
 - `kleoth` (exe): subcommands `transcribe`, `summarize`, `rename`, `render`. (Slack removed 2026-06-08.)
 - `KleothCoreTests` (51 tests, all green).
@@ -28,7 +29,8 @@ _Last updated: 2026-09-06. This file is living context for future sessions — k
   `meeting.m4a`), MicCapture, SystemAudioTap (Core Audio process tap),
   **LocalTranscriber** (WhisperKit), **DictationCapture** (own AVAudioEngine input tap → temp m4a),
   **`ScreenRecording/`** (`@MainActor ScreenRecorder` + MicrophoneSource, SystemAudioSink,
-  AudioMixPump, VideoFrameGate, MovieWriter, VideoFormat, ScreenRecordingPermission, Contract).
+  AudioMixPump, VideoFrameGate, MovieWriter, VideoFormat, ScreenRecordingPermission, Contract,
+  **LevelWord** (live mic/system RMS), **RecordingAudioExtractor** (mp4 → m4a for transcription)).
   (`ScreenshotCapture` was deleted 2026-09-06 — dead code.)
 - `KleothPillUI` (lib): the pill — `DictationPanel`, `DictationPillController`,
   `DictationPillModel`, `DictationPillView`, `PillTypes` (the pill contract, incl. the
@@ -40,7 +42,8 @@ _Last updated: 2026-09-06. This file is living context for future sessions — k
   pipeline, app-lifetime `shared`), `DictationController` (`@MainActor`, see "Dictation" below),
   `AppConfig` (Settings/Credentials + Keychain overlay, shared by both controllers), Views
   (MenuView, HistoryView, MeetingDetailView, Settings, Consent, SpeakerRename, Dictation*,
-  SettingsScreenRecordingSection), `Dictation/` (hotkey monitor, pill panel, text inserter),
+  SettingsScreenRecordingSection, **RecordingsListView / RecordingDetailView + RecordingPlayerModel /
+  RecordingTranscriptView / RecordingWordFlowLayout** — the Loom-style viewer), `Dictation/` (hotkey monitor, pill panel, text inserter),
   **`ScreenRecording/`** (`ScreenRecordingController` `@MainActor`, `PillCoordinator` — the single
   face in front of the pill, `RegionPicker`), App Intents, `kleoth://` URL scheme, global hotkey.
 - `taptest` (exe): dev probe for the audio tap.
@@ -50,7 +53,8 @@ _Last updated: 2026-09-06. This file is living context for future sessions — k
   print the result, no paste. `dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish]`.
 - `screenrec` (exe): headless screen-recording probe — frames/audio blocks/writer failures, track
   durations, bit rate. `screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic] [--out file]
-  [--inspect file]`.
+  [--inspect file] [--extract file] [--words file [--segments] [--language xx]]` — `--extract` pulls
+  the audio track to an `.m4a`, `--words` runs the on-device transcriber with word timestamps on it.
 - `app/Package.swift` declares the root dependency as `.package(name: "kleoth-app", path: "..")` —
   the explicit `name:` is what lets the app package build from a worktree/checkout NOT named
   `kleoth-app` (SwiftPM otherwise derives the identity from the directory name).
@@ -187,9 +191,12 @@ matrix, §8 the manual checklist, §10 the per-lane implementation notes).
   - **KleothPillUI:** the pill gained a **backdrop** (`DictationPillBackdrop` .hidden/.idle/
     `.recording(since:)`) plus the `.recording` / `.saving` / `.saved(String)` states;
     `DictationPillController.setBackdrop(_:)` and `currentState` are the public contract, and
-    `dismiss()`/`collapseToResting()` land on the backdrop instead of `.idle`. Digits stay
-    upright on a side edge (counter-rotated like the mic glyph); `.recording`/`.saving` capsule
-    height 28 pt.
+    `dismiss()`/`collapseToResting()` land on the backdrop instead of `.idle`. **Since 2026-09-07
+    `.recording` is a horizontal TOOLBAR** (≈222×30 pt: pulsing dot · `mm:ss` · mic meter · system
+    meter · explicit Stop button — only Stop stops, the bar is the drag handle; levels via
+    `setRecordingLevels(_:)`), and `.recording/.saving/.saved` + every dictation phase over a
+    `.recording` backdrop **never rotate** on a side edge (`Layout.flat`: the bar lies flat against
+    the edge, its near end pinned 8 pt in); only the `.idle` sliver still stands up there.
   - **KleothApp:** `ScreenRecordingController` (`@MainActor`, `@EnvironmentObject` on all four
     scenes — drives the machine, owns the recorder, the launch sweep and the quit handshake),
     `PillCoordinator` (the single face in front of the pill: merges dictation phases with the
@@ -205,7 +212,8 @@ matrix, §8 the manual checklist, §10 the per-lane implementation notes).
   at all** — screen recording is always available (only TCC gates it); the one persisted value is
   UserDefaults `dev.kleoth.screenRecording.permissionRequestedAt`
   (`ScreenRecordingDefaults.permissionRequestedDefaultsKey`) for the stale-grant detector.
-  `~/Kleoth/screen-recordings/` never shows in History (no audio inside).
+  `~/Kleoth/screen-recordings/` shows in **History → Recordings** (since 2026-09-07; it never
+  shows as a meeting). Each `.mp4` may have a `<stem>.json` transcript sidecar (see the 2026-09-07 status).
 - **Decisions:** SCStream `.screen` + `.audio` **plus a third `AVAudioEngine` mic tap**, mixed to
   **ONE AAC track** (48 kHz stereo, 128 kbps) — no separate lanes, so a post-hoc per-lane offset
   is not measurable. H.264, long edge ≤ **1920 px**, **30 fps**, 3 Mbps at 1080p scaled by area
@@ -349,6 +357,7 @@ app/.build/debug/localtranscribe <meeting-dir> [scribe]
 swift build --package-path app --product screenrec
 app/.build/debug/screenrec 10 [--display N] [--region x,y,w,h] [--no-mic] [--out file]
 app/.build/debug/screenrec --inspect ~/Kleoth/screen-recordings/screen-….mp4
+app/.build/debug/screenrec --extract <file.mp4> && app/.build/debug/screenrec --words <file.m4a>  # word timings
 
 # Pill playground / filmstrip, incl. the screen-recording backdrop
 swift run --package-path app pillsandbox
@@ -363,6 +372,78 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
 also hold `variants/<tier>/` (archived transcript set of the non-active tier + `variant.json`
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
+
+## Current status (2026-09-07 — recordings viewer + live recording toolbar, phase 2)
+Branch `feat/recordings-viewer` (T0 contract b909a45 + four Opus lanes L2/L3/L4/L5 in worktrees,
+merged; `main` holds v1 at eaa815f + the popover fix 80b15f9). Design doc
+`docs/plans/2026-09-07-recordings-viewer.md`. **346 core tests green** (+7 `ScreenRecordingRecordTests`);
+both packages build with zero warnings; release app installed (running instance NOT killed). Nothing pushed.
+- **User verdict on v1 that drove this:** the recording pill was "ugly, small, non-responsive, not
+  animated"; it must "respond better on orientation change / drag left-right"; "no UI for the
+  transcription — transcript beside the video, current word, click it, maybe change it, plus a list of
+  recorded videos"; popover rows only clickable on the text (fixed: `KleothRowButtonStyle`/`.kleothRow`
+  in KleothTheme — a plain `Label` hit-tests only glyph + letters; `contentShape(Rectangle())` fixes it).
+  Decisions: recordings are **NOT meetings** ("just recordings, similar to Loom"), transcription runs
+  **after** the save (not live subtitles), automatically on device, word timestamps on; PoC depth.
+- **Storage:** flat `~/Kleoth/screen-recordings/`; sidecar `<stem>.json` = `ScreenRecordingRecord`
+  (snake_case, ISO-8601: `schema_version`, `title?`, `duration_secs?`, `language_code?`,
+  `transcript_tier?`, `transcript_model?`, `transcribed_at?`, `transcript_error?`, `words[{text,start,end}]`).
+  No sidecar = untranscribed; error + no words = failed (retryable). Edits (title, words) rewrite the
+  sidecar only. `ScreenRecordingStore.listRecordings/loadRecord/saveRecord/trash`;
+  `ScreenRecordingFileNaming.sidecarURL/isFinishedRecordingName/date(fromStemOf:)`;
+  `ScreenRecordingItem.transcriptState`; `ScreenRecordingRecord.wordIndex(at:)` (binary search),
+  `replacingWord(at:with:)`, `words(from: ScribeResponse)` (drops spacing/audio_event/untimed).
+- **Transcription job (`ScreenRecordingController.transcribe(_:tier:)`):** shares
+  `RecordingController.enqueuePipelineJob` (now internal — one WhisperKit at a time) →
+  `RecordingAudioExtractor` (AVAssetExportSession AppleM4A → `$TMPDIR/kleoth-recordings/<stem>.m4a`,
+  deleted after; measured 8 s movie 1 MB → 174 KB m4a in 0.24 s) → `LocalTranscriber(language:,
+  wordTimestamps: true)` (WhisperKit `segment.words` → one `ScribeWord` per word; `false` = the meetings
+  path, byte-identical — probe: 19 timed words vs 1 segment on the same file) or `ScribeClient`
+  (diarize off; refuses with a written error when no key). Zero words → `transcript_error` "No speech
+  was found…". A failed retry never wipes existing words. `showSaved()` seeds a duration-only sidecar
+  and auto-transcribes on device; recovered/old files only via the viewer's buttons. Scratch dir swept
+  at launch. `transcribingPaths` drives the row spinner.
+- **Viewer:** `HistoryScope.recordings` → `RecordingsListView` (DictationsListView pattern: day
+  sections, search over title + words, badges Untranscribed / Transcribing… / Failed, context menu
+  Reveal / Trash, single selection) → `RecordingDetailView` (editable title, date/duration/size chips,
+  tier badge; AVKit `VideoPlayer` left + 340 pt transcript right, stacks under 760 pt;
+  `RecordingWordFlowLayout` wraps word buttons, paragraph break when the gap > 1.5 s; highlight =
+  `wordIndex(at: currentTime)` from a 0.1 s periodic observer, auto-scroll only while playing and not
+  editing; click = seek, double-click = inline TextField (Return commits, Esc cancels, click-away
+  commits, empty removes); toolbar Copy transcript / Reveal / Re-transcribe menu / Move to Trash with
+  confirmation). Popover "Last screen recording" row gained "Open" → History on Recordings selecting it
+  (`recordingsHistoryRequest` + `selectedRecordingID`, the meetings idiom).
+- **Toolbar + levels:** `ScreenRecorder.levels` (per-buffer RMS in `MicrophoneSource` /
+  `SystemAudioSink` into `LevelWord`s; reset on stop/give-up; system meter live from the first audio
+  block, before the first video frame) → controller `startLevelPump()` (20 Hz `Task` loop from
+  `showRecording()`, stopped + zeroed in `cleanUpSession()`) → `PillCoordinator.setRecordingLevels` →
+  `DictationPillController.setRecordingLevels` (normalized + smoothed like dictation). Pill lane
+  deviations: `.saving` wave is 39 bars (14 left the 222 pt bar mostly empty); `.armed` over a recording
+  backdrop borrows the listening size; Stop hover is a precise pointer-vs-frame test (`DictationPanel`
+  `.mouseMoved` → `onPointerMove`; SwiftUI `.onHover` is dead while another app is active);
+  `referenceSize` on bottom/top now includes the bar, so a pill docked in a corner sits ~34 pt further
+  in even with no recording. `screenrec` prints `mic=0.000 sys=0.223` per second (3 decimals — a
+  headset mic on a desk reads ~5e-4).
+- **Filmed (pillsandbox, `--levels speech`):** bottom `idle,recording,saving,saved,idle` — the bar grows
+  out of the edge, meters move, every phase centred on the anchor, no jump at settle; right edge — bar
+  horizontal, right end pinned at bounds.maxX − 8; left/right `--backdrop recording` with
+  `armed,listening,done` — every dictation phase horizontal, near end pinned; bottom dictation regression
+  unchanged.
+- ⚠️ **NOT runtime-verified (needs the human):** everything in the signed app — the toolbar by eye and
+  its Stop click/hover, the drag across an edge flip mid-recording, the auto-transcription after a real
+  recording, the Recordings scope, playback + highlight + click-seek + inline edit persisting across a
+  relaunch, cloud transcription, the popover "Open" link, trash of both files. Viewer notes: Space-to-play
+  may be claimed by AVKit's own transport; the inline field width is measured with the system font.
+- **TODO for the user — checklist (design doc §7):** relaunch (`pkill -x Kleoth; open -a Kleoth`), then
+  1. Record ~20 s while talking with music playing → both meters move, digits tick, Stop ends it; a
+     stray click elsewhere on the bar does nothing.
+  2. Drag the bar to the left edge mid-recording → stays horizontal, hugs the edge; back to the bottom.
+  3. fn+shift mid-recording on a side edge → the dictation capsule stays horizontal, returns to the bar.
+  4. History → Recordings: the new file shows "Transcribing…", then words; play → the highlight follows;
+     click a word → seeks; double-click → edit → Return → relaunch → the edit is still there.
+  5. An old recording → "Transcribe on device" → words; "Transcribe in cloud" → words (needs the key).
+  6. Move to Trash → both the `.mp4` and the `.json` are in the Trash.
+  Then: merge `feat/recordings-viewer` → `main` (user's call; nothing is pushed).
 
 ## Current status (2026-09-06 — screen recording v1)
 Branch `feat/screen-recording` (T0 contract + six parallel lanes T1–T6 + a T7 integration/review

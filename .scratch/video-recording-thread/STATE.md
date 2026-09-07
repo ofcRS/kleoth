@@ -7,7 +7,7 @@ summary: 'Loom-style screen recording (screen or region + mic + system audio, sm
 # video-recording-thread — video recording for Kleoth · handoff state
 
 **Hub:** [[INDEX]]
-**Status:** 2026-09-06 — WORKS LIVE: user ran checklist item 0 (TCC on the self-signed identity) in the release app and confirmed recording works. Committed on feat/screen-recording (8c8ca59 + docs note). Not merged, not pushed — user's call. Items 1–8 of the checklist still open.
+**Status:** 2026-09-07 — phase 2 INTEGRATED on feat/recordings-viewer (T0 + L2/L3/L4/L5 merged, 346 tests, both packages build, release app installed, docs + CHANGELOG updated). Waiting on the user's checklist (design doc §7 / CLAUDE.md 2026-09-07 status); then merge → main. Nothing pushed.
 
 > **Read this first if context was cleared.** All video-recording-thread work lives in `.scratch/video-recording-thread/` —
 > throwaway scripts, probes, and notes stay here, organized per thread, never in the repo or a PR.
@@ -31,6 +31,25 @@ summary: 'Loom-style screen recording (screen or region + mic + system audio, sm
 - **CORE PRINCIPLE — DATA-DRIVEN.** Derive values/options/categories from real data in this
   project — not from an assumption. If a spec looks like a generated example, confirm it against
   the source before building on it.
+
+## Phase 2 — the ask (user, 2026-09-07; PoC depth, "not a full production app yet")
+- Pill during recording: "ugly, small, non-responsive, not animated" → a LIVE horizontal toolbar: red dot + elapsed,
+  mic + system level meters, Stop button always visible; animates in; stays horizontal on every edge (side edge = flat
+  against the edge, never vertical); drag left/right must re-lay out cleanly. Pause deferred (offered, not requested).
+- Recordings are NOT meetings (user: "just recordings, similar to Loom"). Own History scope "Recordings" + viewer:
+  video player + transcript beside it, current word highlighted during playback, click a word → seek, edit a word in place.
+- Transcription AFTER the recording is saved (user chose option 1, not live subtitles), automatic, same engine as
+  meetings, word timestamps ON.
+- Popover hit areas: DONE (kleothRow button style).
+
+## Phase 2 — lanes (2026-09-07)
+- T0 (me): KleothCore ScreenRecordingRecord/Store/FileNaming(sidecar,date) + 7 tests; stubs: LocalTranscriber.wordTimestamps,
+  ScreenRecorder.levels (.zero), RecordingAudioExtractor (throws), DictationPillController.setRecordingLevels (no-op),
+  PillCoordinator.setRecordingLevels, RecordingController.enqueuePipelineJob internal, RecordingDetailView stub.
+- Lanes own disjoint files: L2 KleothCapture+screenrec/localtranscribe · L3 KleothPillUI+pillsandbox · L4 KleothApp minus
+  RecordingDetailView · L5 Views/Recording*.swift. Integrate: merge worktree branches, build, swift test, films, make-app release.
+- Integrated 2026-09-07: lanes merged (L5 bb277ee, L4 93cd277, L3 7e66bb4, L2 65f1dc2 → 1a559a1), worktrees removed. Docs done.
+- Next: user runs the 6-item checklist; fix what fails; merge feat/recordings-viewer → main.
 
 ## Where things are
 - Branch: `feat/screen-recording` (cut from main @ 06b60d0). T0 lands here; T1–T6 in worktrees; T7 merges back here. NOT pushed.

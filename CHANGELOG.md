@@ -18,6 +18,17 @@ All notable changes to Kleoth are documented here. The format is based on
   first and still saves the file, and a recording interrupted by a crash is recovered on the next
   launch. Recording and dictation coexist — dictating during a recording morphs the pill in place
   and hands it back when you are done.
+- **Recordings viewer.** History gained a Recordings scope listing every screen recording. Each
+  recording is transcribed on device right after it is saved (word timings included); the viewer plays
+  the video with the transcript beside it, highlights the word being spoken, seeks when you click a
+  word, and lets you double-click a word or the title to correct it. Older recordings can be
+  transcribed on device or in the cloud from the viewer. The transcript lives in a small `.json`
+  next to the `.mp4`; the movie itself is never modified.
+- **A live recording toolbar.** While recording, the pill becomes a bar with a pulsing dot, the
+  elapsed time, live microphone and system-audio meters, and an explicit Stop button — only Stop
+  stops, so a stray click cannot end a recording. The bar stays horizontal on every screen edge and
+  follows a drag cleanly, and dictating mid-recording keeps the capsule horizontal too.
+- **Menu-bar popover rows are clickable across their whole width**, not just on the label text.
 - **The resting pill reacts to the pointer.** Hovering the half-tucked capsule pulls it fully on
   screen with a mic glyph; it tucks back shortly after the pointer leaves.
 - **The pill answers the hotkey on the first frame.** Pressing fn+shift now hops the resting
