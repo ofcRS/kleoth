@@ -420,6 +420,16 @@ final class DictationController: ObservableObject {
         }
 
         target = DictationTarget.frontmost()
+        // Acknowledge the press on its first frame, BEFORE the mic opens: the
+        // resting capsule hops out of its edge (no words, no bars).
+        // `DictationCapture.start()` now builds a fresh engine per session
+        // (~200 ms on a Bluetooth headset — see its type comment) and the hop
+        // must not wait for it. `.listening` grows out of it at `minHold`; a
+        // discarded tap sinks it back (`handleCancelled`); a start failure
+        // replaces it with the `.failed` pill below.
+        armedDismissTask?.cancel()
+        armedDismissTask = nil
+        pill.show(.armed)
         do {
             try capture.start()
         } catch {
@@ -429,12 +439,6 @@ final class DictationController: ObservableObject {
             return
         }
         phase = .armed
-        // Acknowledge the press on its first frame: the resting capsule hops
-        // out of its edge (no words, no bars). `.listening` grows out of it at
-        // `minHold`; a discarded tap sinks it back (`handleCancelled`).
-        armedDismissTask?.cancel()
-        armedDismissTask = nil
-        pill.show(.armed)
     }
 
     /// Set by a too-short tap: the armed capsule stays out for the double-tap

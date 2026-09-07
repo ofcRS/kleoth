@@ -590,6 +590,22 @@ User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 i
   logged as `.skipped("Cancelled with Esc — pasted as heard.")`, pill `.help` says so; new log key
   **`polish_seconds`** (nil when skipped). 339 core tests. Design doc §10.3 item 13. ⚠️ The Esc path and
   the migration on this install are not runtime-verified (open Settings once to persist the new slug).
+- **Headset stuck in hands-free (HFP) mode after a dictation — root-caused + fixed (2026-09-07; user:
+  "when I finish the dictation on my headphones, it sometimes still hangs in this microphone headset mode…
+  ugly sound quality… until I reopen kleoth").** Probed with scratch CoreAudio/AVAudioEngine tools on the
+  WH-1000XM5: an `AVAudioEngine` whose `inputNode` was touched keeps the input device open until the engine
+  OBJECT is deallocated — `engine.stop()` does not release it, and even an engine that was never started
+  (only `inputFormat(forBus:)` read) pins the headset at 16 kHz; freeing the engine restores 44.1 kHz within
+  ~1 s. `DictationCapture` owned one engine for the app's lifetime → HFP until quit. Fix: `DictationCapture`
+  and `MicCapture` create the engine in `start()` (a local until the session is live, so every throw frees
+  it) and release it in `stop`/`cancel`/config-change give-up (`quiesce()` / `releaseEngine()`).
+  Cost measured: fresh engine ≈200 ms to `start()` on the headset vs ≈55 ms warm, so
+  `DictationController.handleArmed()` shows `.armed` BEFORE `capture.start()`. Verified with a throwaway
+  `captureprobe` target (removed) driving the real classes: 4/4 scenarios return the headset to 44.1 kHz
+  with the objects alive. `MicrophoneSource` untouched (released by `ScreenRecorder` at stop). Design doc
+  §10.3 item 14. Bluetooth log recipe: `/usr/bin/log show --predicate 'process == "bluetoothd" AND
+  (eventMessage CONTAINS "SCO" OR eventMessage CONTAINS "coexChanged")'` — `hfp:1` = headset mode;
+  `AVAudioEngine.mm … start/stop` lines under `process == "Kleoth"` (needs `--info --debug`).
 - **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
   (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
 - ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —
@@ -1046,6 +1062,9 @@ Settings/variant/remove tests); both packages build; release app installed to /A
   the App Sandbox blocks outright. Never add `com.apple.security.app-sandbox` to
   `app/bundle/Kleoth.entitlements`. Accessibility trust is bound to the code signature → always
   sign with the stable "Kleoth Self-Signed" identity (`app/setup-signing.sh`).
+- **One `AVAudioEngine` per capture SESSION, never per object:** a stopped engine whose `inputNode` was
+  touched keeps the input device open (Bluetooth headset stuck in HFP) until the engine is deallocated.
+  Create it in `start()`, release it on every exit — see `DictationCapture.quiesce()`.
 - **`AppDelegate` ↔ `@MainActor` controllers:** delegate callbacks run on the main thread; use
   `MainActor.assumeIsolated { … }`, never `Task { @MainActor in … }` — in `applicationWillTerminate`
   the process can exit before the hop runs.

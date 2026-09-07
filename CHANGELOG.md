@@ -31,6 +31,14 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Fixed
 
+- **Bluetooth headphones stayed in phone-call quality after a dictation.** Each dictation put a
+  headset into its hands-free profile (as any microphone use does), but the profile never released:
+  music and system sound stayed tinny until Kleoth was quit. A stopped audio engine still holds the
+  microphone open as long as the engine object exists, so the dictation and meeting captures now
+  build a fresh engine per session and free it the moment the session ends, cancels or fails — the
+  headset is back to full quality about a second after you let go of the hotkey. The pill now
+  acknowledges the press before the microphone opens, so the slightly slower engine start is not
+  felt.
 - **Crash a few seconds after starting a dictation.** Five crash reports (2026-09-04…06) shared one
   signature: an Objective-C exception from AVFoundation — "Failed to create tap due to format
   mismatch" — raised when the hotkey opened the mic after the default input device had changed
