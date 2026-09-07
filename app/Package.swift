@@ -80,6 +80,16 @@ let package = Package(
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
+            ],
+            // `import AVKit` alone does NOT put AVKit.framework into the
+            // executable's load commands under SwiftPM: only the SwiftUI
+            // overlay (`_AVKit_SwiftUI`, which provides `VideoPlayer`) gets
+            // linked, and at runtime the overlay's `VideoPlayerView` cannot
+            // resolve its `AVPlayerView` superclass → the Swift runtime aborts
+            // the moment the Recordings viewer mounts a player
+            // ("failed to demangle superclass of VideoPlayerView", 2026-09-07).
+            linkerSettings: [
+                .linkedFramework("AVKit")
             ]
         ),
         .executableTarget(

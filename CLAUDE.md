@@ -1373,6 +1373,13 @@ Settings/variant/remove tests); both packages build; release app installed to /A
 - **One `AVAudioEngine` per capture SESSION, never per object:** a stopped engine whose `inputNode` was
   touched keeps the input device open (Bluetooth headset stuck in HFP) until the engine is deallocated.
   Create it in `start()`, release it on every exit — see `DictationCapture.quiesce()`.
+- **`import AVKit` does not link AVKit under SwiftPM (crash 2026-09-07):** the executable got only the
+  SwiftUI overlay `_AVKit_SwiftUI` (which provides `VideoPlayer`) in its load commands, so at runtime
+  `getSuperclassMetadata` aborted with "failed to demangle superclass of VideoPlayerView from mangled
+  name 'So12AVPlayerViewC'" the moment the Recordings viewer mounted a player. `app/Package.swift` now
+  carries `linkerSettings: [.linkedFramework("AVKit")]` on `KleothApp`; verify with
+  `otool -L /Applications/Kleoth.app/Contents/MacOS/Kleoth | grep AVKit` (two lines). Any other
+  system framework whose only use is through a SwiftUI overlay needs the same explicit link.
 - **`AppDelegate` ↔ `@MainActor` controllers:** delegate callbacks run on the main thread; use
   `MainActor.assumeIsolated { … }`, never `Task { @MainActor in … }` — in `applicationWillTerminate`
   the process can exit before the hop runs.
