@@ -3,9 +3,9 @@
 // generate.swift — Kleoth README hero + GitHub social-preview generator.
 //
 // Fully headless AppKit offscreen rendering (no screen capture, no Xcode project).
-// Reuses the existing brand icon (the gold lyre on a violet rounded-rect) and draws
-// it on a near-#0D1117 GitHub-dark background with a subtle violet accent glow,
-// then sets "Kleoth" + tagline in the system font.
+// Reuses the app icon (the satin-silver lyre, 2026-09 ident — see
+// ../BRAND.md) and draws it on a near-#0D1117 GitHub-dark background with a
+// subtle teal accent glow, then sets "Kleoth" + tagline in the system font.
 //
 // Outputs (rendered @2x, then downscaled with `sips` by the caller is NOT needed —
 // this script writes the FINAL pixel sizes directly by rendering @2x into an
@@ -41,11 +41,12 @@ guard let appIcon = NSImage(contentsOf: iconURL) else {
 
 // MARK: - Palette
 
-// GitHub dark canvas (#0D1117) with a faint violet that ties to the lyre's plum icon.
+// GitHub dark canvas (#0D1117) with a faint teal that ties to the ident's accent
+// (the same #0d9488 shck.dev uses for Kleoth).
 let bgTop    = NSColor(srgbRed: 0x12 / 255.0, green: 0x16 / 255.0, blue: 0x22 / 255.0, alpha: 1)
 let bgBottom = NSColor(srgbRed: 0x0B / 255.0, green: 0x0D / 255.0, blue: 0x14 / 255.0, alpha: 1)
-let glowColor = NSColor(srgbRed: 0x7C / 255.0, green: 0x5C / 255.0, blue: 0xC4 / 255.0, alpha: 1) // soft violet
-let gold = NSColor(srgbRed: 0xE6 / 255.0, green: 0xC2 / 255.0, blue: 0x6A / 255.0, alpha: 1)
+let glowColor = NSColor(srgbRed: 0x0D / 255.0, green: 0x94 / 255.0, blue: 0x88 / 255.0, alpha: 1) // muted teal
+let silver = NSColor(srgbRed: 0xC8 / 255.0, green: 0xCE / 255.0, blue: 0xD2 / 255.0, alpha: 1)
 
 let titleColor   = NSColor(srgbRed: 0xF4 / 255.0, green: 0xF6 / 255.0, blue: 0xFB / 255.0, alpha: 1) // near-white
 let taglineColor = NSColor(srgbRed: 0xC9 / 255.0, green: 0xD1 / 255.0, blue: 0xDE / 255.0, alpha: 1) // light grey
@@ -67,19 +68,17 @@ func drawGlow(center: NSPoint, radius: CGFloat, color: NSColor, maxAlpha: CGFloa
 
 /// Draws the app icon clipped to its rounded-tile shape, over a soft outer shadow.
 ///
-/// The iconset PNG has NO alpha — the gaps outside its rounded corners are baked
-/// WHITE, which reads as a white square frame on the dark background. Clipping to
-/// a rounded rect (radius ≥ the tile's baked radius) cuts those wedges off. The
-/// shadow is drawn first from an opaque rounded base, because a shadow set inside
-/// the clip would be clipped away with the very corners it should soften.
+/// The iconset PNG (built by ../make-iconset.swift) is Apple's icon grid: an 824 px
+/// rounded body inset 100 px on a transparent 1024 canvas. We draw the whole
+/// canvas but clip to that body so the shadow and edge stay crisp after the
+/// downscale. The shadow is drawn first from an opaque rounded base, because a
+/// shadow set inside the clip would be clipped away with the very corners it
+/// should soften.
 func drawIcon(_ image: NSImage, in rect: NSRect) {
-    // Measured from the iconset PNG (1024px canvas): the violet tile sits inset
-    // ~27px (2.64%) inside the white canvas, with a ~23% squircle corner. Clip a
-    // hair INSIDE the tile edge, with a radius generous enough to stay inside the
-    // squircle's earlier curve onset, so no white survives on any edge or corner.
-    let inset = rect.width * 0.0284
+    // Apple's grid: body = canvas inset 100/1024, corner radius 185.4/824 of the body.
+    let inset = rect.width * (100.0 / 1024.0)
     let tileRect = rect.insetBy(dx: inset, dy: inset)
-    let radius = tileRect.width * 0.26
+    let radius = tileRect.width * (185.4 / 824.0)
     let tile = NSBezierPath(roundedRect: tileRect, xRadius: radius, yRadius: radius)
 
     NSGraphicsContext.saveGraphicsState()
@@ -175,11 +174,11 @@ func paintBackground(_ size: NSSize, glowAt: NSPoint, glowRadius: CGFloat) {
     let grad = NSGradient(colors: [bgTop, bgBottom], atLocations: [0, 1], colorSpace: .sRGB)!
     grad.draw(in: NSRect(origin: .zero, size: size), angle: -90)
 
-    // Subtle violet glow behind the icon.
+    // Subtle teal glow behind the icon.
     drawGlow(center: glowAt, radius: glowRadius, color: glowColor, maxAlpha: 0.22)
 
-    // A second, tighter warm-gold kiss right at the icon to lift it off the dark.
-    drawGlow(center: glowAt, radius: glowRadius * 0.45, color: gold, maxAlpha: 0.06)
+    // A second, tighter silver kiss right at the icon to lift it off the dark.
+    drawGlow(center: glowAt, radius: glowRadius * 0.45, color: silver, maxAlpha: 0.05)
 
     // Faint top vignette for depth (darken corners very slightly).
     let vignette = NSGradient(colors: [

@@ -412,9 +412,13 @@ enum KleothAssets {
 
 // MARK: - Illustration tile
 
-/// A full-bleed brand illustration shown as a rounded, contained tile with a
-/// hairline border and soft shadow — used in empty states. Decorative, so it is
-/// hidden from assistive tech (the surrounding title/message carry the meaning).
+/// A brand spot illustration for empty states. Since the 2026-09 ident the art
+/// is a transparent cutout (a satin-silver object on alpha, see
+/// `app/branding-src/BRAND.md`), so it floats on the surface with a soft
+/// drop shadow — no tile, no clip, no border: a rounded tile would cut the
+/// object's own margin and fight the transparent background it was drawn for.
+/// Decorative, so it is hidden from assistive tech (the surrounding
+/// title/message carry the meaning).
 struct KleothIllustration: View {
     let image: NSImage
     var size: CGFloat = 132
@@ -423,14 +427,9 @@ struct KleothIllustration: View {
         Image(nsImage: image)
             .resizable()
             .interpolation(.high)
-            .scaledToFill()
+            .scaledToFit()
             .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous)
-                    .strokeBorder(KleothPalette.hairlineStroke, lineWidth: KleothMetrics.hairline)
-            )
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+            .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
             .accessibilityHidden(true)
     }
 }

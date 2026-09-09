@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kleoth / Lyre studies</title>
+<style>
+:root { color-scheme: dark; --bg:#191b1c; --surface:#222526; --raised:#2b2e30; --ink:#edefed; --muted:#9ca4a5; --line:#373c3d; --accent:#84bdb2; --gold1:#e1c78e; --gold2:#b6985d; --gold3:#8f7546; --stone1:#eeeae1; --stone2:#b9b9b2; --stone3:#8d938f; --wire:#c4cecc; --mint:#95c8bb; }
+html[data-theme="light"] { color-scheme:light; --bg:#f6f7f6; --surface:#fff; --raised:#e9ecea; --ink:#242928; --muted:#626d69; --line:#dce1de; --accent:#387b69; --gold1:#c4a05d; --gold2:#a38449; --gold3:#806635; --stone1:#c9ccc8; --stone2:#969f98; --stone3:#707d74; --wire:#626f69; --mint:#387b69; }
+:root { --green1:#b0d1c3; --green2:#89b6a5; --green3:#608f80; }
+html[data-theme="light"] { --green1:#8db7a4; --green2:#619480; --green3:#3f705e; }
+* { box-sizing:border-box; }
+body { margin:0; font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; letter-spacing:0; background:var(--bg); color:var(--ink); }
+button,input { font:inherit; accent-color:var(--accent); }
+button,label,input { -webkit-tap-highlight-color:transparent; }
+button { cursor:pointer; }
+button:focus-visible,input:focus-visible,a:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+main { max-width:1160px; padding:36px 28px 24px; margin:auto; }
+header { display:flex; justify-content:space-between; align-items:center; gap:24px; margin-bottom:28px; }
+h1 { margin:0; font-size:32px; line-height:1.2; font-weight:600; }
+.subtitle { margin:6px 0 0; color:var(--muted); font-size:13px; }
+.switch { display:flex; align-items:center; gap:9px; white-space:nowrap; font-size:13px; }
+.switch input { width:16px; height:16px; margin:0; }
+.controls { display:flex; gap:24px; flex-wrap:wrap; align-items:center; padding:16px 0; border-block:1px solid var(--line); margin-bottom:24px; }
+fieldset { border:0; padding:0; margin:0; min-width:0; }
+.segmented { display:flex; background:var(--raised); padding:3px; border-radius:7px; }
+.segmented label { position:relative; cursor:pointer; }
+.segmented input { position:absolute; opacity:0; width:1px; height:1px; }
+.segmented span { display:block; padding:6px 16px; border-radius:4px; font-size:13px; color:var(--muted); }
+.segmented input:checked + span { background:var(--surface); color:var(--ink); box-shadow:0 1px 3px #0002; }
+.segmented input:focus-visible + span { outline:2px solid var(--accent); }
+.intensity { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--muted); }
+.intensity input { width:96px; }
+.intensity output { width:28px; font-variant-numeric:tabular-nums; }
+.grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:14px; }
+.candidate { background:var(--surface); border:1px solid var(--line); border-radius:8px; min-width:0; overflow:hidden; }
+.candidate.selected { border-color:var(--accent); }
+.candidate-head { display:flex; align-items:center; padding:15px 16px 0; gap:8px; }
+.number { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.candidate-head label { display:flex; align-items:center; gap:8px; cursor:pointer; margin-left:auto; font-size:12px; }
+.candidate-head input { margin:0; }
+.art { height:240px; display:grid; place-items:center; }
+.lyre { width:164px; height:194px; overflow:visible; }
+.strings { fill:none; stroke-linecap:round; }
+.metadata { padding:0 16px 17px; }
+h2 { margin:0 0 5px; font-size:15px; font-weight:600; }
+.metadata p { margin:0; font-size:12px; color:var(--muted); }
+.scale { display:flex; align-items:center; justify-content:space-between; padding:16px; border-top:1px solid var(--line); min-height:84px; }
+.scale .lyre { width:var(--size); height:var(--size); }
+.scale > span { display:grid; justify-items:center; gap:6px; }
+.scale small { color:var(--muted); font-size:10px; }
+.section-heading { display:flex; align-items:center; justify-content:space-between; margin:30px 0 12px; gap:16px; }
+.section-heading h2 { font-size:14px; margin:0; }
+.section-heading span { font-size:12px; color:var(--muted); }
+.context { border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.windowbar { display:flex; align-items:center; gap:6px; padding:13px 16px; background:var(--raised); border-bottom:1px solid var(--line); }
+.windowbar i { width:9px; height:9px; border:1px solid var(--muted); border-radius:50%; opacity:.55; }
+.windowbar span { margin-left:16px; font-size:12px; }
+.windowbody { display:grid; grid-template-columns:180px 1fr; min-height:286px; }
+.sidebar { border-right:1px solid var(--line); padding:16px 10px; color:var(--muted); font-size:12px; }
+.sidebar div { padding:8px 12px; margin-bottom:4px; }
+.sidebar .active { color:var(--ink); background:var(--raised); border-radius:5px; }
+.empty { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:22px; text-align:center; background:var(--surface); }
+.empty .lyre { width:132px; height:132px; margin-bottom:12px; }
+.empty h3 { margin:0 0 5px; font-size:14px; font-weight:600; }
+.empty p { margin:0; color:var(--muted); font-size:12px; max-width:300px; }
+.status { display:inline-flex; align-items:center; gap:6px; color:var(--muted); margin-top:12px; font-size:11px; }
+.status i { width:5px; height:5px; border-radius:50%; background:var(--accent); }
+footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; padding:24px 0 8px; color:var(--muted); font-size:12px; }
+.original { display:flex; align-items:center; gap:12px; }
+.original img { width:44px; height:44px; border-radius:6px; }
+footer button { padding:7px 12px; border:1px solid var(--line); border-radius:5px; background:var(--surface); color:var(--ink); font-size:12px; }
+@media(max-width:1000px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .art { height:220px; } }
+@media(max-width:560px) { main { padding:22px 16px; } header { align-items:flex-start; } h1 { font-size:28px; } .controls { gap:14px; } .segmented span { padding:6px 12px; } .grid { gap:10px; } .art { height:180px; } .lyre { width:120px; height:152px; } .metadata { padding-inline:12px; } .candidate-head { padding-inline:12px; } .candidate-head label { font-size:11px; } .scale { padding:12px 10px; } .windowbody { grid-template-columns:1fr; } .sidebar { display:none; } .section-heading { align-items:flex-start; } .section-heading span { max-width:150px; text-align:right; } }
+@media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
+</style>
+</head>
+<body>
+<main>
+<header><div><h1>Kleoth</h1><p class="subtitle">Lyre studies / Form &amp; motion</p></div><label class="switch"><input id="light" type="checkbox">Light appearance</label></header>
+<div class="controls">
+  <fieldset class="segmented" aria-label="Activity"><label><input type="radio" name="mode" value="idle" checked><span>Idle</span></label><label><input type="radio" name="mode" value="recording"><span>Recording</span></label><label><input type="radio" name="mode" value="processing"><span>Processing</span></label></fieldset>
+  <label class="switch"><input id="motion" type="checkbox" checked>Motion</label>
+  <label class="intensity">Intensity <input id="intensity" type="range" min="0" max="100" value="40"><output id="amount">40</output></label>
+</div>
+<div class="grid" id="grid"></div>
+<div class="section-heading"><h2>In Kleoth</h2><span id="chosen">05 / Green stone</span></div>
+<div class="context">
+  <div class="windowbar"><i></i><i></i><i></i><span>Kleoth</span></div>
+  <div class="windowbody"><aside class="sidebar"><div class="active">Meetings</div><div>Dictations</div></aside><div class="empty"><div id="context-art"></div><h3 id="state-title">No meetings yet</h3><p id="state-copy">Your recorded conversations will appear here.</p><span class="status"><i></i><span id="status-label">Ready to record</span></span></div></div>
+</div>
+<footer><div class="original"><img src="original-lyre.png" alt="Original golden Kleoth lyre on purple"><span>Original lyre</span></div><button id="download" type="button">Download selected SVG</button></footer>
+</main>
+<script>
+'use strict';
+const variants = [
+  { id:'green', name:'Green stone', description:'Carved silhouette. Muted green.', number:'05' },
+  { id:'gold', name:'Quiet gold', description:'Classic silhouette. Muted metal.', number:'01' },
+  { id:'stone', name:'Carved stone', description:'Soft relief. Neutral mineral tones.', number:'02' },
+  { id:'line', name:'Fine line', description:'Open contours. Delicate strings.', number:'03' },
+  { id:'modern', name:'Modern lyre', description:'Reduced form. Muted green.', number:'04' }
+];
+// The curled arms and lower soundbox preserve the existing lyre's identity.
+const bodyPath = 'M69 45 C54 46 48 30 55 22 C65 10 86 20 91 40 C99 70 82 100 73 132 C65 160 75 181 94 181 C106 181 110 171 105 162 L151 162 C146 171 150 181 162 181 C181 181 191 160 183 132 C174 100 157 70 165 40 C170 20 191 10 201 22 C208 30 202 46 187 45 C179 44 177 35 181 31 C169 36 171 61 182 87 C191 110 210 143 207 169 C204 195 187 213 157 223 C157 232 164 237 176 238 L176 246 L80 246 L80 238 C92 237 99 232 99 223 C69 213 52 195 49 169 C46 143 65 110 74 87 C85 61 87 36 75 31 C79 35 77 44 69 45 Z';
+const contourPath = 'M70 37 C51 44 53 17 70 23 C104 36 73 98 64 132 C51 173 65 204 102 214 L154 214 C191 204 205 173 192 132 C183 98 152 36 186 23 C203 17 205 44 186 37';
+const modernPath = 'M72 41 C57 42 56 23 70 23 C91 23 94 43 88 64 L64 146 C54 185 78 210 108 212 L148 212 C178 210 202 185 192 146 L168 64 C162 43 165 23 186 23 C200 23 199 42 184 41';
+let serial = 0;
+function lyre(kind, size, accessible = false) {
+  const uid = 'lyre-' + (++serial);
+  const simple = size && size <= 32;
+  const xs = simple ? [108,128,148] : [98,108,118,128,138,148,158];
+  const strings = xs.map((x,i) => `<path class="string" data-x="${x}" data-i="${i}" d="M${x} 67 Q${x} 114 ${x} 162"/>`).join('');
+  let frame;
+  let color;
+  if(kind === 'gold' || kind === 'stone' || kind === 'green') {
+    const material = kind;
+    color = `var(--${material}2)`;
+    frame = `<defs><linearGradient id="${uid}" x1="0" y1="0" x2=".8" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="var(--${material}1)"/><stop offset=".55" stop-color="var(--${material}2)"/><stop offset="1" stop-color="var(--${material}3)"/></linearGradient></defs><path d="${bodyPath}" fill="url(#${uid})"/><path d="M78 63 H178" stroke="var(--${material}2)" stroke-width="7" stroke-linecap="round"/><path d="M84 239 H172" stroke="var(--${material}1)" stroke-width="1.5" opacity=".5"/><path d="M107 162 H149" stroke="var(--${material}1)" stroke-width="2"/>`;
+  } else if(kind === 'line') {
+    color = 'var(--wire)';
+    frame = `<g fill="none" stroke="var(--wire)" stroke-width="${simple ? 6 : 3.3}" stroke-linecap="round" stroke-linejoin="round"><path d="${contourPath}"/><path d="M78 63 H178 M101 163 H155 M110 214 L104 238 H152 L146 214 M89 240 H167"/></g>`;
+  } else {
+    color = 'var(--mint)';
+    frame = `<g fill="none" stroke="var(--mint)" stroke-width="${simple ? 12 : 10}" stroke-linecap="round" stroke-linejoin="round"><path d="${modernPath}"/><path d="M85 63 H171 M101 167 H155 M110 213 V235 H146 V213"/></g><path d="M96 241 H160" stroke="var(--mint)" stroke-width="7" stroke-linecap="round"/>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="lyre" viewBox="25 0 206 266" ${accessible ? 'role="img" aria-label="Kleoth Greek lyre"' : 'aria-hidden="true"'} style="${size ? '--size:'+size+'px;' : ''}">${frame}<g class="strings" stroke="${color}" stroke-width="${simple ? 3.5 : (kind === 'line' ? 1.25 : 1.65)}" opacity=".8">${strings}</g></svg>`;
+}
+let selected = 'green';
+document.querySelector('#grid').innerHTML = variants.map(v => `<article class="candidate ${v.id === selected ? 'selected' : ''}" data-kind="${v.id}"><div class="candidate-head"><span class="number">${v.number}</span><label><input type="radio" name="variant" value="${v.id}" ${v.id === selected ? 'checked' : ''}>Preview</label></div><div class="art">${lyre(v.id, null, true)}</div><div class="metadata"><h2>${v.name}</h2><p>${v.description}</p></div><div class="scale">${[18,32,64].map(s => `<span>${lyre(v.id,s)}<small>${s}px</small></span>`).join('')}</div></article>`).join('');
+let mode = 'idle';
+let motion = document.querySelector('#motion');
+let intensity = document.querySelector('#intensity');
+let paths = [];
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+motion.checked = !reduced.matches;
+reduced.addEventListener('change', event => { motion.checked = !event.matches; });
+function updateContext() {
+  document.querySelector('#context-art').innerHTML = lyre(selected, null, true);
+  const v = variants.find(v => v.id === selected);
+  document.querySelector('#chosen').textContent = `${v.number} / ${v.name}`;
+  paths = [...document.querySelectorAll('.string')].map(node => ({ node, x:Number(node.dataset.x), i:Number(node.dataset.i) }));
+}
+updateContext();
+document.querySelectorAll('[name="variant"]').forEach(input => input.addEventListener('change', () => {
+  selected = input.value;
+  document.querySelectorAll('.candidate').forEach(card => card.classList.toggle('selected', card.dataset.kind === selected));
+  updateContext();
+}));
+document.querySelector('#light').addEventListener('change', e => document.documentElement.dataset.theme = e.target.checked ? 'light' : 'dark');
+intensity.addEventListener('input', () => document.querySelector('#amount').value = intensity.value);
+const states = {
+  idle:['No meetings yet','Your recorded conversations will appear here.','Ready to record'],
+  recording:['Recording','Your conversation is being captured.','Recording in progress'],
+  processing:['Transcribing','Your transcript and summary are on their way.','Processing recording']
+};
+document.querySelectorAll('[name="mode"]').forEach(input => input.addEventListener('change', () => {
+  mode = input.value;
+  const [title,copy,status] = states[mode];
+  document.querySelector('#state-title').textContent = title;
+  document.querySelector('#state-copy').textContent = copy;
+  document.querySelector('#status-label').textContent = status;
+}));
+let previous = 0;
+function animate(time) {
+  // Keep endpoints anchored; only each string's middle bends and catches light.
+  if(time - previous > 32) {
+    previous = time;
+    const t = time / 1000;
+    const amount = motion.checked ? Number(intensity.value) / 100 : 0;
+    for(const {node,x,i} of paths) {
+      let bend = 0, opacity = .75;
+      if(amount > 0) {
+        if(mode === 'recording') {
+          bend = Math.sin(t * 22 + i * .9) * (2 + Math.sin(t * 2.7 + i)) * amount * 2.5;
+          opacity = .7 + .2 * Math.sin(t * 3 + i);
+        } else if(mode === 'processing') {
+          const wave = Math.pow(Math.max(0, Math.cos(t * 2.2 - i * .55)), 5);
+          bend = Math.sin(t * 18 + i) * wave * amount * 5;
+          opacity = .45 + wave * .55;
+        } else {
+          const breath = Math.pow(Math.max(0, Math.sin(t * .9 - i * .18)), 8);
+          bend = Math.sin(t * 9 + i) * breath * amount * 1.4;
+          opacity = .65 + breath * .25;
+        }
+      }
+      node.setAttribute('d',`M${x} 67 Q${(x + bend).toFixed(3)} 114 ${x} 162`);
+      node.style.opacity = opacity.toFixed(3);
+    }
+  }
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+document.querySelector('#download').addEventListener('click', () => {
+  const holder = document.createElement('div');
+  holder.innerHTML = lyre(selected, null, true);
+  const svg = holder.firstElementChild;
+  svg.setAttribute('width','256'); svg.setAttribute('height','320');
+  const colors = getComputedStyle(document.documentElement);
+  let source = new XMLSerializer().serializeToString(svg);
+  source = source.replace(/var\((--[a-z0-9]+)\)/g, (_,name) => colors.getPropertyValue(name).trim());
+  const url = URL.createObjectURL(new Blob([source],{type:'image/svg+xml'}));
+  const link = document.createElement('a'); link.href=url; link.download=`kleoth-lyre-${selected}.svg`; link.click();
+  setTimeout(() => URL.revokeObjectURL(url),1000);
+});
+</script>
+</body>
+</html>

@@ -484,28 +484,16 @@ struct OnboardingView: View {
 
     // MARK: - Shared pieces
 
-    /// The lyre brand mark on a soft accent tile — the same template glyph the
-    /// menu bar and popover header use, tinted with the system accent. Falls back
-    /// to an SF Symbol so it never renders empty.
+    /// The lyre brand mark on a soft accent tile — the same green-stone lyre the
+    /// popover header draws (`LyreMark`), breathing at rest. Decorative: the
+    /// surrounding title carries the meaning.
     private var brandMark: some View {
         ZStack {
             RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous)
                 .fill(Color.accentColor.opacity(0.22))
                 .frame(width: 96, height: 96)
-            if let glyph = KleothAssets.menuBarGlyph() {
-                Image(nsImage: glyph)
-                    .renderingMode(.template)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .frame(height: 52)
-                    .foregroundStyle(Color.accentColor)
-            } else {
-                Image(systemName: "waveform")
-                    .font(.system(size: 44, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .symbolRenderingMode(.hierarchical)
-            }
+            LyreMark(motion: .idle)
+                .frame(height: 60)
         }
         .accessibilityHidden(true)
     }

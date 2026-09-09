@@ -84,31 +84,25 @@ struct MenuView: View {
         }
     }
 
-    /// The brand mark for the popover header: the lyre glyph (the same template
-    /// asset as the menu-bar icon) tinted with the accent on a quiet accent-washed
-    /// tile — minimal and native, but still unmistakably Kleoth. (A full-color
-    /// artwork chip was tried here and read as too heavy against the popover's
-    /// material chrome.) Falls back to an SF Symbol tile if the asset is missing,
-    /// so the header never renders empty.
+    /// The brand mark for the popover header: the green-stone lyre drawn natively
+    /// (`LyreMark`) on a quiet accent-washed tile — minimal and native, but still
+    /// unmistakably Kleoth. (A full-color artwork chip was tried here and read as
+    /// too heavy against the popover's material chrome.) The strings quiver while
+    /// a meeting records and ripple while one transcribes; at rest they breathe,
+    /// and the mark schedules nothing under Reduce Motion.
     private var appMark: some View {
         ZStack {
             RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusChip, style: .continuous)
                 .fill(Color.accentColor.opacity(0.22))
-            if let glyph = KleothAssets.menuBarGlyph() {
-                Image(nsImage: glyph)
-                    .renderingMode(.template)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .frame(height: 20)
-                    .foregroundStyle(Color.accentColor)
-            } else {
-                Image(systemName: "waveform")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .symbolRenderingMode(.hierarchical)
-            }
+            LyreMark(motion: appMarkMotion)
+                .frame(height: 22)
         }
+    }
+
+    private var appMarkMotion: LyreMotion {
+        if controller.isRecording { return .recording }
+        if controller.isProcessing { return .processing }
+        return .idle
     }
 
     /// One quiet line under the wordmark reflecting the current state.

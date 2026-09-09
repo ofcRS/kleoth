@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cleos graphics</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0; }
+  section { padding: 32px 24px; background: #f5f5f5; color: #252525; }
+  section.dark { background: #242828; color: #f1f3f3; }
+  header { max-width: 960px; margin: 0 auto 24px; font-size: 15px; font-weight: 600; }
+  .states { max-width: 960px; margin: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; }
+  figure { margin: 0; min-width: 0; text-align: center; }
+  img { display: block; width: 132px; height: 132px; object-fit: contain; margin: 0 auto 16px; }
+  img.pending { width: 120px; height: 120px; margin-top: 12px; }
+  h2 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+  p { color: #686868; line-height: 1.5; margin: 0 auto; max-width: 240px; }
+  .dark p { color: #afb4b4; }
+  @media (max-width: 620px) { .states { grid-template-columns: 1fr; } }
+</style>
+<section>
+  <header>Cleos / Light</header>
+  <div class="states">
+    <figure><img src="../../Sources/KleothApp/Resources/EmptyNoMeetings.png" alt="Silver microphone with a speech bubble"><figcaption><h2>No meetings yet</h2><p>Your recorded conversations will appear here.</p></figcaption></figure>
+    <figure><img src="../../Sources/KleothApp/Resources/EmptySelect.png" alt="Silver meeting notes and a pointer"><figcaption><h2>Select a meeting</h2><p>Choose a conversation from your library.</p></figcaption></figure>
+    <figure><img class="pending" src="../../Sources/KleothApp/Resources/EmptyNotTranscribed.png" alt="Audio document with a small clock"><figcaption><h2>Not transcribed yet</h2><p>This recording is saved.</p></figcaption></figure>
+  </div>
+</section>
+<section class="dark">
+  <header>Cleos / Dark</header>
+  <div class="states">
+    <figure><img src="../../Sources/KleothApp/Resources/EmptyNoMeetings.png" alt="Silver microphone with a speech bubble"><figcaption><h2>No meetings yet</h2><p>Your recorded conversations will appear here.</p></figcaption></figure>
+    <figure><img src="../../Sources/KleothApp/Resources/EmptySelect.png" alt="Silver meeting notes and a pointer"><figcaption><h2>Select a meeting</h2><p>Choose a conversation from your library.</p></figcaption></figure>
+    <figure><img class="pending" src="../../Sources/KleothApp/Resources/EmptyNotTranscribed.png" alt="Audio document with a small clock"><figcaption><h2>Not transcribed yet</h2><p>This recording is saved.</p></figcaption></figure>
+  </div>
+</section>
+</html>

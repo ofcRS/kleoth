@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="25 0 206 266" width="206" height="266" role="img" aria-label="Kleoth Greek lyre">
+<defs><linearGradient id="lyre-green" x1="0" y1="0" x2=".8" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#b0d1c3"/><stop offset=".55" stop-color="#89b6a5"/><stop offset="1" stop-color="#608f80"/></linearGradient></defs>
+<path d="M69 45 C54 46 48 30 55 22 C65 10 86 20 91 40 C99 70 82 100 73 132 C65 160 75 181 94 181 C106 181 110 171 105 162 L151 162 C146 171 150 181 162 181 C181 181 191 160 183 132 C174 100 157 70 165 40 C170 20 191 10 201 22 C208 30 202 46 187 45 C179 44 177 35 181 31 C169 36 171 61 182 87 C191 110 210 143 207 169 C204 195 187 213 157 223 C157 232 164 237 176 238 L176 246 L80 246 L80 238 C92 237 99 232 99 223 C69 213 52 195 49 169 C46 143 65 110 74 87 C85 61 87 36 75 31 C79 35 77 44 69 45 Z" fill="url(#lyre-green)"/>
+<path d="M78 63 H178" stroke="#89b6a5" stroke-width="7" stroke-linecap="round"/>
+<path d="M84 239 H172" stroke="#b0d1c3" stroke-width="1.5" opacity=".5"/>
+<path d="M107 162 H149" stroke="#b0d1c3" stroke-width="2"/>
+<g fill="none" stroke="#89b6a5" stroke-width="1.65" stroke-linecap="round" opacity=".8"><path d="M98 67 Q98 114 98 162"/><path d="M108 67 Q108 114 108 162"/><path d="M118 67 Q118 114 118 162"/><path d="M128 67 Q128 114 128 162"/><path d="M138 67 Q138 114 138 162"/><path d="M148 67 Q148 114 148 162"/><path d="M158 67 Q158 114 158 162"/></g>
+</svg>
