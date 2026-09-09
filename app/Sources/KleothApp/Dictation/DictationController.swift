@@ -874,6 +874,13 @@ final class DictationController: ObservableObject {
             // actions to `ScreenRecordingController` instead of the dictation
             // face (§3.4). Listed so the switch stays exhaustive.
             break
+        case .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
+             .pasteLastDictation, .openDictationHistory, .hideForAnHour:
+            // Pill menu / peek dock (interaction DEMO, 2026-09-08 — only the
+            // sandbox drives these so far). Not wired in the app until the
+            // user decides on the demo.
+            log.info("pill action not wired yet: \(String(describing: action), privacy: .public)")
+            return
         }
         pill.dismiss()
     }

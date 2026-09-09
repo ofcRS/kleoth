@@ -50,6 +50,11 @@ final class DictationPanel: NSPanel {
         isReleasedWhenClosed = false
         backgroundColor = .clear
         isOpaque = false
+        // The pill is dark by design in every phase, whatever the system
+        // appearance (`PillStyle`), and a Liquid Glass surface takes its tone
+        // from the WINDOW's appearance: light-mode glass over a light page
+        // rendered near-white with white ink on it. Pin the panel dark.
+        appearance = NSAppearance(named: .darkAqua)
         // The SwiftUI capsule draws its own shadow inside the panel's
         // transparent margin (`DictationPillController.shadowPadding`), so the
         // window must not add a second, rectangular one.
@@ -100,7 +105,15 @@ final class DictationPillHostingView<Content: View>: NSHostingView<Content> {
     /// button needs a hover state of its own and `.onHover` cannot give it one
     /// for the same reason `onHoverChange` exists.
     var onPointerMove: ((CGPoint?) -> Void)?
+    /// Secondary click anywhere on the panel: the pill's menu (the same one
+    /// the ⋯ glyph opens). SwiftUI has no right-click gesture on macOS.
+    var onSecondaryClick: (() -> Void)?
     private var hoverArea: NSTrackingArea?
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let onSecondaryClick else { return super.rightMouseDown(with: event) }
+        onSecondaryClick()
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

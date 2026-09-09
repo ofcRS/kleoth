@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-09-07. This file is living context for future sessions — keep it current._
+_Last updated: 2026-09-08. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -359,6 +359,11 @@ app/.build/debug/screenrec 10 [--display N] [--region x,y,w,h] [--no-mic] [--out
 app/.build/debug/screenrec --inspect ~/Kleoth/screen-recordings/screen-….mp4
 app/.build/debug/screenrec --extract <file.mp4> && app/.build/debug/screenrec --words <file.m4a>  # word timings
 
+# Brand imagery (Codex image_gen via the user-level /gpt-images skill; brief = app/branding-src/BRAND.md)
+bun ~/.claude/skills/gpt-images/scripts/gpt-images.ts app/branding-src/<set>/jobs.json [--force] [--dry-run]
+swift app/branding-src/make-iconset.swift app/branding-src/icon-v2/icon-a-charcoal.png   # → Kleoth.iconset + bundle/Kleoth.icns
+swift app/branding-src/readme-images/generate.swift                                     # → docs/assets/hero.png + social-preview.png
+
 # Pill playground / filmstrip, incl. the screen-recording backdrop
 swift run --package-path app pillsandbox
 app/.build/debug/pillsandbox --film <dir> --edge right --backdrop recording \
@@ -372,6 +377,151 @@ synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.j
 also hold `variants/<tier>/` (archived transcript set of the non-active tier + `variant.json`
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
+
+## Current status (2026-09-08, later — pill menu + peek dock DEMO, undecided)
+User, after a Wispr Flow comparison ("their pills… so smooth, so responsive… ours does nothing, no hovering,
+no nothing"): "Show me the demo and we will decide whether it makes sense to do or not." So this is a
+**sandbox demo, not a shipped feature** — the app compiles with it but routes the new actions to a log line.
+- **What the demo does (KleothPillUI, driven by `pillsandbox`):** hovering the resting sliver now pulls out a
+  **peek dock** — `PeekDock` in `DictationPillView.swift`. **Since 2026-09-09 (user on the first cut: "so
+  small… too dense… three independent fields"): three captioned FIELDS — Dictate · Record · More — each a
+  visible rounded plate (`PillDockTile`), tinted under the pointer (accent / red / white), 1.05× lift,
+  pointing-hand cursor, tooltip, pressed squash (`PillDockTileStyle`); every point of the capsule belongs to
+  a field (gaps + insets are folded into the hit areas). Geometry comes from ONE scale factor —
+  `PillDockMetrics` (public, end of `DictationPillView.swift`): default 2.5× = 210×60 pt (was 96×26 at 1×);
+  tile 24s×20s, pitch = tile + gap, captions from 1.8× — read by both the view and
+  `DictationPillController.layout(for:…dock:)`, so they cannot disagree. The controller exposes
+  `dockMetrics` / `setDock(_:)` (re-lays the dock out in place, menu follows); the sandbox has a
+  "Dock scale" slider 1–4×. **Two LOOKS, compared live (same day; user on the first tiles: "ugly gray…
+  cheap highlighting… regular liquid glass controls, or beautiful"):** `PillDockStyle` (.glass / .ink, in
+  `PillDockMetrics.style`; `resolvedStyle` applies availability). Glass = the capsule itself is REAL Liquid
+  Glass — the CLEAR variant over a dimming capsule in the same window (`ZStack { Capsule().fill(black
+  0.45); Color.clear.glassEffect(.clear, in: Capsule()) }` as the capsule's background under
+  `#available(macOS 26, *)`, no rim/sheen, white ink); both pill panels are pinned to `.darkAqua`; Ink = a near-black, slightly blue
+  gradient surface with a top-lit rim (`PillDockStyle.inkSurface/inkRim`). In both, fields have NO plates at
+  rest — hairline dividers — and the field under the pointer gets only a QUIET lift: a faint white plate
+  (0.12 / 0.09), ink to full white, 3 % scale, neighbouring hairlines fade (user on the first, tinted
+  version: "less provocative, less nudgy… nothing turning blue").
+  The fields are deliberately NOT glass themselves (Apple: never stack glass on glass). Verified with REAL
+  screen grabs — film item `grab` (`grab-N.png`; `captureFrame` sees only our window's pixels, so glass
+  looks empty there) + `--dock-style glass|ink --dock-scale N`. ⚠️ **Why clear-over-dim, root-caused with timed grabs
+  (user: "a white background for a couple of seconds when I hover, then it animates into the glass"):**
+  `.regular` Liquid Glass ADAPTS its tone to the backdrop's brightness ~0.5 s after it appears — grabs at
+  0.1 s were dark, from 0.5 s on near-WHITE over a light page (white ink on it), regardless of a black
+  `.tint` (glass tints are faint accents) and of pinning the window's appearance. Ink never adapts either:
+  `Color.primary` and the hierarchical `.primary` both resolve from the panel's appearance, not the backdrop.
+  `.clear` glass does not adapt; the dark capsule beneath it in the same window is what it refracts, so the
+  dock is dark from the first frame over light and dark backdrops (grabbed both). Film rig for this:
+  `--stage light|dark` opens a plain `StagePanel` behind the pill (created lazily once the pill's panel
+  exists — a `.zero` frame put it at x = −450), `wait:<s>` items for timed grabs, and
+  `DictationPillController.ignoresRealPointer` (set in film mode) so the user's mouse cannot tuck a film. The dock is thicker than the anchor's reference size, so `activeOrigin`'s clamp
+  nudges it inward (near side ≈ 26 pt from the screen edge, grows inward) — no dock-specific placement code.
+  ⚠️ **Collapse ghost — root-caused with a 60 fps film + a red-paint test (user, 2026-09-09: "the boxes become
+  oversized and then glitchy added into the idle state"):** SwiftUI keeps a REMOVED view on screen for its
+  transition at the size it had when removed, top-left anchored, and never re-lays it out. The dock's surface
+  was a `switch` in `.background` swapped back to the pill's fill the moment `peeking` dropped, one turn BEFORE
+  the capsule started shrinking — so a full-size 210×60 ghost of the outgoing surface faded behind the sliver
+  as it shrank (painted red to prove it), and the fields' own removal ghost drifted off-centre. Rule now: **two
+  layers, never a swap while the capsule is resized.** `DictationPillModel.dockHeld` (set in `setPeeking(true)`,
+  cleared only by `releaseDockSurface()` from `settle()` / the Reduce Motion jump / `finishHide`) keeps the
+  dock's surface (`dockFill`) AND the `PeekDock` mounted through the collapse; the pill's fill and rim are always
+  mounted and only fade (`opacity(dockOut ? 0 : 1)`, 0.2 s); the fields fade in place in 0.1 s and are removed
+  with `.identity` at settle, already invisible. Filmed clean on bottom + right edges, ink + glass (real grabs
+  over the light stage: `--grab-frames` writes `shot-NNNN.png` of a fixed 440×170 region every tick — the only
+  way to film Liquid Glass in motion), and dock → `.armed` → listening. Pre-existing, left alone: on a SIDE edge
+  the peek transition's completion never fires (the panel stays at the 133-wide stage until the unpeek; the
+  bottom edge settles in 0.3 s) — invisible, only the transparent margin is wider.
+  Same day, user on the record cycle ("only the icon-text for More is not the same as for the rest"): the tile
+  glyph now sits in a fixed slot (`PillDockMetrics.iconSlotHeight` = 1.25 × icon size) so the three captions
+  share a line — the ⋯ is a quarter of the mic's height and pushed its caption up. The sandbox's Stop used to
+  drop the recording backdrop BEFORE `.saving`, which tucked the bar and left the saving capsule EMPTY for its
+  1.2 s; it now follows the app's order (`show(.saving)`, drop the backdrop 1.2 s later, `.saved`). And a phase
+  that lands on `.idle` under a PARKED pointer (the `.saved` confirmation after a recording, a dismissed fault)
+  now peeks straight out: `DictationPillController.reconsiderPointer()` re-reads `NSEvent.mouseLocation` once
+  the phase is `.idle` (AppKit sends `mouseEntered` only on movement, so the pill used to stay tucked until
+  the pointer left and came back) — not runtime-verified by a human. Film items added for this: `perform:<action>`
+  (fires the pill action, so the sandbox driver's own Record/Stop simulation runs), `backdrop:hidden|idle|recording`.
+  `DictationPillController.perform(_:)` is public now. User's "after recording all 3 are dispersed for some
+  time" is NOT reproduced by the filmed cycle (`idle,peek,hover:rec,perform:startScreenRecording,…,
+  perform:stopScreenRecording,…,peek` comes back with three aligned fields) — awaiting the user's description.
+  Hover per field is computed from the panel-wide pointer re-expressed relative to the capsule and UN-ROTATED
+  (`DictationPillView.dockPointer`; root is a `GeometryReader` now) — filmed correct on the right edge, where
+  the three fields stack with upright captions.
+  Mic glyph → `.startHandsFreeDictation`; the hands-free capsule shows a stop square under the pointer and a
+  click → `.stopHandsFreeDictation`. Record glyph → `.startScreenRecording` (a tap on the capsule BODY no
+  longer starts a recording — it opens the menu). ⋯ / body tap / **right-click** (`DictationPillHostingView.
+  onSecondaryClick`) → `DictationPillController.openMenu()`.
+- **The menu is the pill's OWN panel (`PillMenu.swift`: `PillMenuPanel` + `PillMenuModel` + `PillMenuView`),
+  NOT an `NSMenu`:** AppKit silently refuses `NSMenu.popUp` for an app that is not active (verified: `popUp`
+  returned at once, no window; after `NSApp.activate` the window existed but never came on screen from the
+  headless sandbox), and activating steals the caret from the app being dictated into. The panel is a
+  `.nonactivatingPanel` at `.statusBar` level with SwiftUI rows (dark, `PillMenuStyle.surface`), hover rows
+  from an `.activeAlways` tracking area (works while another app is active), placed on the pill's inward side
+  from the capsule's DESTINATION rect (`layoutMenu`, size computed by `menuContentSize`, never measured),
+  scales in on `peekSpring`. Rows: Start dictation (subtitle "or hold fn + shift") · Record screen… ·
+  Microphone ▸ (subtitle = device in use; click expands the list INLINE: Automatic + every CoreAudio input
+  device with a check) · Paste last dictation (subtitle = preview; disabled when none) · Dictation history… ·
+  Hide for 1 hour · Settings…. Closes on a click anywhere else (global + local `NSEvent` monitors), Esc, any
+  action, a drag, or the ⋯ glyph again; the peek is held while it is open (`menuOpen` guard in `handleHover`).
+  Content comes from the host: `DictationPillController.menuContent: () -> PillMenuContent` (`PillMicrophone`
+  list, selected id, in-use name, last-dictation preview, hotkey) — the pill library keeps no audio state.
+- **Contract additions (`PillTypes.swift`):** `DictationPillAction` gained `.startHandsFreeDictation`,
+  `.stopHandsFreeDictation`, `.selectMicrophone(String?)`, `.pasteLastDictation`, `.openDictationHistory`,
+  `.hideForAnHour`; `PillMicrophone`, `PillMenuContent`. The three app-side switches (`PillCoordinator.route`,
+  `DictationController.handlePillAction`, `ScreenRecordingController.handlePillAction`) list them; the
+  dictation one only logs "pill action not wired yet". **If the app is rebuilt/installed as is, the dock and
+  menu appear but do nothing** — the mic picker needs a real input-device setting honoured by all three
+  captures (the one piece with real engineering), hands-free-from-click needs a chord-machine sync path.
+- **Sandbox (`pillsandbox`):** `menuContent` lists REAL input devices via CoreAudio (`InputDevices`, read-only,
+  no mic permission; showed "WH-1000XM5" live), actions are simulated (`SandboxDriver.handle`: hands-free =
+  listening on synthetic speech → transcribing → polishing → done; record = recording backdrop with meters;
+  hide for 1 hour = 6 s) and logged in a new "Pill menu + peek dock (demo)" section. Film mode gained
+  `hover:mic|rec|menu|center|off` (`setPointer`, edge-aware, steps by `dockMetrics.pitch`) and `menu` (opens the panel, `menu.png` screen
+  grab at +0.5 s via `CGWindowListCreateImage`, closes after `--hold`); the control window is 760 pt tall
+  (was collapsing to 32); `applicationShouldTerminateAfterLastWindowClosed` is false in film mode (a closing
+  menu window quit the process with exit 0 and no frames). Run: `swift build --package-path app --product
+  pillsandbox && app/.build/debug/pillsandbox --fraction 0.7` (0.7 keeps it clear of the real Kleoth's pill,
+  which sits at the same bottom-centre spot while the app runs).
+- ⚠️ Synthetic `CGEvent` clicks from the agent's shell do nothing here (no Accessibility for the terminal;
+  `osascript` says the same) — the pointer probe `scratchpad/probe.swift` is dead; film hooks are the way.
+- **Decision pending (the user's):** ship the pill pass (dock + menu + mic picker + hands-free click) or drop
+  it; and whether the mic pick applies to meeting recordings too. Nothing committed.
+
+## Current status (2026-09-08 — new ident + `/gpt-images` skill)
+User: "go beyond refactoring Kleoth — configure a tool so Claude can use GPT Codex for image generation
+(icons, illustrations, idents), keep it focused on Kleoth for now, and inject the new ident icons and
+animations I already built." Decisions (AskUserQuestion): lyre variant **05 Green stone**; all four
+surfaces switched (empty states, in-app lyre mark, app icon, README images); skill invoked both
+automatically and as **`/gpt-images`**. Nothing committed; release app reinstalled (running instance NOT killed).
+- **`~/.claude/skills/gpt-images/`** (user-level; SKILL.md + `scripts/gpt-images.ts`): one headless
+  `codex exec --json -s read-only` per job → Codex's built-in `image_gen` (no API key; the ChatGPT login)
+  → PNG lands in `~/.codex/generated_images/<thread>/` → copied to the job's `out`, plus `prompts.json`
+  manifest + `preview.html` contact sheet next to it. Jobs = `[{out, prompt, transparent?, refs?, size?,
+  maxEdge?}]`; idempotent (skip if `out` exists, `--force`), `--concurrency 2`, `--dry-run`. Verified:
+  transparent request → genuine-alpha 1254×1254 PNG in ~45–60 s; four icons at concurrency 2 in ~100 s.
+  ⚠️ Gotchas: the prompt goes in on **stdin** (`-`) — `-i <FILE>...` is variadic and swallows a positional
+  prompt as another image path ("No prompt provided via stdin"); macOS has no `timeout`; the image model
+  **cannot count** (six / seven / five strings across three tries) — never re-roll for a count. The skill
+  reads a per-project brief: **`app/branding-src/BRAND.md`** (the satin-silver + muted-teal object family,
+  forbidden list, surfaces/sizes, the canonical prompts). Going system-wide = a BRAND.md in another project.
+  The old Gemini path `branding-src/generate.mjs` stays for OpenRouter experiments only.
+- **Empty states:** the Codex-made V2 cutouts (`cleos-v2/`, 2026-09-06) now ARE `Resources/Empty*.png`
+  (528 px, alpha; 1254 px sources in `cleos-v2/src/`). `KleothIllustration` shows them floating
+  (`scaledToFit`, soft shadow, no tile/clip/hairline — a rounded tile would cut the transparent art).
+- **Lyre mark:** `kleoth-lyre/lyre-green{,-light}.svg` + `lyre-template.svg` exported from the studies page
+  by script (no path data retyped); **`Views/LyreMark.swift`** = `KleothLyre` (SVG paths parsed once),
+  `LyreMotion` .idle breath / .recording quiver / .processing ripple / .still (the page's `animate()`
+  formulas verbatim), `LyreMark(motion:intensity:accessibilityLabel:)` on a `Canvas`; `TimelineView` only
+  while motion ≠ .still, Reduce Motion → .still. Wired: popover header (`MenuView.appMarkMotion`: recording /
+  isProcessing / idle) and onboarding (.idle). Menu bar: `MenuBarGlyph.png` regenerated from the template
+  SVG (`kleoth-lyre/rasterize-template.swift` → `maketemplate.swift`), loader unchanged.
+- **App icon:** `icon-v2/icon-a-charcoal.png` (user's pick of A–D; `dock-preview.html` shows them masked) →
+  new **`branding-src/make-iconset.swift <artwork>`** (Apple grid: 824-px body, r 185.4, transparent 1024) →
+  `Kleoth.iconset` (gitignored, regenerable) + `bundle/Kleoth.icns` (tracked). `readme-images/generate.swift`
+  retargeted (teal glow, silver kiss, Apple-grid clip) → `docs/assets/hero.png` + `social-preview.png` regenerated.
+- ⚠️ **Not runtime-verified:** the floating empty states, the animated header mark and the new Dock icon
+  by eye (relaunch: `pkill -x Kleoth; open -a Kleoth`). shck.dev's two Kleoth images are app screenshots
+  (`public/img/kleoth/{history,popover}.jpg`) — recapture after the relaunch; nothing to regenerate there.
 
 ## Current status (2026-09-07 — recordings viewer + live recording toolbar, phase 2)
 ✅ **v0.3.0 RELEASED (2026-09-07):** `feat/recordings-viewer` fast-forwarded into `main`, tag `v0.3.0`,

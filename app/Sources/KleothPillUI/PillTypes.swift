@@ -142,6 +142,17 @@ public enum DictationPillAction: Equatable, Sendable {
     /// Tap on the `.saved` confirmation.
     case revealLastRecording
     case openScreenRecordingSettings
+    // MARK: Pill menu + peek dock (interaction demo, 2026-09-08)
+    /// Mic glyph on the peeked resting pill, or the menu's first row: a
+    /// hands-free dictation without touching the keyboard.
+    case startHandsFreeDictation
+    /// Click on the hands-free listening capsule.
+    case stopHandsFreeDictation
+    /// Microphone submenu. `nil` = follow the system default.
+    case selectMicrophone(String?)
+    case pasteLastDictation
+    case openDictationHistory
+    case hideForAnHour
 
     /// The label of the pill's action BUTTON. Empty for the tap-only actions:
     /// they are the capsule itself, not a button with words.
@@ -151,6 +162,9 @@ public enum DictationPillAction: Equatable, Sendable {
         case .openAccessibilitySettings: return "Open Accessibility"
         case .startScreenRecording, .stopScreenRecording, .revealLastRecording: return ""
         case .openScreenRecordingSettings: return "Open Screen Recording"
+        case .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
+             .pasteLastDictation, .openDictationHistory, .hideForAnHour:
+            return ""
         }
     }
 }
@@ -176,3 +190,45 @@ public protocol DictationPillPresenting: AnyObject {
     func resetPosition()
 }
 
+
+// MARK: - Pill menu (interaction demo, 2026-09-08)
+
+/// One input device for the pill menu's Microphone submenu.
+public struct PillMicrophone: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+/// What the host knows that the pill's menu shows. The pill asks for it
+/// every time the menu opens (`DictationPillController.menuContent`), so it
+/// is always current and the pill library keeps no audio or history state.
+public struct PillMenuContent: Sendable {
+    public var microphones: [PillMicrophone]
+    /// The user's explicit pick, or nil for "Automatic".
+    public var selectedMicrophoneId: String?
+    /// The device the system (or the pick) resolves to right now.
+    public var inUseMicrophoneName: String?
+    /// The last dictation's first words, for the "Paste last dictation" row.
+    public var lastDictationPreview: String?
+    /// The hotkey, for the dictation row's hint.
+    public var hotkeyDescription: String
+
+    public init(
+        microphones: [PillMicrophone] = [],
+        selectedMicrophoneId: String? = nil,
+        inUseMicrophoneName: String? = nil,
+        lastDictationPreview: String? = nil,
+        hotkeyDescription: String = ""
+    ) {
+        self.microphones = microphones
+        self.selectedMicrophoneId = selectedMicrophoneId
+        self.inUseMicrophoneName = inUseMicrophoneName
+        self.lastDictationPreview = lastDictationPreview
+        self.hotkeyDescription = hotkeyDescription
+    }
+}

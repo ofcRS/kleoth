@@ -67,6 +67,17 @@ public final class DictationPillController: DictationPillPresenting {
 
     public var onAction: ((DictationPillAction) -> Void)?
     public var onDismiss: (() -> Void)?
+    /// What the pill's menu shows (microphones, last dictation, hotkey) —
+    /// asked for on every open. Nil → the menu carries only the fixed rows.
+    public var menuContent: (() -> PillMenuContent)?
+    /// True while the menu is up: the peek holds and hover changes are ignored.
+    private(set) var menuOpen = false
+    private var menuPanel: PillMenuPanel?
+    private let menuModel = PillMenuModel()
+    private var menuMonitors: [Any] = []
+    private var menuHideTask: Task<Void, Never>?
+    /// The content the open menu was built from (rebuilt on expand/collapse).
+    private var menuContentShown = PillMenuContent()
 
     private let defaults: UserDefaults
     private var panel: DictationPanel?
@@ -335,6 +346,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// for a flat recording bar on a side edge the panel is the only thing
     /// that knows where the along-axis clamp actually put it.
     func beginDrag() {
+        closeMenu()
         settle()
         guard let panel else { return }
         let mouse = NSEvent.mouseLocation
@@ -415,7 +427,8 @@ public final class DictationPillController: DictationPillPresenting {
     /// (`NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)`
     /// after an explicit `NSApp.activate` — the one place on this path where
     /// stealing focus is intended). Don't "fix" it back to the environment value.
-    func perform(_ action: DictationPillAction) {
+    public func perform(_ action: DictationPillAction) {
+        closeMenu()
         onAction?(action)
     }
 
@@ -448,8 +461,15 @@ public final class DictationPillController: DictationPillPresenting {
         // alone did NOT stop the window from growing on a side edge — see the
         // root-view note in `DictationPillView.body` for the fix that did.
         hosting.sizingOptions = []
-        hosting.onHoverChange = { [weak self] hovering in self?.handleHover(hovering) }
-        hosting.onPointerMove = { [weak self] point in self?.model.apply(pointer: point) }
+        hosting.onHoverChange = { [weak self] hovering in
+            guard let self, !self.ignoresRealPointer else { return }
+            self.handleHover(hovering)
+        }
+        hosting.onPointerMove = { [weak self] point in
+            guard let self, !self.ignoresRealPointer else { return }
+            self.model.apply(pointer: point)
+        }
+        hosting.onSecondaryClick = { [weak self] in self?.openMenu() }
         panel.contentView = hosting
         self.panel = panel
         return panel
@@ -465,17 +485,31 @@ public final class DictationPillController: DictationPillPresenting {
     /// pointer is over it. Only meaningful in `.idle`.
     private(set) var peeking = false
 
+    /// Film mode: the REAL pointer is ignored, so a film's scripted hover
+    /// (`setHovered` / `setPointer`) cannot be undone by the user's mouse
+    /// wandering over the pill while the film runs (it tucked a timed film).
+    public var ignoresRealPointer = false
+
     /// What the tracking area reports, exposed for the sandbox's film mode
     /// (there is no pointer to move in a headless run).
     public func setHovered(_ hovering: Bool) {
         handleHover(hovering)
     }
 
+    /// The pointer in the panel's root space (y down), or nil for "off the
+    /// panel" — what the tracking area reports, exposed for the sandbox's
+    /// film mode so a glyph's hover state can be filmed without a pointer.
+    public func setPointer(_ point: CGPoint?) {
+        handleHover(point != nil)
+        model.apply(pointer: point)
+    }
+
+
     private func handleHover(_ hovering: Bool) {
         peekTask?.cancel()
         peekTask = nil
         model.apply(hovered: hovering)
-        guard model.phase == .idle else { return }
+        guard model.phase == .idle, !menuOpen else { return }
         if hovering {
             setPeeking(true)
         } else {
@@ -491,7 +525,284 @@ public final class DictationPillController: DictationPillPresenting {
         guard peeking != on else { return }
         peeking = on
         model.apply(peeking: on)
+        // The dock's surface comes out with it — and leaves only once the
+        // collapse has settled (`releaseDockSurface`), never here.
+        if on { model.apply(dockHeld: true) }
         if model.phase == .idle, panel?.isVisible == true { show(.idle) }
+    }
+
+    /// Re-reads the REAL pointer once a phase has switched to `.idle` under it.
+    /// AppKit reports entered / exited only on pointer movement (or a
+    /// tracking-area rebuild), so a pill that collapsed to rest beneath a
+    /// parked pointer — the `.saved` confirmation after a recording, a
+    /// dismissed fault — got no `mouseEntered` and stayed tucked until the
+    /// pointer left and came back. Now it peeks straight out of the collapse.
+    private func reconsiderPointer() {
+        guard !ignoresRealPointer, !peeking, !menuOpen, model.phase == .idle,
+              let panel, panel.isVisible else { return }
+        let frame = pendingFrame ?? panel.frame
+        if frame.contains(NSEvent.mouseLocation) { handleHover(true) }
+    }
+
+    /// Drops the dock's surface from the capsule if the dock is down. Called
+    /// wherever a transition ENDS (`settle`, the Reduce Motion jump, a hide)
+    /// and never where one starts: the surface must ride the shrinking
+    /// capsule into the edge — see `DictationPillModel.dockHeld`.
+    private func releaseDockSurface() {
+        guard !peeking, !menuOpen else { return }
+        model.apply(dockHeld: false)
+    }
+
+    // MARK: Dock scale (sandbox knob, 2026-09-09)
+
+    /// The peek dock's geometry (see `PillDockMetrics`).
+    public var dockMetrics: PillDockMetrics { model.dock }
+
+    /// Rescales / restyles the peek dock live — the sandbox's knobs for "how
+    /// big should the fields be" and "glass or ink". A dock that is out is
+    /// re-laid out in place, and the menu follows it.
+    public func setDock(_ metrics: PillDockMetrics) {
+        guard metrics != model.dock else { return }
+        model.apply(dock: metrics)
+        guard model.phase == .idle, peeking, panel?.isVisible == true else { return }
+        show(.idle)
+        if menuOpen { layoutMenu() }
+    }
+
+    // MARK: Menu (interaction demo, 2026-09-08)
+
+    /// Opens the pill's menu beside the capsule — or closes it if it is up.
+    /// Reached from the ⋯ glyph, a tap on the peeked capsule's body and a
+    /// secondary click anywhere on the pill. See `PillMenu.swift` for why it
+    /// is the pill's own panel and not an `NSMenu`.
+    ///
+    /// The peek is held for the menu's lifetime: the pointer leaves the
+    /// capsule for the menu, which would otherwise tuck the pill after
+    /// `peekLinger`.
+    public func openMenu() {
+        if menuOpen {
+            closeMenu()
+            return
+        }
+        guard let panel, panel.isVisible else { return }
+        menuHideTask?.cancel()
+        menuHideTask = nil
+        menuContentShown = menuContent?() ?? PillMenuContent()
+        menuModel.microphonesExpanded = false
+        menuModel.edge = model.edge
+        menuModel.pointer = nil
+        menuModel.entries = Self.menuEntries(for: menuContentShown, microphonesExpanded: false)
+
+        menuOpen = true
+        model.apply(menuOpen: true)
+        peekTask?.cancel()
+        peekTask = nil
+        if model.phase == .idle { setPeeking(true) }
+
+        let menuPanel = ensureMenuPanel()
+        layoutMenu()
+        menuPanel.orderFrontRegardless()
+        if Self.reduceMotion {
+            menuModel.isPresented = true
+        } else {
+            withAnimation(Self.peekSpring) { menuModel.isPresented = true }
+        }
+        installMenuMonitors()
+    }
+
+    /// Closes the menu if it is up: fades it, then orders the panel out and
+    /// re-evaluates the pointer (it is usually off the capsule by then, so
+    /// the pill tucks after `peekLinger` like any other hover exit).
+    public func closeMenu() {
+        guard menuOpen else { return }
+        menuOpen = false
+        model.apply(menuOpen: false)
+        removeMenuMonitors()
+        NSCursor.arrow.set()
+        let finish = { [weak self] in
+            guard let self else { return }
+            self.menuPanel?.orderOut(nil)
+            self.menuModel.pointer = nil
+            let inside = self.panel.map { $0.frame.contains(NSEvent.mouseLocation) } ?? false
+            self.handleHover(inside)
+        }
+        if Self.reduceMotion {
+            menuModel.isPresented = false
+            finish()
+            return
+        }
+        withAnimation(.easeOut(duration: 0.12)) { menuModel.isPresented = false }
+        menuHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(130))
+            guard !Task.isCancelled else { return }
+            finish()
+        }
+    }
+
+    private func ensureMenuPanel() -> PillMenuPanel {
+        if let menuPanel { return menuPanel }
+        let menuPanel = PillMenuPanel()
+        let hosting = DictationPillHostingView(
+            rootView: PillMenuView(model: menuModel) { [weak self] entry in self?.menuSelected(entry) }
+        )
+        hosting.sizingOptions = []
+        hosting.autoresizingMask = [.width, .height]
+        hosting.onPointerMove = { [weak self] point in self?.menuModel.pointer = point }
+        menuPanel.contentView = hosting
+        self.menuPanel = menuPanel
+        return menuPanel
+    }
+
+    /// Places the menu's content beside the capsule's DESTINATION rect (the
+    /// pill may still be springing out), on the pill's inward side, clamped
+    /// to the screen. The panel adds the menu's own shadow margin.
+    private func layoutMenu() {
+        guard let menuPanel, let pill = panel else { return }
+        let size = Self.menuContentSize(menuModel.entries)
+        let pad = PillMenuView.shadowPadding
+        let capsule = (pendingFrame ?? pill.frame).insetBy(dx: Self.shadowPadding, dy: Self.shadowPadding)
+        let gap: CGFloat = 8
+        var content = CGRect(origin: .zero, size: size)
+        switch model.edge {
+        case .bottom: content.origin = CGPoint(x: capsule.midX - size.width / 2, y: capsule.maxY + gap)
+        case .top: content.origin = CGPoint(x: capsule.midX - size.width / 2, y: capsule.minY - gap - size.height)
+        case .left: content.origin = CGPoint(x: capsule.maxX + gap, y: capsule.midY - size.height / 2)
+        case .right: content.origin = CGPoint(x: capsule.minX - gap - size.width, y: capsule.midY - size.height / 2)
+        }
+        if let screen = panelScreen() ?? anchorScreen() {
+            let bounds = Self.bounds(of: screen).insetBy(dx: 8, dy: 8)
+            content.origin.x = min(max(content.minX, bounds.minX), bounds.maxX - size.width)
+            content.origin.y = min(max(content.minY, bounds.minY), bounds.maxY - size.height)
+        }
+        menuPanel.setFrame(content.insetBy(dx: -pad, dy: -pad), display: true)
+    }
+
+    /// The menu's content size, computed from the rows rather than measured:
+    /// known synchronously, so the panel is right before SwiftUI lays out.
+    static func menuContentSize(_ entries: [PillMenuEntry]) -> CGSize {
+        var height: CGFloat = 12 + CGFloat(max(0, entries.count - 1)) * 1
+        for entry in entries {
+            switch entry.kind {
+            case .separator: height += 9
+            case .caption: height += 24
+            case .action, .microphones: height += entry.subtitle == nil ? 30 : 38
+            }
+        }
+        return CGSize(width: PillMenuView.width, height: ceil(height) + 4)
+    }
+
+    static func menuEntries(for content: PillMenuContent, microphonesExpanded: Bool) -> [PillMenuEntry] {
+        var rows: [PillMenuEntry] = []
+        rows.append(PillMenuEntry(
+            id: "dictate", kind: .action(.startHandsFreeDictation), title: "Start dictation",
+            subtitle: content.hotkeyDescription.isEmpty ? nil : "or hold \(content.hotkeyDescription)",
+            symbol: "mic.fill"
+        ))
+        rows.append(PillMenuEntry(
+            id: "record", kind: .action(.startScreenRecording), title: "Record screen…",
+            symbol: "record.circle.fill", tint: PillStyle.recordTint
+        ))
+        rows.append(PillMenuEntry(id: "sep1", kind: .separator))
+        rows.append(PillMenuEntry(
+            id: "microphone", kind: .microphones, title: "Microphone",
+            subtitle: content.inUseMicrophoneName, symbol: "waveform"
+        ))
+        if microphonesExpanded {
+            rows.append(PillMenuEntry(
+                id: "mic-auto", kind: .action(.selectMicrophone(nil)), title: "Automatic",
+                subtitle: "Follow the system input", checked: content.selectedMicrophoneId == nil, indented: true
+            ))
+            for mic in content.microphones {
+                rows.append(PillMenuEntry(
+                    id: "mic-\(mic.id)", kind: .action(.selectMicrophone(mic.id)), title: mic.name,
+                    checked: content.selectedMicrophoneId == mic.id, indented: true
+                ))
+            }
+        }
+        rows.append(PillMenuEntry(id: "sep2", kind: .separator))
+        rows.append(PillMenuEntry(
+            id: "paste", kind: .action(.pasteLastDictation), title: "Paste last dictation",
+            subtitle: content.lastDictationPreview ?? "Nothing dictated yet", symbol: "doc.on.clipboard",
+            enabled: content.lastDictationPreview != nil
+        ))
+        rows.append(PillMenuEntry(
+            id: "history", kind: .action(.openDictationHistory), title: "Dictation history…",
+            symbol: "clock.arrow.circlepath"
+        ))
+        rows.append(PillMenuEntry(id: "sep3", kind: .separator))
+        rows.append(PillMenuEntry(id: "hide", kind: .action(.hideForAnHour), title: "Hide for 1 hour", symbol: "eye.slash"))
+        rows.append(PillMenuEntry(id: "settings", kind: .action(.openSettings), title: "Settings…", symbol: "gearshape"))
+        return rows
+    }
+
+    private func menuSelected(_ entry: PillMenuEntry) {
+        switch entry.kind {
+        case .microphones:
+            menuModel.microphonesExpanded.toggle()
+            let entries = Self.menuEntries(for: menuContentShown, microphonesExpanded: menuModel.microphonesExpanded)
+            // The panel grows first (instantly, anchored on the pill's side),
+            // then the rows slide into the new room.
+            let previous = menuModel.entries
+            menuModel.entries = entries
+            layoutMenu()
+            if Self.reduceMotion { return }
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { menuModel.entries = previous }
+            withAnimation(.spring(duration: 0.28, bounce: 0.12)) { menuModel.entries = entries }
+        case .action(let action):
+            closeMenu()
+            perform(action)
+        case .separator, .caption:
+            break
+        }
+    }
+
+    /// Click anywhere else closes the menu: other apps via a global monitor,
+    /// our own windows (except the menu and the pill, which handle their own
+    /// clicks) via a local one. Esc too, when a key event reaches us.
+    private func installMenuMonitors() {
+        removeMenuMonitors()
+        // Labelled `handler:` arguments, not trailing closures: a trailing
+        // closure inside an `if let` condition reads as the statement body
+        // (compiler warning).
+        if let global = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
+            handler: { [weak self] _ in
+                MainActor.assumeIsolated { self?.closeMenu() }
+            }
+        ) {
+            menuMonitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown],
+            handler: { [weak self] event in
+            // `NSEvent` is not Sendable, so only a Bool crosses the isolation
+            // boundary; the event itself is returned (or swallowed) out here.
+            let type = event.type
+            let keyCode = event.keyCode
+            let window = event.window
+            let swallow: Bool = MainActor.assumeIsolated {
+                guard let self else { return false }
+                if type == .keyDown {
+                    guard keyCode == 53 else { return false }
+                    self.closeMenu()
+                    return true
+                }
+                if window === self.menuPanel || window === self.panel { return false }
+                self.closeMenu()
+                return false
+            }
+            return swallow ? nil : event
+            }
+        ) {
+            menuMonitors.append(local)
+        }
+    }
+
+    private func removeMenuMonitors() {
+        for monitor in menuMonitors { NSEvent.removeMonitor(monitor) }
+        menuMonitors.removeAll()
     }
 
     // MARK: Programmatic placement (Settings / sandbox)
@@ -587,6 +898,7 @@ public final class DictationPillController: DictationPillPresenting {
         transitionGeneration += 1
         pendingFrame = nil
         model.apply(offset: .zero)
+        model.apply(dockHeld: false)
     }
 
     private func scheduleAutoHide(for state: DictationPillState) {
@@ -615,6 +927,8 @@ public final class DictationPillController: DictationPillPresenting {
             model.apply(capsuleSize: capsule)
             model.apply(flat: flat)
             panel.setFrame(target, display: true)
+            releaseDockSurface()
+            reconsiderPointer()
             return
         }
 
@@ -710,6 +1024,9 @@ public final class DictationPillController: DictationPillPresenting {
                     } completion: { settleWhenDone() }
                 }
             }
+            // The phase is `.idle` from here on; a pointer parked on the pill
+            // turns the sink into a peek (a re-targeted transition).
+            self.reconsiderPointer()
         }
     }
 
@@ -718,6 +1035,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// not change. Safe to call when already settled.
     private func settle() {
         transitionGeneration += 1
+        releaseDockSurface()
         var still = Transaction()
         still.disablesAnimations = true
         guard let panel, let target = pendingFrame else {
@@ -1020,7 +1338,10 @@ public final class DictationPillController: DictationPillPresenting {
     /// borrowed layout state (`.armed` over a recording backdrop) and the
     /// flatness, which both depend on the backdrop.
     private func layout(for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?) -> Layout {
-        Self.layout(for: layoutState(for: state), edge: edge, on: screen, flat: isFlat(state))
+        Self.layout(
+            for: layoutState(for: state), edge: edge, on: screen, flat: isFlat(state),
+            dock: state == .idle && (peeking || menuOpen) ? model.dock : nil
+        )
     }
 
     /// The most a text label may take: a share of the screen along the pill's
@@ -1040,11 +1361,18 @@ public final class DictationPillController: DictationPillPresenting {
     /// is known synchronously, before SwiftUI has laid the new phase out. On a
     /// side edge the capsule is rotated 90°, so the panel swaps its dimensions.
     static func layout(
-        for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?, flat: Bool
+        for state: DictationPillState, edge: PillGeometry.Edge, on screen: NSScreen?, flat: Bool,
+        dock: PillDockMetrics? = nil
     ) -> Layout {
         var length: CGFloat
         var labelWidth: CGFloat?
         switch state {
+        case .idle where dock != nil:
+            // The peek DOCK: three fields, fully on screen (`PillDockMetrics`).
+            // It is thicker than the anchor was resolved for, so
+            // `activeOrigin`'s clamp nudges it inward: its near side lands
+            // `shadowPadding` in from the screen edge and it grows inward.
+            length = dock?.size.width ?? PillStyle.restingWidth
         case .hidden, .idle, .armed:
             length = PillStyle.restingWidth
         case .listening(let handsFree):
@@ -1074,9 +1402,10 @@ public final class DictationPillController: DictationPillPresenting {
             }
             length += 2 * PillStyle.spacingM
         }
-        let capsule = CGSize(width: ceil(length), height: capsuleHeight(for: state))
+        let height = (state == .idle ? dock?.size.height : nil) ?? capsuleHeight(for: state)
+        let capsule = CGSize(width: ceil(length), height: height)
         length = ceil(length + 2 * shadowPadding + widthSlack)
-        let thickness = capsuleHeight(for: state) + 2 * shadowPadding
+        let thickness = height + 2 * shadowPadding
         // A flat phase keeps its dimensions on every edge — the capsule is not
         // rotated, so the panel must not be transposed either.
         let size = (edge.isVertical && !flat)

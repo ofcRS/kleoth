@@ -871,7 +871,9 @@ final class ScreenRecordingController: ObservableObject {
                 NSWorkspace.shared.open(url)
             }
             coordinator.dismissRecordingPhase()
-        case .openSettings, .openAccessibilitySettings:
+        case .openSettings, .openAccessibilitySettings,
+             .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
+             .pasteLastDictation, .openDictationHistory, .hideForAnHour:
             // Never routed here — the coordinator sends these to the dictation
             // handler. Listed so the switch stays exhaustive.
             break

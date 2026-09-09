@@ -69,8 +69,13 @@ struct DictationPillView: View {
         // the "forced shift" the user saw on the right edge. An overlay does
         // not contribute to its base's size, so the root's minimum is zero
         // and the controller stays the only thing that sizes the panel.
-        Color.clear
-            .overlay { pill }
+        // The `GeometryReader` is as flexible (and as size-less) as the clear
+        // colour; it only reports the root's size so the pointer can be
+        // re-expressed relative to the capsule's centre (`dockPointer`).
+        GeometryReader { proxy in
+            Color.clear
+                .overlay { pill(rootSize: proxy.size) }
+        }
             // The pointer is reported in THIS space (see `PillSpace`), so the
             // Stop button can work out whether it is under the cursor without
             // SwiftUI's `.onHover`, which never fires for an inactive app.
@@ -79,11 +84,29 @@ struct DictationPillView: View {
             .accessibilityLabel(Text(model.phase.pillText))
     }
 
-    private var pill: some View {
+    /// The pointer relative to the capsule's centre, in the capsule's OWN
+    /// (un-rotated) space, or nil when it is off the panel. The capsule is
+    /// centred on the root, displaced by `offset` and turned by
+    /// `edgeRotation`; undoing those here is what lets the peek dock's glyphs
+    /// light up correctly on a side edge too, without trusting what
+    /// `GeometryReader` reports through a `rotationEffect`.
+    private func dockPointer(rootSize: CGSize) -> CGPoint? {
+        guard let pointer = model.pointer else { return nil }
+        let center = CGPoint(
+            x: rootSize.width / 2 + model.offset.width,
+            y: rootSize.height / 2 + model.offset.height
+        )
+        let dx = pointer.x - center.x
+        let dy = pointer.y - center.y
+        let angle = -edgeRotation.radians
+        return CGPoint(x: dx * cos(angle) - dy * sin(angle), y: dx * sin(angle) + dy * cos(angle))
+    }
+
+    private func pill(rootSize: CGSize) -> some View {
         // The hit shape is the CAPSULE, not the panel rect: the transparent
         // shadow margin around it must stay non-interactive, or a `.statusBar`-
         // level panel would swallow clicks aimed at the app underneath.
-        capsule
+        capsule(dockPointer: dockPointer(rootSize: rootSize))
             // The capsule sizes itself to its content whatever the panel's
             // size: while a transition is in flight the panel is a stage
             // larger than the capsule, and on a side edge it is narrower than
@@ -100,7 +123,12 @@ struct DictationPillView: View {
                 case .failed:
                     controller.dismissFromUser()
                 case .idle where model.peeking:
-                    controller.perform(.startScreenRecording)
+                    // The body of the peek dock opens the menu; the glyphs on
+                    // it are the direct actions. Nothing starts from a stray
+                    // click on the capsule any more.
+                    controller.openMenu()
+                case .listening(handsFree: true):
+                    controller.perform(.stopHandsFreeDictation)
                 case .saved:
                     controller.perform(.revealLastRecording)
                 default:
@@ -124,9 +152,9 @@ struct DictationPillView: View {
             .padding(DictationPillController.shadowPadding)
     }
 
-    private var capsule: some View {
+    private func capsule(dockPointer: CGPoint?) -> some View {
         HStack(spacing: PillStyle.spacingS) {
-            content
+            content(dockPointer: dockPointer)
         }
         // The content is revealed by the motion beat (`Choreography.content`)
         // so a rising pill is a plain blob until it has left the edge.
@@ -134,29 +162,24 @@ struct DictationPillView: View {
         // Explicit, animatable size — see `DictationPillModel.capsuleSize`.
         .frame(width: model.capsuleSize.width, height: model.capsuleSize.height)
         .clipShape(Capsule(style: .continuous))
-        .background(PillStyle.surface, in: Capsule(style: .continuous))
-        .overlay(
-            // Resting gets a visible white rim so the half-hidden tab reads as
-            // an edge of something, not a smudge; active phases keep the hairline.
-            Capsule(style: .continuous)
-                .strokeBorder(
-                    (model.phase == .idle || model.phase == .armed) ? PillStyle.restingRim : PillStyle.rim,
-                    lineWidth: (model.phase == .idle || model.phase == .armed) ? 1 : PillStyle.hairline
-                )
-        )
+        .background { surface }
+        .overlay { rim }
         .overlay {
-            if model.phase == .idle {
+            if model.phase == .idle, !dockOut {
                 RestingSheen(brightEndAtTop: model.edge == .bottom, reduceMotion: reduceMotion)
                     // Quick in/out: riding the 0.5 s shape spring left a pale,
                     // sheen-lit blob climbing out of the edge.
                     .transition(.opacity.animation(.easeOut(duration: 0.12)))
             }
         }
-
         // Resting is quieter than active: lower opacity so it reads as an
         // indicator, not a window.
-        .opacity(model.phase == .idle ? PillStyle.restingOpacity : 1)
-        .shadow(color: .black.opacity(model.phase == .idle ? 0.18 : 0.28), radius: 10, y: 3)
+        .opacity(model.phase == .idle && !dockOut ? PillStyle.restingOpacity : 1)
+        .shadow(
+            color: .black.opacity(softShadow ? 0.14 : (model.phase == .idle ? 0.18 : 0.28)),
+            radius: softShadow ? 14 : 10,
+            y: softShadow ? 5 : 3
+        )
         // Breathes with the voice: a touch of scale on the mic level so the
         // whole pill feels alive, not just the bars inside it.
         .scaleEffect(1 + (reduceMotion ? 0 : 0.045 * model.level))
@@ -229,6 +252,103 @@ struct DictationPillView: View {
     /// Horizontal on the bottom and top edges; on a side edge the pill stands
     /// up in every phase, turned so text reads the way a spine label does —
     /// bottom-to-top on the left, top-to-bottom on the right.
+    /// The peek dock is out (or held out by its menu).
+    private var dockOut: Bool { model.phase == .idle && (model.peeking || model.menuOpen) }
+
+    /// Which dock surface is on the capsule: one of the two dock looks
+    /// (`PillDockStyle`; Liquid Glass needs macOS 26 and falls back to ink)
+    /// for as long as the dock is HELD — out, or collapsing back into the
+    /// sliver (`DictationPillModel.dockHeld`) — else none (`.pill`).
+    private var dockSurface: DockSurface {
+        guard model.dockHeld else { return .pill }
+        return model.dock.resolvedStyle == .glass ? .glass : .ink
+    }
+
+    /// The dock's soft, wide shadow — only while the glass dock is out.
+    private var softShadow: Bool { dockOut && dockSurface == .glass }
+
+    private enum DockSurface: Equatable { case pill, glass, ink }
+
+    /// Two LAYERS, never a swap (filmed 2026-09-09, the "oversized boxes" on
+    /// the collapse): SwiftUI keeps a removed view on screen for its
+    /// transition at the size it had when removed, top-left anchored, so
+    /// swapping the dock's surface for the pill's at the start of the
+    /// collapse left a full-size ghost of the dock fading behind the
+    /// shrinking sliver. Now the pill's own fill is ALWAYS mounted and only
+    /// fades, and the dock's surface stays mounted from the moment the dock
+    /// comes out until the collapse has settled (`dockSurface`): it shrinks
+    /// with the capsule under the fading-in pill fill and leaves at settle,
+    /// sliver-sized and covered.
+    @ViewBuilder
+    private var surface: some View {
+        ZStack {
+            dockFill
+            Capsule(style: .continuous)
+                .fill(PillStyle.surface)
+                .opacity(dockOut ? 0 : 1)
+        }
+        // The dark sliver cross-fades into the dock's surface as it comes out,
+        // and back as it collapses.
+        .animation(.easeOut(duration: 0.2), value: dockOut)
+        .animation(.easeOut(duration: 0.2), value: dockSurface)
+    }
+
+    @ViewBuilder
+    private var dockFill: some View {
+        switch dockSurface {
+        case .glass:
+            if #available(macOS 26, *) {
+                // Real Liquid Glass — the CLEAR variant over a dimming layer,
+                // Apple's own recipe for glass that must stay dark. Found the
+                // hard way (timed screen grabs, 2026-09-09): `.regular` glass
+                // ADAPTS its tone to the backdrop's brightness about half a
+                // second after it appears, so over a light page it started
+                // dark and turned near-white with white ink on it (the
+                // "white background" the user saw); a black `.tint` did not
+                // help (glass tints are faint accents), nor did pinning the
+                // window's appearance alone. `.clear` does not adapt, and the
+                // dark capsule UNDER it (same window, so the glass refracts
+                // it) is what the glass sees. The fields inside are NOT glass
+                // (never stack glass on glass) — they light with a quiet plate.
+                ZStack {
+                    Capsule(style: .continuous).fill(Color.black.opacity(PillDockStyle.dim))
+                    Color.clear.glassEffect(.clear, in: Capsule(style: .continuous))
+                }
+            }
+        case .ink:
+            Capsule(style: .continuous).fill(PillDockStyle.inkSurface)
+        case .pill:
+            EmptyView()
+        }
+    }
+
+    /// Same two-layer rule as `surface`: the pill's rim only fades; the ink
+    /// rim (a stroke — its full-size removal ghost read as an outline) is held
+    /// with the dock's surface and fades with the fields. Glass has no rim.
+    @ViewBuilder
+    private var rim: some View {
+        ZStack {
+            if dockSurface == .ink {
+                // Lit from above: a bright top edge fading out down the sides.
+                Capsule(style: .continuous)
+                    .strokeBorder(PillDockStyle.inkRim, lineWidth: 1)
+                    .opacity(dockOut ? 1 : 0)
+            }
+            // Resting gets a visible white rim so the half-hidden tab reads as
+            // an edge of something, not a smudge; active phases keep the hairline.
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    (model.phase == .idle || model.phase == .armed)
+                        ? PillStyle.restingRim
+                        : (model.hovered ? PillStyle.hoverRim : PillStyle.rim),
+                    lineWidth: (model.phase == .idle || model.phase == .armed) ? 1 : PillStyle.hairline
+                )
+                .animation(.easeOut(duration: 0.15), value: model.hovered)
+                .opacity(dockOut ? 0 : 1)
+        }
+        .animation(.easeOut(duration: 0.2), value: dockOut)
+    }
+
     private var edgeRotation: Angle {
         // A flat phase (the recording toolbar, and every dictation phase over a
         // live recording) never stands up — see `DictationPillModel.flat`.
@@ -241,54 +361,76 @@ struct DictationPillView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(dockPointer: CGPoint?) -> some View {
         switch model.phase {
         case .hidden:
             EmptyView()
         case .idle, .armed:
-            // Nothing when tucked (anything centered would be cut in half);
-            // a mic glyph fades in while the capsule is fully on screen —
-            // under the pointer, or on the chord's first frame (`.armed`).
+            // Nothing when tucked (anything centered would be cut in half).
+            // Under the pointer the resting sliver becomes the PEEK DOCK —
+            // three glyphs (dictate · record · menu), each with its own hover
+            // lift; on the chord's first frame (`.armed`) only the mic glyph.
             ZStack {
                 Color.clear
                     .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
-                HStack(spacing: PillStyle.spacingS) {
-                    if model.peeking || model.phase == .armed {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(PillStyle.ink)
-                            .rotationEffect(-edgeRotation)
-                            .transition(.opacity.combined(with: .scale(scale: 0.6)))
-                            .accessibilityHidden(true)
-                    }
-                    // The screen-recording start control (§2.1 step 2). Only on
-                    // the peeked resting pill: `.armed` is a dictation about to
-                    // begin, and a record button there would be a mis-click
-                    // waiting to happen. A tap anywhere on the peeked capsule
-                    // starts a recording too (§6.4) — this glyph is what says so.
-                    if model.peeking, model.phase == .idle {
-                        Button {
-                            controller.perform(.startScreenRecording)
-                        } label: {
-                            Image(systemName: "record.circle.fill")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(PillStyle.recordTint)
-                                .rotationEffect(-edgeRotation)
-                        }
-                        .buttonStyle(.borderless)
+                if model.phase == .armed {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(PillStyle.ink)
+                        .rotationEffect(-edgeRotation)
                         .transition(.opacity.combined(with: .scale(scale: 0.6)))
-                        .accessibilityLabel("Record the screen")
-                    }
+                        .accessibilityHidden(true)
+                }
+                if model.dockHeld {
+                    // Mounted for as long as the dock's SURFACE is (see
+                    // `surface`) and only FADED out — fast, before the capsule
+                    // has shrunk around the fields — never removed while the
+                    // capsule is being resized: a removed view's ghost keeps
+                    // its old size and drifted off-centre for its 0.1 s fade
+                    // (filmed). It leaves at settle, already invisible.
+                    PeekDock(
+                        metrics: model.dock,
+                        pointer: dockPointer,
+                        rotation: edgeRotation,
+                        menuOpen: model.menuOpen,
+                        onDictate: { controller.perform(.startHandsFreeDictation) },
+                        onRecord: { controller.perform(.startScreenRecording) },
+                        onMenu: { controller.openMenu() }
+                    )
+                    .opacity(dockOut ? 1 : 0)
+                    .allowsHitTesting(dockOut)
+                    .animation(.easeOut(duration: 0.1), value: dockOut)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.6)).animation(.easeOut(duration: 0.2)),
+                        removal: .identity
+                    ))
                 }
             }
             .transition(.opacity)
         case .listening(let handsFree):
             if handsFree {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 6, height: 6)
-                    .transition(.opacity)
-                    .accessibilityHidden(true)
+                // Hands-free: the accent dot says "no key is held"; under the
+                // pointer it becomes a stop glyph, because a click on this
+                // capsule ends the dictation.
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .opacity(model.hovered ? 0 : 1)
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundStyle(Color.accentColor)
+                        .rotationEffect(-edgeRotation)
+                        .opacity(model.hovered ? 1 : 0)
+                        .scaleEffect(model.hovered ? 1 : 0.5)
+                }
+                .frame(width: 10, height: 10)
+                .animation(.spring(duration: 0.18, bounce: 0.35), value: model.hovered)
+                .onChange(of: model.hovered) { _, on in
+                    (on ? NSCursor.pointingHand : NSCursor.arrow).set()
+                }
+                .transition(.opacity)
+                .accessibilityHidden(true)
             }
             Waveform(mode: .live(level: model.level), reduceMotion: reduceMotion)
                 .transition(.opacity.combined(with: .scale(scale: 0.7)))
@@ -402,6 +544,169 @@ struct DictationPillView: View {
                 dragging = false
                 controller.commitDraggedPlacement()
             }
+    }
+}
+
+// MARK: - Peek dock
+
+/// The resting pill under the pointer (interaction demo, 2026-09-08; scaled up
+/// and split into fields 2026-09-09 — the user on the first cut: "so small…
+/// too dense… three independent fields"; restyled the same day — "ugly gray…
+/// cheap highlighting… regular liquid glass controls, or beautiful"):
+///
+///     ╭──────────┬──────────┬──────────╮
+///     │    🎙    │    ●     │    ⋯     │
+///     │ Dictate  │  Record  │   More   │
+///     ╰──────────┴──────────┴──────────╯
+///
+/// Three fields on ONE surface (the capsule — Liquid Glass or the ink look,
+/// see `PillDockStyle`), separated by hairlines rather than plates. The field
+/// under the pointer gets a QUIET lift: a faint white plate, brighter ink, a
+/// 3 % scale, and the hairlines beside it fade — nothing changes colour (the
+/// user on the first, tinted version: "less provocative, less nudgy… nothing
+/// turning blue"). Every point of the capsule
+/// belongs to a field (the gaps and insets are folded into the hit areas), so
+/// hovering anywhere lights something. Hover is computed from the panel-wide
+/// pointer (relative to the capsule's centre, un-rotated —
+/// `DictationPillView.dockPointer`), never from `.onHover`, which is dead
+/// while another app is active. Geometry comes from `PillDockMetrics`, which
+/// the sandbox scales and restyles live.
+private struct PeekDock: View {
+    let metrics: PillDockMetrics
+    let pointer: CGPoint?
+    let rotation: Angle
+    let menuOpen: Bool
+    let onDictate: () -> Void
+    let onRecord: () -> Void
+    let onMenu: () -> Void
+
+    /// Which field the pointer is over. The capsule is divided into three
+    /// fields along its length, so a pointer anywhere on it picks the nearest.
+    private var hotIndex: Int? {
+        guard let pointer else { return nil }
+        let size = metrics.size
+        guard abs(pointer.x) <= size.width / 2, abs(pointer.y) <= size.height / 2 else { return nil }
+        let index = Int((pointer.x / metrics.pitch).rounded()) + 1
+        return min(max(index, 0), 2)
+    }
+
+    var body: some View {
+        let hot = hotIndex
+        let look = metrics.resolvedStyle
+        HStack(spacing: 0) {
+            PillDockTile(
+                metrics: metrics, look: look, symbol: "mic.fill", caption: "Dictate", label: "Start a dictation",
+                glyph: nil,
+                hot: hot == 0, lit: false, divider: !(hot == 0 || hot == 1), rotation: rotation, action: onDictate
+            )
+            PillDockTile(
+                metrics: metrics, look: look, symbol: "record.circle.fill", caption: "Record", label: "Record the screen",
+                glyph: PillStyle.recordTint,
+                hot: hot == 1, lit: false, divider: !(hot == 1 || hot == 2), rotation: rotation, action: onRecord
+            )
+            PillDockTile(
+                metrics: metrics, look: look, symbol: "ellipsis", caption: "More", label: "More",
+                glyph: nil,
+                hot: hot == 2, lit: menuOpen, divider: false, rotation: rotation, action: onMenu
+            )
+        }
+        .onChange(of: hot) { _, index in
+            (index == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// One field on the peek dock. The visible plate (only while lit) is
+/// `metrics.tile`; the hit area extends half a gap sideways and the vertical
+/// inset up and down, so the three fields tile the capsule with no dead zone
+/// between them.
+private struct PillDockTile: View {
+    let metrics: PillDockMetrics
+    let look: PillDockStyle
+    let symbol: String
+    let caption: String
+    let label: String
+    /// The glyph's own colour; nil = the surface's ink.
+    let glyph: Color?
+    let hot: Bool
+    let lit: Bool
+    /// A hairline on the trailing edge, separating this field from the next.
+    let divider: Bool
+    let rotation: Angle
+    let action: () -> Void
+
+    private var active: Bool { hot || lit }
+
+    /// Hover only BRIGHTENS: the glyph keeps its own colour (the red record
+    /// dot stays red), the ink goes from soft white to full white.
+    private var iconStyle: AnyShapeStyle {
+        if let glyph { return AnyShapeStyle(glyph) }
+        return AnyShapeStyle(active ? Color.white : PillDockStyle.ink(look))
+    }
+
+    private var captionStyle: AnyShapeStyle {
+        AnyShapeStyle(active ? Color.white.opacity(0.9) : PillDockStyle.captionInk(look))
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if active {
+                    RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous)
+                        .fill(Color.white.opacity(PillDockStyle.hoverPlate(look)))
+                        .transition(.opacity)
+                }
+                VStack(spacing: metrics.captionGap) {
+                    Image(systemName: symbol)
+                        .font(.system(size: metrics.iconSize, weight: .semibold))
+                        .foregroundStyle(iconStyle)
+                        // A fixed slot: the glyphs differ in height (the ⋯ is
+                        // a quarter of the mic's), so without it the More
+                        // caption sat higher than its neighbours and the dots
+                        // lower than the other glyphs' centres (user, 2026-09-09).
+                        .frame(height: metrics.iconSlotHeight)
+                    if metrics.showsCaptions {
+                        Text(caption)
+                            .font(.system(size: metrics.captionSize, weight: .medium))
+                            .foregroundStyle(captionStyle)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                }
+                // Upright on every edge (the capsule itself is rotated there).
+                .rotationEffect(-rotation)
+            }
+            .frame(width: metrics.tile.width, height: metrics.tile.height)
+            .scaleEffect(hot ? 1.03 : 1)
+            .padding(.horizontal, metrics.gap / 2)
+            .padding(.vertical, metrics.verticalInset)
+            .contentShape(Rectangle())
+            .overlay(alignment: .trailing) {
+                if divider {
+                    Rectangle()
+                        .fill(PillDockStyle.divider(look))
+                        .frame(width: 1, height: metrics.tile.height * 0.5)
+                        .transition(.opacity)
+                }
+            }
+        }
+        .buttonStyle(PillDockTileStyle())
+        .animation(.spring(duration: 0.22, bounce: 0.25), value: active)
+        .animation(.easeOut(duration: 0.15), value: divider)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
+/// Pressed = a quick squash; works for an inactive app (`isPressed` comes
+/// from the button's own gesture, not from hover tracking).
+private struct PillDockTileStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.spring(duration: 0.14, bounce: 0.3), value: configuration.isPressed)
     }
 }
 
@@ -691,6 +996,11 @@ enum PillStyle {
     // so these are the full shape's dimensions, not what the user sees.
     static let restingWidth: CGFloat = 68
     static let restingHeight: CGFloat = 22
+    // The peek dock's geometry lives in `PillDockMetrics` (one scale factor,
+    // turned live by the sandbox).
+    /// An active capsule's rim under the pointer (the dock's rims live in
+    /// `PillDockStyle`).
+    static let hoverRim = Color.white.opacity(0.3)
 
     // MARK: Recording toolbar
     //
@@ -840,4 +1150,119 @@ private struct Waveform: View {
         }
         return PillStyle.barMinHeight + span * CGFloat(min(max(unit, 0), 1))
     }
+}
+
+// MARK: - Dock metrics
+
+/// The peek dock's geometry, from ONE scale factor. `scale` 1 is the first
+/// cut (20 pt glyph targets in a 26 pt capsule); the default is 2.5× — the
+/// user on that cut: "so small… scale it at least twice, maybe two and a
+/// half". Everything the view draws and everything the controller sizes
+/// derives from here, so the two can never disagree, and the sandbox turns
+/// the one knob live (`DictationPillController.setDockScale`).
+public struct PillDockMetrics: Equatable, Sendable {
+    public var scale: CGFloat
+    /// The dock's look (`PillDockStyle`); `resolvedStyle` applies availability.
+    public var style: PillDockStyle
+
+    public init(scale: CGFloat = PillDockMetrics.defaultScale, style: PillDockStyle = .glass) {
+        self.scale = min(max(scale, 1), 5)
+        self.style = style
+    }
+
+    public static let defaultScale: CGFloat = 2.5
+
+    /// `style` as it will actually render: Liquid Glass needs macOS 26 and
+    /// falls back to the ink look below it.
+    public var resolvedStyle: PillDockStyle {
+        if #available(macOS 26, *), style == .glass { return .glass }
+        return .ink
+    }
+
+    /// Captions need room: below this the fields are plain squares.
+    public var showsCaptions: Bool { scale >= 1.8 }
+    /// One field's visible plate.
+    public var tile: CGSize {
+        CGSize(width: (showsCaptions ? 24 : 20) * scale, height: 20 * scale)
+    }
+    /// Round enough that the outer fields clear the capsule's round ends
+    /// (a corner circle of this radius sits inside the capsule's end circle
+    /// for every scale in range — checked at 1, 2.5 and 4).
+    public var tileRadius: CGFloat { tile.height * 0.32 }
+    /// Air between two plates.
+    public var gap: CGFloat { 2 + 1.2 * scale }
+    /// Air between a plate and the capsule's rim, across and along.
+    public var verticalInset: CGFloat { 3 + 0.8 * scale }
+    public var horizontalInset: CGFloat { 2 * verticalInset }
+    /// Centre-to-centre distance between neighbouring fields — what the hit
+    /// test and the sandbox's film pointer step by.
+    public var pitch: CGFloat { tile.width + gap }
+    public var iconSize: CGFloat { 11 + 4 * (scale - 1) }
+    /// The glyph's slot in a tile — taller than the tallest glyph, so every
+    /// caption sits on the same line whatever its glyph's height.
+    public var iconSlotHeight: CGFloat { ceil(iconSize * 1.25) }
+    public var captionSize: CGFloat { 9 + 0.8 * (scale - 2) }
+    var captionGap: CGFloat { 1 + scale }
+    /// The capsule around the three fields.
+    public var size: CGSize {
+        CGSize(
+            width: ceil(3 * tile.width + 2 * gap + 2 * horizontalInset),
+            height: ceil(tile.height + 2 * verticalInset)
+        )
+    }
+}
+
+// MARK: - Dock style
+
+/// The two looks of the peek dock (2026-09-09 — the user on the plates: "ugly
+/// gray… cheap highlighting… either regular liquid glass controls, or else
+/// beautiful, stylish, not generic"). Both are compared live in the sandbox.
+/// - `glass`: the capsule is real Liquid Glass (macOS 26) — the clear variant
+///   over a dimming layer, so it stays dark and refracts what is behind it.
+/// - `ink`: the pill's own dark family — a near-black surface with a touch
+///   of blue, lit from above by a bright top rim.
+/// In both, the hovered field gets only a faint white plate.
+public enum PillDockStyle: String, Equatable, Sendable, CaseIterable {
+    case glass
+    case ink
+
+    /// The ink dock's surface: near-black, a touch of blue so it is not a
+    /// gray box, darker towards the bottom.
+    static var inkSurface: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(red: 0.17, green: 0.18, blue: 0.21).opacity(0.96),
+                Color(red: 0.06, green: 0.07, blue: 0.09).opacity(0.96),
+            ],
+            startPoint: .top, endPoint: .bottom
+        )
+    }
+
+    /// Lit from above: a bright top edge fading out down the sides.
+    static var inkRim: LinearGradient {
+        LinearGradient(colors: [.white.opacity(0.42), .white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+    }
+
+    /// Resting ink — soft white on both looks (dark glass is dark too), so
+    /// a hovered field can brighten to full white.
+    static func ink(_ look: PillDockStyle) -> Color {
+        Color.white.opacity(look == .glass ? 0.86 : 0.84)
+    }
+
+    static func captionInk(_ look: PillDockStyle) -> Color {
+        Color.white.opacity(look == .glass ? 0.62 : 0.58)
+    }
+
+    static func divider(_ look: PillDockStyle) -> AnyShapeStyle {
+        AnyShapeStyle(Color.white.opacity(look == .glass ? 0.16 : 0.11))
+    }
+
+    /// The dimming layer under the clear glass (see `DictationPillView.surface`).
+    static let dim: Double = 0.45
+
+    /// The hovered field's plate: a faint white, nothing more.
+    static func hoverPlate(_ look: PillDockStyle) -> Double {
+        look == .glass ? 0.12 : 0.09
+    }
+
 }

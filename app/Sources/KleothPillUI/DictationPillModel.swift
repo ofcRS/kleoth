@@ -68,6 +68,20 @@ final class DictationPillModel: ObservableObject {
     @Published private(set) var hovered = false
     /// The resting capsule is pulled fully on screen by the pointer.
     @Published private(set) var peeking = false
+    /// The pill's menu is up (the ⋯ glyph stays lit, the peek holds).
+    @Published private(set) var menuOpen = false
+    /// The dock's SURFACE (glass or ink) is on the capsule. Set the moment the
+    /// dock comes out; cleared only once the collapse back into the sliver has
+    /// SETTLED — deliberately later than `peeking`, which drops at the start
+    /// of the collapse so the fields fade at once. Swapping the surface at
+    /// the start too left SwiftUI's removal ghost of the outgoing dock
+    /// surface — frozen at the dock's full size, top-left anchored — fading
+    /// over the shrinking capsule: the "oversized boxes" filmed 2026-09-09.
+    /// Held, the surface rides the capsule down under the pill's own fill and
+    /// leaves sliver-sized, where its ghost matches the capsule exactly.
+    @Published private(set) var dockHeld = false
+    /// The peek dock's geometry (`PillDockMetrics`); the sandbox rescales it live.
+    @Published private(set) var dock = PillDockMetrics()
 
     // MARK: Controller-facing mutation
 
@@ -119,6 +133,18 @@ final class DictationPillModel: ObservableObject {
 
     func apply(peeking on: Bool) {
         if peeking != on { peeking = on }
+    }
+
+    func apply(menuOpen on: Bool) {
+        if menuOpen != on { menuOpen = on }
+    }
+
+    func apply(dockHeld on: Bool) {
+        if dockHeld != on { dockHeld = on }
+    }
+
+    func apply(dock metrics: PillDockMetrics) {
+        if dock != metrics { dock = metrics }
     }
 
     func apply(level newLevel: Double) {

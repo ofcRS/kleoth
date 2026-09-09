@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
@@ -56,6 +57,17 @@ struct Arguments {
     /// `steady` = two constant mid levels; `off` = silence (the default, so the
     /// old films are unchanged).
     var levels: LevelPattern = .off
+    /// The peek dock's look and scale for a film (`PillDockMetrics`).
+    var dockStyle: PillDockStyle = .glass
+    var dockScale: Double = Double(PillDockMetrics.defaultScale)
+    /// A backdrop the film opens BEHIND the pill (`StagePanel`), so a screen
+    /// grab of a Liquid Glass surface does not depend on whatever window the
+    /// user happens to have under the pill.
+    var stage: StageTone = .none
+    /// Also take a REAL screen grab of a fixed region around the pill on every
+    /// tick (`shot-NNNN.png`) — the only way to film Liquid Glass in motion
+    /// (`captureFrame` sees just our window's own pixels).
+    var grabFrames = false
 
     enum LevelPattern: String {
         case off, speech, steady
@@ -72,6 +84,10 @@ struct Arguments {
             case "--fraction": out.fraction = value().flatMap(Double.init) ?? 0.5; i += 1
             case "--fps": out.fps = value().flatMap(Double.init) ?? 30; i += 1
             case "--hold": out.hold = value().flatMap(Double.init) ?? 1.2; i += 1
+            case "--dock-style": out.dockStyle = value().flatMap(PillDockStyle.init(rawValue:)) ?? .glass; i += 1
+            case "--dock-scale": out.dockScale = value().flatMap(Double.init) ?? out.dockScale; i += 1
+            case "--stage": out.stage = value().flatMap(StageTone.init(rawValue:)) ?? .none; i += 1
+            case "--grab-frames": out.grabFrames = true
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
             // `--levels` on its own means "speech"; a following pattern name wins.
@@ -118,6 +134,16 @@ func syntheticLevels(_ pattern: Arguments.LevelPattern, at t: Double) -> AudioLe
 /// `--backdrop` / the control window's toggle. `recording` always uses
 /// `SandboxClock.filmStart`, so the backdrop the pill collapses to and the
 /// `recording` sequence item are the SAME value and never re-transition.
+func pillAction(named name: String) -> DictationPillAction? {
+    switch name {
+    case "startScreenRecording": return .startScreenRecording
+    case "stopScreenRecording": return .stopScreenRecording
+    case "startHandsFreeDictation": return .startHandsFreeDictation
+    case "stopHandsFreeDictation": return .stopHandsFreeDictation
+    default: return nil
+    }
+}
+
 func backdrop(named name: String) -> DictationPillBackdrop? {
     switch name.lowercased() {
     case "hidden": return .hidden
@@ -189,15 +215,130 @@ final class SandboxDriver: ObservableObject {
     }
     @Published var phase: String = "idle"
     @Published var lastFilm: String = ""
+    /// What the pill's menu / glyphs fired, newest first (the demo's "did it
+    /// register?" readout).
+    @Published var actionLog: [String] = []
+    /// The Microphone submenu's pick; nil = Automatic. Demo-only state — the
+    /// real app would persist a device UID and point every capture at it.
+    @Published var selectedMicrophoneId: String?
+    /// The peek dock's scale — the knob for "how big should the fields be"
+    /// (the user on the first cut: "at least twice, maybe two and a half").
+    @Published var dockScale: Double = Double(PillDockMetrics.defaultScale) { didSet { pushDock() } }
+    /// Glass or ink — the two looks compared live (the user on the plates:
+    /// "ugly gray… cheap highlighting").
+    @Published var dockStyle: PillDockStyle = .glass { didSet { pushDock() } }
+
+    private func pushDock() {
+        controller.setDock(PillDockMetrics(scale: dockScale, style: dockStyle))
+    }
     private var speechTask: Task<Void, Never>?
     private var cycleTask: Task<Void, Never>?
     private var recordingLevelTask: Task<Void, Never>?
+    private var handsFreeTask: Task<Void, Never>?
+    private var hideTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults(suiteName: "dev.kleoth.pillsandbox") ?? .standard
         controller = DictationPillController(defaults: defaults)
-        controller.onAction = { [weak self] action in self?.phase = "action: \(action)" }
+        controller.onAction = { [weak self] action in self?.handle(action) }
         controller.onDismiss = { [weak self] in self?.phase = "dismissed" }
+        controller.menuContent = { [weak self] in self?.menuContent() ?? PillMenuContent() }
+    }
+
+    // MARK: Interaction demo (2026-09-08)
+
+    private func menuContent() -> PillMenuContent {
+        let devices = InputDevices.list()
+        let inUse: String? = {
+            if let id = selectedMicrophoneId, let picked = devices.first(where: { $0.id == id }) { return picked.name }
+            return InputDevices.defaultInputName()
+        }()
+        return PillMenuContent(
+            microphones: devices,
+            selectedMicrophoneId: selectedMicrophoneId,
+            inUseMicrophoneName: inUse,
+            lastDictationPreview: "Ship the pill menu tomorrow morning, then…",
+            hotkeyDescription: DictationDefaults.hotkeyDescription
+        )
+    }
+
+    private func log(_ line: String) {
+        actionLog.insert(line, at: 0)
+        if actionLog.count > 8 { actionLog.removeLast() }
+    }
+
+    /// What the app would do for each pill action, simulated: a hands-free
+    /// dictation runs the real phases on synthetic speech, a screen recording
+    /// puts the recording backdrop up, "hide for 1 hour" hides for 6 s.
+    private func handle(_ action: DictationPillAction) {
+        switch action {
+        case .startHandsFreeDictation:
+            log("Start dictation (hands-free)")
+            handsFreeTask?.cancel()
+            controller.show(.listening(handsFree: true))
+            phase = "hands-free"
+            simulateSpeech = true
+        case .stopHandsFreeDictation:
+            log("Stop dictation → transcribe → polish → paste")
+            simulateSpeech = false
+            handsFreeTask?.cancel()
+            handsFreeTask = Task { [weak self] in
+                guard let self else { return }
+                for (name, seconds) in [("transcribing", 0.9), ("polishing", 0.9), ("done", 0.0)] {
+                    guard !Task.isCancelled, let state = pillState(named: name) else { return }
+                    controller.show(state)
+                    phase = name
+                    try? await Task.sleep(for: .seconds(seconds))
+                }
+            }
+        case .startScreenRecording:
+            log("Record screen… (would open the region picker)")
+            backdropRecording = true
+            simulateRecordingLevels = true
+        case .stopScreenRecording:
+            log("Stop recording → saving → saved")
+            simulateRecordingLevels = false
+            handsFreeTask?.cancel()
+            // The app's order (`ScreenRecordingController.showSaved`): the bar
+            // morphs into the saving wave while the backdrop is still
+            // `.recording`; the backdrop is dropped only once the phase is
+            // `.saving` (a no-op on screen — not a resting phase), so `.saved`'s
+            // auto-hide lands on `.idle`. Dropping it FIRST, as this did, made
+            // `setBackdrop(.idle)` tuck the bar and the wave never showed: the
+            // saving capsule ran empty for its whole 1.2 s (filmed 2026-09-09).
+            controller.show(.saving)
+            handsFreeTask = Task { [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(for: .seconds(1.2))
+                guard !Task.isCancelled else { return }
+                backdropRecording = false
+                controller.show(.saved("0:42 · 15 MB"))
+            }
+        case .revealLastRecording:
+            log("Reveal the last recording in Finder")
+        case .selectMicrophone(let id):
+            selectedMicrophoneId = id
+            let name = id.flatMap { picked in InputDevices.list().first { $0.id == picked }?.name } ?? "Automatic"
+            log("Microphone → \(name)")
+        case .pasteLastDictation:
+            log("Paste last dictation")
+        case .openDictationHistory:
+            log("Open History → Dictations")
+        case .hideForAnHour:
+            log("Hide for 1 hour (6 s in the demo)")
+            controller.setBackdrop(.hidden)
+            hideTask?.cancel()
+            hideTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                guard !Task.isCancelled, let self else { return }
+                controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle)
+                log("…back after the hour")
+            }
+        case .openSettings:
+            log("Open Settings")
+        case .openAccessibilitySettings, .openScreenRecordingSettings:
+            log("Open System Settings")
+        }
     }
 
     func show(_ state: DictationPillState) {
@@ -285,6 +426,28 @@ struct ControlPanel: View {
                 .pickerStyle(.segmented)
                 Slider(value: $driver.fraction, in: 0...1) { Text("Along the edge") }
             }
+            Section("Pill menu + peek dock (demo)") {
+                Text("Hover the resting pill: it comes out as a dock of three fields — Dictate · Record · More — each lighting up under the pointer. Click Dictate for a hands-free dictation (click the capsule again to stop). Click More, or right-click anywhere, for the menu with the Microphone picker.")
+                    .font(.caption).foregroundStyle(.secondary)
+                let dock = driver.controller.dockMetrics
+                Picker("Dock look", selection: $driver.dockStyle) {
+                    Text("Liquid Glass").tag(PillDockStyle.glass)
+                    Text("Ink").tag(PillDockStyle.ink)
+                }
+                .pickerStyle(.segmented)
+                Slider(value: $driver.dockScale, in: 1...4, step: 0.25) {
+                    Text("Dock scale ×\(driver.dockScale, specifier: "%.2f") — \(Int(dock.size.width))×\(Int(dock.size.height)) pt")
+                }
+                if driver.actionLog.isEmpty {
+                    Text("Nothing fired yet.").font(.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(Array(driver.actionLog.enumerated()), id: \.offset) { index, line in
+                        Text(line)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(index == 0 ? .primary : .secondary)
+                    }
+                }
+            }
             Section("Phase — \(driver.phase)") {
                 HStack {
                     ForEach(["idle", "armed", "listening", "handsfree", "transcribing"], id: \.self) { name in
@@ -354,7 +517,7 @@ struct ControlPanel: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
+        .frame(width: 520, height: 760)
     }
 }
 
@@ -371,6 +534,13 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     guard let dir = args.filmDirectory else { return "no --film directory" }
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     controller.dock(edge: args.edge, fraction: args.fraction)
+    controller.setDock(PillDockMetrics(scale: args.dockScale, style: args.dockStyle))
+    controller.ignoresRealPointer = true
+    // The stage is opened lazily, once the pill's panel exists (the first
+    // phase creates it) — its frame is what the stage is centred on.
+    var stagePanel: StagePanel?
+    var grabs = 0
+    var grabRegion: CGRect?
     // The backdrop IS the starting state: `setBackdrop` takes over a down
     // panel on the spot, so `.idle` reproduces the old `setResting(true)` +
     // `show(.idle)` exactly and `.recording` starts the film with a recording
@@ -384,16 +554,68 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     var speechClock = 0.0
     for name in args.sequence {
         // "peek" / "unpeek" simulate the pointer entering / leaving the pill.
+        // "hover:mic|rec|menu|center" put the pointer on one glyph of the peek
+        // dock (or the capsule's centre); "menu" opens the pill menu, films
+        // the screen around it and closes it after the hold.
+        var holdFor = args.hold
         if name == "peek" || name == "unpeek" {
             controller.setHovered(name == "peek")
+        } else if name.hasPrefix("wait:") {
+            // "wait:<seconds>" changes nothing and holds for that long — for
+            // timed grabs after a transition (e.g. how a glass surface settles).
+            holdFor = Double(name.dropFirst(5)) ?? args.hold
+        } else if name.hasPrefix("hover:") {
+            controller.setPointer(filmPointer(String(name.dropFirst(6)), edge: args.edge, controller: controller))
+        } else if name.hasPrefix("perform:") {
+            // "perform:startScreenRecording|stopScreenRecording|startHandsFreeDictation|…"
+            // — fires a pill action through the controller, so the SANDBOX
+            // DRIVER's own simulation runs (its stop chains backdrop → saving →
+            // saved in one go — a hand-written sequence cannot).
+            if let action = pillAction(named: String(name.dropFirst(8))) { controller.perform(action) }
+        } else if name.hasPrefix("backdrop:") {
+            // "backdrop:hidden|idle|recording" — the host's entry point (what
+            // the sandbox's Record / Stop do), so a film can run the demo's
+            // own record cycle: dock → recording bar → stop → saving → saved.
+            if let backdrop = backdrop(named: String(name.dropFirst(9))) { controller.setBackdrop(backdrop) }
+        } else if name == "grab" {
+            // A REAL screen grab around the pill (`captureFrame` sees only our
+            // window's own pixels — a Liquid Glass surface, which refracts what
+            // is behind it, only shows in a screen grab). No hold.
+            grabs += 1
+            if let frame = controller.panelFrame, let png = screenGrab(around: frame) {
+                try? png.write(to: dir.appendingPathComponent("grab-\(grabs).png"))
+                print("grab-\(grabs).png written")
+            }
+            continue
+        } else if name == "menu" {
+            // Opens the pill's own menu panel (non-blocking); a screen grab of
+            // the area around the pill at +0.5 s catches it (`captureFrame`
+            // only sees the pill's window), and it closes after the hold.
+            let holdSeconds = args.hold
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(0.5))
+                if let frame = controller.panelFrame, let png = screenGrab(around: frame) {
+                    try? png.write(to: dir.appendingPathComponent("menu.png"))
+                    print("menu.png written")
+                }
+                try? await Task.sleep(for: .seconds(max(0.1, holdSeconds - 0.5)))
+                controller.closeMenu()
+            }
+            controller.openMenu()
         } else if let state = pillState(named: name) {
             controller.show(state)
         } else {
             continue
         }
+        if stagePanel == nil, args.stage != .none, let frame = controller.panelFrame {
+            let stage = StagePanel(tone: args.stage, around: frame)
+            stage.orderFrontRegardless()
+            print("stage: \(args.stage.rawValue) at \(stage.frame)")
+            stagePanel = stage
+        }
         let state = pillState(named: name) ?? .idle
         let phaseStart = Date()
-        while Date().timeIntervalSince(phaseStart) < args.hold {
+        while Date().timeIntervalSince(phaseStart) < holdFor {
             speechClock += interval
             if case .listening = state {
                 let syllable = max(0, sin(speechClock * 9.0)) * (0.5 + 0.5 * sin(speechClock * 1.3))
@@ -405,6 +627,18 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             }
             if let frame = controller.captureFrame() {
                 captured.append(CapturedFrame(time: Date().timeIntervalSince(start), frame: frame))
+                if args.grabFrames {
+                    // One fixed region for the whole film (a strip needs a
+                    // steady camera): around the first frame's anchor, wide
+                    // and tall enough for the peek dock and the menu.
+                    if grabRegion == nil {
+                        let f = frame.panelFrame
+                        grabRegion = CGRect(x: f.midX - 220, y: frame.screenFrame.minY - 10, width: 440, height: 170)
+                    }
+                    if let region = grabRegion, let png = screenGrab(cocoaRegion: region) {
+                        try? png.write(to: dir.appendingPathComponent(String(format: "shot-%04d.png", captured.count - 1)))
+                    }
+                }
             }
             try? await Task.sleep(for: .seconds(interval))
         }
@@ -534,6 +768,164 @@ func writePNG(_ image: CGImage, to url: URL) throws {
     guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
 }
 
+/// Root-space pointer for a named spot on the pill. The peek dock's fields
+/// sit one `PillDockMetrics.pitch` apart along the capsule; on a side edge
+/// the capsule stands up (rotated +90° on the right, −90° on the left), so
+/// "along" is the panel's y there — the same mapping the view undoes in
+/// `dockPointer`.
+@MainActor
+func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) -> CGPoint? {
+    guard let frame = controller.panelFrame else { return nil }
+    let center = CGPoint(x: frame.width / 2, y: frame.height / 2)
+    let pitch = controller.dockMetrics.pitch
+    let along: CGFloat
+    switch spot {
+    case "mic": along = -pitch
+    case "menu": along = pitch
+    case "rec", "center": along = 0
+    case "off", "none": return nil
+    default: along = 0
+    }
+    switch edge {
+    case .bottom, .top: return CGPoint(x: center.x + along, y: center.y)
+    case .right: return CGPoint(x: center.x, y: center.y + along)
+    case .left: return CGPoint(x: center.x, y: center.y - along)
+    }
+}
+
+/// The film's stage: a plain light or dark window behind the pill, for grabs
+/// of a Liquid Glass surface that do not depend on the user's windows.
+enum StageTone: String { case none, light, dark }
+
+@MainActor
+final class StagePanel: NSPanel {
+    init(tone: StageTone, around pill: CGRect) {
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(pill) }) ?? NSScreen.main
+        let bottom = screen?.frame.minY ?? 0
+        super.init(
+            contentRect: NSRect(x: pill.midX - 450, y: bottom, width: 900, height: 520),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
+        )
+        level = .normal
+        isOpaque = true
+        hasShadow = false
+        isReleasedWhenClosed = false
+        contentView = NSHostingView(rootView: StageView(tone: tone))
+    }
+}
+
+struct StageView: View {
+    let tone: StageTone
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: tone == .light
+                    ? [Color(white: 0.98), Color(red: 0.85, green: 0.92, blue: 0.80)]
+                    : [Color(white: 0.13), Color(white: 0.05)],
+                startPoint: .top, endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(0..<10, id: \.self) { row in
+                    Text("Stage row \(row) — the quick brown fox jumps over the lazy dog 0123456789")
+                        .font(.system(size: 20))
+                }
+            }
+            .foregroundStyle(tone == .light ? Color.black.opacity(0.7) : Color.white.opacity(0.7))
+            .padding(40)
+        }
+    }
+}
+
+/// A screen grab of the area above/around the panel (the menu lives in its own
+/// window, so `captureFrame` cannot see it). Needs Screen Recording for the
+/// process — the shell's grant applies to a shell-launched sandbox.
+func screenGrab(around panel: CGRect) -> Data? {
+    screenGrab(cocoaRegion: CGRect(x: panel.minX - 80, y: panel.minY, width: panel.width + 300, height: panel.height + 380))
+}
+
+/// A screen grab of `region` (Cocoa coordinates, bottom-left origin), clipped
+/// to the screen it lies on.
+func screenGrab(cocoaRegion: CGRect) -> Data? {
+    guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(cocoaRegion) }) ?? NSScreen.main else { return nil }
+    // Cocoa (bottom-left) → CG (top-left of the main display).
+    let mainHeight = NSScreen.screens[0].frame.height
+    let region = CGRect(x: cocoaRegion.minX, y: mainHeight - cocoaRegion.maxY, width: cocoaRegion.width, height: cocoaRegion.height)
+        .intersection(CGRect(x: screen.frame.minX, y: mainHeight - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height))
+    guard let image = CGWindowListCreateImage(region, [.optionOnScreenOnly], kCGNullWindowID, [.bestResolution]) else { return nil }
+    let rep = NSBitmapImageRep(cgImage: image)
+    return rep.representation(using: .png, properties: [:])
+}
+
+// MARK: - Input devices (CoreAudio, read-only — no microphone permission needed)
+
+enum InputDevices {
+    static func list() -> [PillMicrophone] {
+        allDeviceIds()
+            .filter { inputChannelCount($0) > 0 }
+            .compactMap { id -> PillMicrophone? in
+                guard let uid = string(id, kAudioDevicePropertyDeviceUID),
+                      let name = string(id, kAudioObjectPropertyName) else { return nil }
+                return PillMicrophone(id: uid, name: name)
+            }
+    }
+
+    static func defaultInputName() -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var id = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &id) == noErr,
+              id != 0 else { return nil }
+        return string(id, kAudioObjectPropertyName)
+    }
+
+    private static func allDeviceIds() -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids
+    }
+
+    private static func inputChannelCount(_ id: AudioObjectID) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    private static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(id, &address, 0, nil, &size, $0)
+        }
+        guard status == noErr, let value else { return nil }
+        return value.takeRetainedValue() as String
+    }
+}
+
 // MARK: - Entry
 
 let arguments = Arguments.parse(Array(CommandLine.arguments.dropFirst()))
@@ -562,7 +954,7 @@ final class SandboxDelegate: NSObject, NSApplicationDelegate {
             }
             driver.controller.dock(edge: arguments.edge, fraction: arguments.fraction)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 760),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered, defer: false
             )
@@ -575,7 +967,10 @@ final class SandboxDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// The control window closing ends the sandbox. Never in film mode: a
+    /// closing MENU window (the panel does not count as a window here) would
+    /// otherwise quit the process mid-film with exit 0 and no frames.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { arguments.filmDirectory == nil }
 }
 
 let delegate = SandboxDelegate()
