@@ -378,10 +378,14 @@ also hold `variants/<tier>/` (archived transcript set of the non-active tier + `
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
 
-## Current status (2026-09-08, later — pill menu + peek dock DEMO, undecided)
+## Current status (2026-09-08/09 — pill menu + peek dock: DECIDED, committed, app installed)
 User, after a Wispr Flow comparison ("their pills… so smooth, so responsive… ours does nothing, no hovering,
-no nothing"): "Show me the demo and we will decide whether it makes sense to do or not." So this is a
-**sandbox demo, not a shipped feature** — the app compiles with it but routes the new actions to a log line.
+no nothing"): "Show me the demo and we will decide whether it makes sense to do or not." **Decided 2026-09-09
+("feel free to commit and rebuild app, i like it"): committed as `af71499` (pill) + `50e0309` (ident), release
+app rebuilt + installed (running instance NOT killed — relaunch to see the dock).** ⚠️ In the installed app
+the dock and menu APPEAR but the dictation actions still only log ("pill action not wired yet"): Record and
+Settings work; Dictate / hands-free stop / microphone pick / paste last / history / hide-for-an-hour need the
+engineering below. CHANGELOG `[Unreleased]` says so. The rest of this block is the demo's history.
 - **What the demo does (KleothPillUI, driven by `pillsandbox`):** hovering the resting sliver now pulls out a
   **peek dock** — `PeekDock` in `DictationPillView.swift`. **Since 2026-09-09 (user on the first cut: "so
   small… too dense… three independent fields"): three captioned FIELDS — Dictate · Record · More — each a
@@ -484,8 +488,12 @@ no nothing"): "Show me the demo and we will decide whether it makes sense to do 
   which sits at the same bottom-centre spot while the app runs).
 - ⚠️ Synthetic `CGEvent` clicks from the agent's shell do nothing here (no Accessibility for the terminal;
   `osascript` says the same) — the pointer probe `scratchpad/probe.swift` is dead; film hooks are the way.
-- **Decision pending (the user's):** ship the pill pass (dock + menu + mic picker + hands-free click) or drop
-  it; and whether the mic pick applies to meeting recordings too. Nothing committed.
+- **Next (engineering, not started):** wire the six logged actions in `DictationController.handlePillAction` —
+  hands-free start/stop from a click needs a chord-machine sync path (`monitor.abort()` idiom); the microphone
+  pick needs a real input-device setting honoured by `DictationCapture`, `MicCapture` and `MicrophoneSource`
+  (open: does it apply to meeting recordings too? — ask); paste last / history / hide-for-an-hour are plumbing.
+  Also unverified by a human: `reconsiderPointer()` (parked pointer → peek) and the user's "after recording all
+  3 are dispersed for some time" report (not reproduced on film; awaiting their description).
 
 ## Current status (2026-09-08 — new ident + `/gpt-images` skill)
 User: "go beyond refactoring Kleoth — configure a tool so Claude can use GPT Codex for image generation

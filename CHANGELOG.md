@@ -6,6 +6,22 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Pill peek dock.** Hovering the resting pill now pulls out a dock of three captioned fields —
+  Dictate, Record, More — in Liquid Glass on macOS 26 (a dark ink look elsewhere), with a quiet
+  hover lift and a hand cursor. Record starts a screen recording as before; More (or a
+  right-click anywhere on the pill) opens the pill's own menu: start dictation, record the
+  screen, pick a microphone, paste the last dictation, open the dictation history, hide the
+  pill for an hour, settings. The Dictate field and the menu's dictation rows are not wired to
+  the app yet — they log the action; the fn+shift hotkey is unchanged.
+
+### Changed
+
+- **New ident.** The lyre is drawn natively in the popover header and onboarding — it breathes
+  at rest, quivers while a meeting records and ripples while one transcribes (still under
+  Reduce Motion). New charcoal app icon, green-stone empty states and README imagery.
+
 ## [0.3.0] — 2026-09-07
 
 ### Added
