@@ -176,6 +176,10 @@ public protocol DictationPillPresenting: AnyObject {
     var onAction: ((DictationPillAction) -> Void)? { get set }
     /// ✕ or click on a `.failed` pill.
     var onDismiss: (() -> Void)? { get set }
+    /// What the pill's menu shows — microphones, the last dictation, the
+    /// hotkey — asked on every open, so the pill keeps no audio or history
+    /// state of its own. nil → an empty `PillMenuContent`.
+    var menuContent: (() -> PillMenuContent)? { get set }
     /// Replaces the phase; cancels any pending auto-hide. `.hidden` == `dismiss()`.
     func show(_ state: DictationPillState)
     /// 0…1, already normalized + smoothed by the caller.

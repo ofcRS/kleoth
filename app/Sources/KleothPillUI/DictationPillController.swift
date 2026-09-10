@@ -509,7 +509,12 @@ public final class DictationPillController: DictationPillPresenting {
         peekTask?.cancel()
         peekTask = nil
         model.apply(hovered: hovering)
-        guard model.phase == .idle, !menuOpen else { return }
+        // `backdrop == .idle`: a resting pill that is FADING OUT (the menu's
+        // "Hide for 1 hour", Settings turning dictation off) is still `.idle`
+        // for `fadeOutDuration`, and `closeMenu()`'s pointer re-check lands
+        // inside that window — peeking it would `show(.idle)` and cancel the
+        // hide. A pill on its way out is never pulled back by the pointer.
+        guard model.phase == .idle, !menuOpen, backdrop == .idle else { return }
         if hovering {
             setPeeking(true)
         } else {

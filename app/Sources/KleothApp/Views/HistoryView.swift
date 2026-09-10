@@ -52,6 +52,7 @@ struct HistoryScopePicker: View {
 struct HistoryView: View {
     @EnvironmentObject private var controller: RecordingController
     @EnvironmentObject private var screenRecording: ScreenRecordingController
+    @EnvironmentObject private var dictation: DictationController
     @State private var scope: HistoryScope = .meetings
     @State private var selection = Set<RecentMeeting.ID>()
     @State private var search = ""
@@ -106,6 +107,10 @@ struct HistoryView: View {
         // changes no id), and `RecordingsListView` observes the id itself.
         .onChange(of: screenRecording.recordingsHistoryRequest) { _, _ in
             scope = .recordings
+        }
+        // The pill menu's "Dictation history…", same idiom.
+        .onChange(of: dictation.dictationsHistoryRequest) { _, _ in
+            scope = .dictations
         }
     }
 

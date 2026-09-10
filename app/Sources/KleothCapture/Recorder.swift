@@ -43,6 +43,11 @@ public final class Recorder {
         self.systemTap = SystemAudioTap()
     }
 
+    /// The microphone to open — a CoreAudio device UID — or nil for the
+    /// system input. Read at `start(outputDir:)`; the same app-wide pick the
+    /// dictation and screen-recording captures honour.
+    public var inputDeviceId: String?
+
     /// URL of the mic recording within the active/last output directory.
     public var micFileURL: URL? {
         outputDirectory?.appendingPathComponent(Self.micFileName)
@@ -81,6 +86,7 @@ public final class Recorder {
         }
 
         do {
+            mic.inputDeviceId = inputDeviceId
             try mic.start(writingTo: micURL)
         } catch {
             // Roll back the system tap so we don't leak a running device.

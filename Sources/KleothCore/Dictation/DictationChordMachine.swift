@@ -14,6 +14,16 @@ public enum ChordSignal: Sendable, Equatable {
     case deadline
     /// External cancel: Esc, capture failure, feature disabled.
     case abort
+    /// The CONTROLLER started a hands-free session without the keyboard (the
+    /// pill's Dictate field or menu row). The machine parks in `handsFree`,
+    /// so the next chord press reads as `.toggledOff` — exactly like a
+    /// session started with a double-tap. Emits nothing; ignored while the
+    /// chord itself is capturing (the keyboard's session owns the mic).
+    case externalHandsFreeOn
+    /// The controller ended a hands-free session without the keyboard (the
+    /// click on the listening capsule): `handsFree` → `idle`, nothing
+    /// emitted. A no-op in every other state.
+    case externalHandsFreeOff
 }
 
 public enum DictationHotkeyEvent: Sendable, Equatable {
@@ -139,6 +149,23 @@ public struct DictationChordMachine: Sendable {
             } else {
                 state = .idle
             }
+            return []
+        }
+
+        // The pill's click-started hands-free session (2026-09-09). It is
+        // modelled as the state a double-tap would have left, not as a
+        // separate flag, so every existing row — `.toggledOff` on the next
+        // press, `.abort` from `handsFree` landing in `idle` — applies
+        // unchanged. From `tapWindow` the click wins over the pending tap;
+        // from `blocked` the cancelled chord's release stays silent
+        // (`handsFree`, `chordUp` is a no-op below).
+        if case .externalHandsFreeOn = signal {
+            guard !isCapturing else { return [] }
+            state = .handsFree
+            return []
+        }
+        if case .externalHandsFreeOff = signal {
+            if case .handsFree = state { state = .idle }
             return []
         }
 

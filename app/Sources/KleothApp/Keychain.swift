@@ -60,6 +60,11 @@ public enum Keychain {
         /// anything else lets `PolishGate` paste short / chat-app dictations
         /// as heard. New key: NOT in `legacyAccounts`.
         public static let dictationPolishAlways = "dictation_polish_always"
+        /// The microphone pick: a CoreAudio device UID, or "" for Automatic
+        /// (an explicit empty value overrides a `config.json` pick). Honoured
+        /// by meeting recordings, dictation and screen recordings alike.
+        /// New key: NOT in `legacyAccounts`.
+        public static let inputDevice = "input_device"
     }
 
     /// Every legacy per-value account, for the one-time migration.

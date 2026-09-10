@@ -25,6 +25,19 @@ import Foundation
         #expect(Settings.load(config: ["auto_transcribe": ""]).autoTranscribe == false)
     }
 
+    // MARK: - Microphone (the pill menu's pick, 2026-09-09)
+
+    @Test func loadParsesInputDevice() {
+        #expect(Settings.load(config: ["input_device": "BuiltInMicrophoneDevice"]).inputDeviceId == "BuiltInMicrophoneDevice")
+    }
+
+    @Test func loadTreatsAutoOrEmptyInputDeviceAsNil() {
+        #expect(Settings.load(config: [:]).inputDeviceId == nil)
+        #expect(Settings.load(config: ["input_device": ""]).inputDeviceId == nil)
+        #expect(Settings.load(config: ["input_device": "auto"]).inputDeviceId == nil)
+        #expect(Settings.load(config: ["input_device": "Auto"]).inputDeviceId == nil)
+    }
+
     // MARK: - Dictation keys (design §3.12 / §6.1)
 
     @Test func defaultInitDisablesDictationAndUsesPolishModel() {

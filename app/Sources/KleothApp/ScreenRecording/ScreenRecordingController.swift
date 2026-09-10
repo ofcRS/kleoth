@@ -634,7 +634,8 @@ final class ScreenRecordingController: ObservableObject {
             configuration: ScreenRecordingConfiguration(
                 target: target,
                 outputURL: outputURL,
-                captureMicrophone: captureMicrophone
+                captureMicrophone: captureMicrophone,
+                microphoneDeviceId: AppConfig.settings().inputDeviceId
             )
         )
         self.recorder = recorder

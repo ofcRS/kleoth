@@ -46,6 +46,8 @@ final class MicrophoneSource: @unchecked Sendable {
     private let rings: AudioRingBox
     private let clock: HostClockMath
     private let sampleRate: Double
+    /// The user's microphone pick (a device UID) or nil for the system input.
+    private let inputDeviceId: String?
     private let onStarted: @Sendable () -> Void
     private let onLost: @Sendable (String) -> Void
     /// Meter for the pill: the RMS of the most recent converted block, stored
@@ -66,6 +68,7 @@ final class MicrophoneSource: @unchecked Sendable {
         rings: AudioRingBox,
         clock: HostClockMath,
         sampleRate: Double,
+        inputDeviceId: String? = nil,
         onStarted: @escaping @Sendable () -> Void,
         onLost: @escaping @Sendable (String) -> Void
     ) {
@@ -73,6 +76,7 @@ final class MicrophoneSource: @unchecked Sendable {
         self.rings = rings
         self.clock = clock
         self.sampleRate = sampleRate
+        self.inputDeviceId = inputDeviceId
         self.onStarted = onStarted
         self.onLost = onLost
     }
@@ -91,6 +95,9 @@ final class MicrophoneSource: @unchecked Sendable {
     func start() throws {
         guard !running else { return }
         let input = engine.inputNode
+        // The user's microphone pick, before the format is read — see
+        // `DictationCapture.start()` / `InputDevices`.
+        InputDevices.select(inputDeviceId, on: engine)
         // The HARDWARE format (`inputFormat`) — `outputFormat` goes stale when
         // the default input device changes under an idle engine, and a tap at
         // the stale format raises (see `DictationCapture.start()`).

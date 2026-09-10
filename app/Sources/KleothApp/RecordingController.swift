@@ -529,6 +529,7 @@ public final class RecordingController: ObservableObject {
         do {
             let dir = try makeSessionDirectory()
             let recorder = Recorder()
+            recorder.inputDeviceId = AppConfig.settings().inputDeviceId
             try recorder.start(outputDir: dir)
             recorderBox = recorder
             activeRecordingDir = dir

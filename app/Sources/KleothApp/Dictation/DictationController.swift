@@ -27,7 +27,7 @@ final class DictationController: ObservableObject {
     @Published private(set) var isMonitoring: Bool {
         // The resting pill is the visible face of "armed": up exactly while
         // the hotkey monitors are running, gone when disabled/untrusted/quit.
-        didSet { if isMonitoring != oldValue { pill.setResting(isMonitoring) } }
+        didSet { if isMonitoring != oldValue { updateResting() } }
     }
     @Published private(set) var dictationModel: String
     /// Mirrors `Settings.dictationPolishAlways` for the Settings toggle; the
@@ -37,6 +37,20 @@ final class DictationController: ObservableObject {
     @Published private(set) var isSessionActive: Bool = false
     /// Bumped AFTER `await logStore.append` returns (the row is on disk); DictationsListView reloads on change.
     @Published private(set) var logRevision: Int = 0
+    /// The microphone pick — a CoreAudio device UID, nil for Automatic —
+    /// mirrored for Settings and the pill menu. Meeting and screen recordings
+    /// read the same value through `AppConfig.settings()`; the dictation
+    /// capture is handed it at every chord-down / click.
+    @Published private(set) var inputDeviceId: String?
+    /// The pill menu's "Hide for 1 hour": the resting capsule stays off screen
+    /// until this date. The hotkey keeps working — a session still rises, and
+    /// sinks back into nothing. nil = not hidden.
+    @Published private(set) var pillHiddenUntil: Date?
+    /// Bumped by the pill menu's "Dictation history…". The History window
+    /// opens (or comes forward) on the Dictations scope — the
+    /// `RecordingController.meetingsHistoryRequest` idiom, because the pill is
+    /// driven from a controller with no SwiftUI environment to open a window from.
+    @Published private(set) var dictationsHistoryRequest: Int = 0
 
     /// Rebound whenever Settings moves the output folder (`syncLogStore()`),
     /// so dictations never keep landing in — or being listed from — the old
@@ -103,6 +117,8 @@ final class DictationController: ObservableObject {
     /// Restores the pill's pipeline phase after the 1 s "Finishing the previous
     /// dictation…" refusal (a plain `.warning` would auto-hide the pill mid-run).
     private var refusalTask: Task<Void, Never>?
+    /// Brings the resting pill back when "Hide for 1 hour" runs out.
+    private var pillSnoozeTask: Task<Void, Never>?
     /// Every temp file the pipeline in flight owns, registered BEFORE it
     /// exists. `run()`'s `defer` empties it on every normal exit; it exists so
     /// `shutdown()` can delete the files SYNCHRONOUSLY — `pipelineTask.cancel()`
@@ -165,9 +181,11 @@ final class DictationController: ObservableObject {
         self.isMonitoring = false
         self.dictationModel = settings.dictationModel
         self.polishAlways = settings.dictationPolishAlways
+        self.inputDeviceId = settings.inputDeviceId
 
         pill.onAction = { [weak self] action in self?.handlePillAction(action) }
         pill.onDismiss = { [weak self] in self?.handlePillDismiss() }
+        pill.menuContent = { [weak self] in self?.menuContent() ?? PillMenuContent() }
         // The monitor's 30 s health timer removes the monitors on its own when
         // trust is lost (bundle replaced by a rebuild); mirror that into the
         // published flags now, so the popover's "needs access" line appears
@@ -197,6 +215,7 @@ final class DictationController: ObservableObject {
     /// `run()`'s `defer` (dictation audio is never kept).
     func shutdown() {
         cancel()
+        pillSnoozeTask?.cancel()
         discardInFlightClips()
         monitor.stop()
         isMonitoring = false
@@ -288,6 +307,48 @@ final class DictationController: ObservableObject {
     func setPolishAlways(_ on: Bool) {
         Keychain.set(on ? "true" : "false", Keychain.Account.dictationPolishAlways)
         polishAlways = on
+    }
+
+    /// The microphone pick, from Settings or the pill menu. nil (or "") =
+    /// Automatic. Takes effect on the next capture of any kind — a session in
+    /// flight keeps its device.
+    func setInputDevice(_ id: String?) {
+        let resolved = id.flatMap { $0.isEmpty ? nil : $0 }
+        // An explicit empty value is what lets "Automatic" win over a
+        // `config.json` pick: the Keychain overlay reads empty as nil.
+        Keychain.set(resolved ?? "", Keychain.Account.inputDevice)
+        if inputDeviceId != resolved { inputDeviceId = resolved }
+    }
+
+    /// The pill menu's "Hide for 1 hour": the resting capsule is hidden until
+    /// the hour is up; the hotkey and every session still work. The popover
+    /// shows the deadline and offers `showPillNow()`, since the pill itself is
+    /// gone and cannot offer it.
+    func hidePill(for duration: Duration = .seconds(3600)) {
+        pillSnoozeTask?.cancel()
+        pillHiddenUntil = Date().addingTimeInterval(TimeInterval(duration.components.seconds))
+        updateResting()
+        pillSnoozeTask = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, let self else { return }
+            self.pillSnoozeTask = nil
+            self.pillHiddenUntil = nil
+            self.updateResting()
+        }
+    }
+
+    func showPillNow() {
+        guard pillHiddenUntil != nil else { return }
+        pillSnoozeTask?.cancel()
+        pillSnoozeTask = nil
+        pillHiddenUntil = nil
+        updateResting()
+    }
+
+    /// The resting capsule is up exactly while the hotkey monitors run AND
+    /// the user has not hidden it for the hour.
+    private func updateResting() {
+        pill.setResting(isMonitoring && pillHiddenUntil == nil)
     }
 
     /// promptIfNeeded + refreshTrust.
@@ -402,25 +463,7 @@ final class DictationController: ObservableObject {
             return   // the machine never re-arms while capturing; belt and braces
         }
 
-        guard isEnabled else { return }
-        guard AccessibilityPermission.isTrusted else {
-            isTrusted = false
-            pill.show(.failed(.needsAccessibility))
-            return
-        }
-        let credentials = AppConfig.credentials()
-        guard let key = credentials.elevenLabsKey, !key.isEmpty else {
-            pill.show(.failed(.missingElevenLabsKey))
-            return
-        }
-        guard RecordingController.microphoneStatus() != .denied else {
-            pill.show(.failed(.message(DictationError.microphoneDenied.errorDescription ?? "Kleoth needs microphone access.")))
-            return
-        }
-        guard !InsertionEnvironment.isSecureInputActive else {
-            pill.show(.failed(.secureInput))
-            return
-        }
+        guard preflight() else { return }
 
         target = DictationTarget.frontmost()
         // Acknowledge the press on its first frame, BEFORE the mic opens: the
@@ -433,6 +476,7 @@ final class DictationController: ObservableObject {
         armedDismissTask?.cancel()
         armedDismissTask = nil
         pill.show(.armed)
+        capture.inputDeviceId = inputDeviceId
         do {
             try capture.start()
         } catch {
@@ -442,6 +486,33 @@ final class DictationController: ObservableObject {
             return
         }
         phase = .armed
+    }
+
+    /// The gates every session passes before the mic opens, in order: enabled
+    /// → Accessibility → ElevenLabs key → microphone not denied → no secure
+    /// input. Each failure is a sticky `.failed` pill (no spend, no log row)
+    /// and false. Shared by chord-down and the pill's Dictate click.
+    private func preflight() -> Bool {
+        guard isEnabled else { return false }
+        guard AccessibilityPermission.isTrusted else {
+            isTrusted = false
+            pill.show(.failed(.needsAccessibility))
+            return false
+        }
+        let credentials = AppConfig.credentials()
+        guard let key = credentials.elevenLabsKey, !key.isEmpty else {
+            pill.show(.failed(.missingElevenLabsKey))
+            return false
+        }
+        guard RecordingController.microphoneStatus() != .denied else {
+            pill.show(.failed(.message(DictationError.microphoneDenied.errorDescription ?? "Kleoth needs microphone access.")))
+            return false
+        }
+        guard !InsertionEnvironment.isSecureInputActive else {
+            pill.show(.failed(.secureInput))
+            return false
+        }
+        return true
     }
 
     /// Set by a too-short tap: the armed capsule stays out for the double-tap
@@ -853,6 +924,99 @@ final class DictationController: ObservableObject {
         }
     }
 
+    // MARK: - Hands-free from the pill (the dock's Dictate field, the menu row)
+
+    /// A hands-free session without the keyboard. The same gates and the same
+    /// capture as a chord, then the machine is told (`syncHandsFree(true)`) so
+    /// it parks in `handsFree`: the next fn+shift press ends this session as
+    /// `.toggledOff`, exactly like one started with a double-tap, and Esc /
+    /// the pill ✕ abort it through the paths that already exist. The pill goes
+    /// straight to `.listening` — there is no tap to acknowledge first.
+    private func startHandsFreeFromPill() {
+        switch phase {
+        case .idle:
+            break
+        case .transcribing, .polishing, .inserting:
+            refuseWhileBusy()
+            return
+        case .armed, .listening:
+            return   // a session is already live
+        }
+        guard preflight() else { return }
+        target = DictationTarget.frontmost()
+        armedDismissTask?.cancel()
+        armedDismissTask = nil
+        capture.inputDeviceId = inputDeviceId
+        do {
+            try capture.start()
+        } catch {
+            target = nil
+            log.error("dictation capture failed to start: \(error.localizedDescription, privacy: .public)")
+            pill.show(.failed(.message(error.localizedDescription)))
+            return
+        }
+        phase = .armed
+        monitor.syncHandsFree(true)
+        beginListening(handsFree: true)
+    }
+
+    /// The click on the hands-free listening capsule. Works for a session the
+    /// keyboard started too: the machine sits in `handsFree` either way and is
+    /// walked back to idle silently before the clip is committed.
+    private func stopHandsFreeFromPill() {
+        guard case .listening(handsFree: true) = phase else { return }
+        monitor.syncHandsFree(false)
+        finishListening()
+    }
+
+    // MARK: - The menu's other rows
+
+    /// "Paste last dictation": the newest log row's text through the same
+    /// inserter a dictation uses (snapshot → ⌘V → restore), acknowledged with
+    /// the `.done` check. Refused while a session is live — the paste would
+    /// land in the middle of it.
+    private func pasteLastDictation() {
+        guard phase == .idle else { return }
+        syncLogStore()
+        guard let last = logStore.loadAll(limit: 1).first else { return }
+        let text = last.polishedText.isEmpty ? last.rawText : last.polishedText
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.inserter.insert(text, pressTimeTarget: .frontmost())
+                self.pill.show(.done)
+            } catch let insertion as TextInsertionError where insertion.textLeftOnClipboard {
+                self.pill.show(.warning(insertion.errorDescription ?? "Text copied — press ⌘V."))
+            } catch {
+                self.pill.show(.failed(.message(error.localizedDescription)))
+            }
+        }
+    }
+
+    /// What the pill's menu shows, asked on every open (`PillMenuContent`):
+    /// the connected microphones with the pick and the device in use, the
+    /// last dictation's first words, the hotkey.
+    private func menuContent() -> PillMenuContent {
+        syncLogStore()
+        let last = logStore.loadAll(limit: 1).first
+        return PillMenuContent(
+            microphones: InputDevices.list().map { PillMicrophone(id: $0.id, name: $0.name) },
+            selectedMicrophoneId: inputDeviceId,
+            inUseMicrophoneName: InputDevices.resolvedName(for: inputDeviceId),
+            lastDictationPreview: last.map { Self.preview(of: $0) },
+            hotkeyDescription: DictationDefaults.hotkeyDescription
+        )
+    }
+
+    /// The first words of a log row, one line, for the paste row's subtitle.
+    private static func preview(of entry: DictationLogEntry) -> String {
+        let text = (entry.polishedText.isEmpty ? entry.rawText : entry.polishedText)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count > 48 else { return text }
+        return String(text.prefix(48)) + "…"
+    }
+
     // MARK: - Pill callbacks
 
     private func handlePillAction(_ action: DictationPillAction) {
@@ -866,23 +1030,32 @@ final class DictationController: ObservableObject {
             // is intended.
             NSApp.activate(ignoringOtherApps: true)
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            pill.dismiss()
         case .openAccessibilitySettings:
             AccessibilityPermission.openSystemSettings()
+            pill.dismiss()
         case .startScreenRecording, .stopScreenRecording, .revealLastRecording,
              .openScreenRecordingSettings:
             // Never reaches here: `PillCoordinator` routes the recording
             // actions to `ScreenRecordingController` instead of the dictation
             // face (§3.4). Listed so the switch stays exhaustive.
             break
-        case .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
-             .pasteLastDictation, .openDictationHistory, .hideForAnHour:
-            // Pill menu / peek dock (interaction DEMO, 2026-09-08 — only the
-            // sandbox drives these so far). Not wired in the app until the
-            // user decides on the demo.
-            log.info("pill action not wired yet: \(String(describing: action), privacy: .public)")
-            return
+        // The pill menu + peek dock (wired 2026-09-09). None of these dismiss
+        // the pill: the menu has already closed, and the resting capsule is
+        // exactly what should still be there afterwards.
+        case .startHandsFreeDictation:
+            startHandsFreeFromPill()
+        case .stopHandsFreeDictation:
+            stopHandsFreeFromPill()
+        case .selectMicrophone(let id):
+            setInputDevice(id)
+        case .pasteLastDictation:
+            pasteLastDictation()
+        case .openDictationHistory:
+            dictationsHistoryRequest += 1
+        case .hideForAnHour:
+            hidePill()
         }
-        pill.dismiss()
     }
 
     /// ✕ or a click on a `.failed` pill. The pill has already hidden itself;

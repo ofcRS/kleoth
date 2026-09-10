@@ -268,6 +268,13 @@ private final class DictationFace: DictationPillPresenting {
         set { coordinator?.dictationDismiss = newValue }
     }
 
+    /// Straight through: the menu's content is the dictation side's alone
+    /// (the recording rows in it need nothing from the recording controller).
+    var menuContent: (() -> PillMenuContent)? {
+        get { pill.menuContent }
+        set { pill.menuContent = newValue }
+    }
+
     func show(_ state: DictationPillState) { coordinator?.dictationDidShow(state) }
     func setLevel(_ level: Double) { pill.setLevel(level) }
     func dismiss() { coordinator?.dictationDidDismiss() }

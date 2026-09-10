@@ -41,6 +41,13 @@ protocol DictationHotkeyMonitoring: AnyObject {
     func stop()
     /// Feeds `.abort` into the machine.
     func abort()
+    /// Tells the machine about a hands-free session the CONTROLLER started or
+    /// ended without the keyboard (the pill's Dictate field, the click on the
+    /// listening capsule): `.externalHandsFreeOn` parks it in `handsFree`, so
+    /// the next chord press reads as `.toggledOff` instead of arming a second
+    /// session on top of the live one; `.externalHandsFreeOff` walks it back
+    /// to idle silently. Neither emits an event.
+    func syncHandsFree(_ on: Bool)
 }
 
 // MARK: How views reach the controller

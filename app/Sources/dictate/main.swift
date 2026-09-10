@@ -11,8 +11,9 @@ import KleothCore
 /// `~/.config/kleoth/config.json`); the polish model from `Settings.load()`
 /// unless `--model` overrides it. Key values are never printed.
 ///
-///     dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish]
+///     dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish] [--device <uid>]
 ///     dictate --text "<raw transcript>" [--language rus] [--runs N] [--model <slug>]   // polish-only benchmark
+///     dictate --list-devices                                                          // input device UIDs for --device
 ///
 /// A future `--transcriber realtime` slots in at `makeTranscriber` below first;
 /// the rest of the pipeline is engine-agnostic.
@@ -76,8 +77,10 @@ struct DictateMain {
             fail("\(error)")
         }
 
-        // 1. Capture.
+        // 1. Capture. `--device` is the app-wide microphone pick
+        // (`Settings.inputDeviceId`), applied the way every capture does.
         let capture = DictationCapture()
+        capture.inputDeviceId = arguments.device
         let rawURL: URL
         do {
             rawURL = try capture.start()
@@ -242,6 +245,8 @@ struct DictateMain {
         var language: String?
         var runs = 1
         var reasoning: OpenRouterReasoning.Effort?
+        /// A CoreAudio device UID (see `--list-devices`); nil = the system input.
+        var device: String?
     }
 
     static func parse(_ args: ArraySlice<String>) -> Arguments {
@@ -272,6 +277,16 @@ struct DictateMain {
             case "--runs":
                 guard let value = iterator.next(), let runs = Int(value), runs > 0 else { usage() }
                 parsed.runs = runs
+            case "--device":
+                guard let value = iterator.next() else { usage() }
+                parsed.device = value
+            case "--list-devices":
+                let fallback = InputDevices.defaultInputName() ?? "none"
+                for device in InputDevices.list() {
+                    print("\(device.id)\t\(device.name)")
+                }
+                print("system input: \(fallback)")
+                exit(0)
             case "-h", "--help":
                 usage()
             default:
@@ -284,7 +299,7 @@ struct DictateMain {
 
     static func usage() -> Never {
         FileHandle.standardError.write(Data(
-            "usage: dictate [seconds] [--transcriber scribe] [--model <openrouter-slug>] [--app <bundle-id>] [--no-polish]\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n".utf8
+            "usage: dictate [seconds] [--transcriber scribe] [--model <openrouter-slug>] [--app <bundle-id>] [--no-polish] [--device <uid>]\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n       dictate --list-devices\n".utf8
         ))
         exit(2)
     }

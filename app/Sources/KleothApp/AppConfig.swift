@@ -60,6 +60,11 @@ enum AppConfig {
         if let always = Keychain.get(Keychain.Account.dictationPolishAlways), !always.isEmpty {
             merged.dictationPolishAlways = (always == "true")
         }
+        // The microphone pick: a device UID; an EMPTY stored value is the
+        // user's explicit "Automatic" and overrides any `config.json` pick.
+        if let device = Keychain.get(Keychain.Account.inputDevice) {
+            merged.inputDeviceId = device.isEmpty ? nil : device
+        }
         merged.defaultModel = ModelCatalog.migrating(merged.defaultModel)
         // Chains `ModelCatalog.migrating` and the retired polish defaults
         // (`DictationDefaults.retiredPolishModels`).

@@ -128,6 +128,12 @@ public final class DictationCapture {
     /// `true` while a capture session is in flight.
     public var isRunning: Bool { running }
 
+    /// The microphone to open — a CoreAudio device UID from Settings or the
+    /// pill's menu — or nil for the system input. Read once per `start()`;
+    /// a change takes effect on the next session. A pick that is not
+    /// connected falls back to the system input (`InputDevices.select`).
+    public var inputDeviceId: String?
+
     /// Raw RMS of the latest captured buffer, clamped to `0…1`.
     ///
     /// A single-word heap read; read it from the owning (main) actor only —
@@ -166,6 +172,10 @@ public final class DictationCapture {
         quiesce()   // never two engines
         let engine = AVAudioEngine()
         let input = engine.inputNode
+        // The user's microphone pick, applied to THIS engine before its
+        // format is read: the unit behind the input node reports the picked
+        // device's format from then on (probed — see `InputDevices`).
+        InputDevices.select(inputDeviceId, on: engine)
         let format = input.inputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
             throw DictationCaptureError.noInputDevice

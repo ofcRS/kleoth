@@ -23,6 +23,12 @@ public struct Settings: Sendable {
     /// utterances and messages into chat apps paste Scribe's transcript
     /// directly (`PolishGate`). Strict opt-in (`"true"` only).
     public var dictationPolishAlways: Bool
+    /// The microphone every capture opens — a CoreAudio device UID — or nil
+    /// for "Automatic" (the system input). Picked from the pill's menu or
+    /// Settings; honoured by meeting recordings, dictation and screen
+    /// recordings alike. A pick that is not connected falls back to the
+    /// system input at capture time (the capture layer decides, not this).
+    public var inputDeviceId: String?
 
     public init(
         outputDir: URL,
@@ -31,7 +37,8 @@ public struct Settings: Sendable {
         autoTranscribe: Bool = false,
         dictationEnabled: Bool = false,
         dictationModel: String = DictationDefaults.polishModel,
-        dictationPolishAlways: Bool = false
+        dictationPolishAlways: Bool = false,
+        inputDeviceId: String? = nil
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
@@ -40,6 +47,7 @@ public struct Settings: Sendable {
         self.dictationEnabled = dictationEnabled
         self.dictationModel = dictationModel
         self.dictationPolishAlways = dictationPolishAlways
+        self.inputDeviceId = inputDeviceId
     }
 
     /// Loads settings, applying defaults:
@@ -84,6 +92,13 @@ public struct Settings: Sendable {
         // Same strict opt-in for "polish every dictation".
         let dictationPolishAlways = (config["dictation_polish_always"] == "true")
 
+        // The microphone pick: empty or "auto" both mean the system input,
+        // the `transcription_language` normalization.
+        var inputDeviceId: String?
+        if let device = config["input_device"], !device.isEmpty, device.lowercased() != "auto" {
+            inputDeviceId = device
+        }
+
         return Settings(
             outputDir: outputDir,
             defaultModel: defaultModel,
@@ -91,7 +106,8 @@ public struct Settings: Sendable {
             autoTranscribe: autoTranscribe,
             dictationEnabled: dictationEnabled,
             dictationModel: dictationModel,
-            dictationPolishAlways: dictationPolishAlways
+            dictationPolishAlways: dictationPolishAlways,
+            inputDeviceId: inputDeviceId
         )
     }
 

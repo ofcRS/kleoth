@@ -123,6 +123,12 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         emit(machine.handle(.abort, at: Self.now()))
     }
 
+    func syncHandsFree(_ on: Bool) {
+        // Emits nothing, but `emit` also reschedules the deadline — a pending
+        // tap-window timer is cancelled when the click wins over the tap.
+        emit(machine.handle(on ? .externalHandsFreeOn : .externalHandsFreeOff, at: Self.now()))
+    }
+
     // MARK: Event ingestion
 
     private func ingest(_ event: NSEvent) {

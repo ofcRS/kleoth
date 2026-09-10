@@ -41,6 +41,11 @@ public final class MicCapture {
         }
     }
 
+    /// The microphone to open — a CoreAudio device UID — or nil for the
+    /// system input. Read once per `start(writingTo:)`; a pick that is not
+    /// connected falls back to the system input (`InputDevices.select`).
+    public var inputDeviceId: String?
+
     /// Installs a tap on the input node and starts the engine, writing all
     /// captured audio to a freshly created file at `outputURL`.
     ///
@@ -56,6 +61,9 @@ public final class MicCapture {
         releaseEngine()
         let engine = AVAudioEngine()
         let input = engine.inputNode
+        // The user's microphone pick, before the format is read — see
+        // `DictationCapture.start()` / `InputDevices`.
+        InputDevices.select(inputDeviceId, on: engine)
         // Capture at the HARDWARE format (`inputFormat`); the AAC writer
         // transcodes. `outputFormat` keeps the previous run's format after the
         // default input device changed while the engine was idle, and a tap at

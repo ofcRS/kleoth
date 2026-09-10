@@ -36,7 +36,8 @@ struct KleothApp: App {
                 // A hot microphone must always have a menu-bar indicator: the
                 // pill can be on a display the user is not looking at (§2.3).
                 isRecording: controller.isRecording || screenRecording.isActive,
-                needsOnboarding: controller.needsOnboarding
+                needsOnboarding: controller.needsOnboarding,
+                historyRequest: dictation.dictationsHistoryRequest
             )
         }
         .menuBarExtraStyle(.window)
@@ -84,6 +85,10 @@ struct KleothApp: App {
 private struct KleothMenuBarLabel: View {
     let isRecording: Bool
     let needsOnboarding: Bool
+    /// `DictationController.dictationsHistoryRequest` — the pill menu's
+    /// "Dictation history…" needs a window opened from a controller that has
+    /// no SwiftUI environment, and this label always has one.
+    let historyRequest: Int
 
     @Environment(\.openWindow) private var openWindow
 
@@ -98,6 +103,12 @@ private struct KleothMenuBarLabel: View {
                 guard needsOnboarding else { return }
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openWindow(id: "kleoth-onboarding")
+            }
+            .onChange(of: historyRequest) { _, _ in
+                // `HistoryView` observes the same counter and flips its scope
+                // to Dictations; this only puts the window on screen.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openWindow(id: "kleoth-history")
             }
     }
 

@@ -88,6 +88,63 @@ import Foundation
         #expect(machine.deadline == second + minHold)
     }
 
+    // MARK: External hands-free (the pill's Dictate field / stop click)
+
+    @Test func externalHandsFreeParksInHandsFreeAndNextPressTogglesOff() {
+        var machine = DictationChordMachine()
+        #expect(machine.handle(.externalHandsFreeOn, at: t0) == [])
+        #expect(machine.isCapturing)
+        #expect(machine.deadline == nil)
+        // The keyboard can end a click-started session, like any hands-free one.
+        #expect(machine.handle(.chordDown, at: t0 + 5) == [.toggledOff])
+        #expect(machine.handle(.chordUp, at: t0 + 5.1) == [])
+        #expect(machine.isCapturing == false)
+    }
+
+    @Test func externalHandsFreeOffReturnsToIdleSilently() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.externalHandsFreeOn, at: t0)
+        #expect(machine.handle(.externalHandsFreeOff, at: t0 + 3) == [])
+        #expect(machine.isCapturing == false)
+        // Idle again: the next chord is an ordinary push-to-talk.
+        #expect(machine.handle(.chordDown, at: t0 + 4) == [.armed])
+    }
+
+    @Test func externalHandsFreeIsIgnoredWhileTheChordCaptures() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        #expect(machine.handle(.externalHandsFreeOn, at: t0 + 0.05) == [])
+        // Still the keyboard's session: the hold confirms and ends normally.
+        #expect(machine.handle(.deadline, at: t0 + minHold) == [.began])
+        #expect(machine.handle(.chordUp, at: t0 + 1) == [.ended])
+    }
+
+    @Test func externalHandsFreeOffOutsideHandsFreeIsANoOp() {
+        var machine = DictationChordMachine()
+        #expect(machine.handle(.externalHandsFreeOff, at: t0) == [])
+        _ = machine.handle(.chordDown, at: t0 + 1)
+        #expect(machine.handle(.externalHandsFreeOff, at: t0 + 1.05) == [])
+        #expect(machine.isCapturing)
+    }
+
+    @Test func externalHandsFreeFromTapWindowWinsOverTheTap() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.chordUp, at: t0 + 0.1)
+        #expect(machine.handle(.externalHandsFreeOn, at: t0 + 0.2) == [])
+        #expect(machine.deadline == nil)
+        #expect(machine.isCapturing)
+    }
+
+    @Test func abortEndsAnExternalHandsFreeSessionInIdle() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.externalHandsFreeOn, at: t0)
+        // Esc / pill ✕: the keys are already up, so there is no release to
+        // swallow — the next press arms cleanly.
+        #expect(machine.handle(.abort, at: t0 + 1) == [.cancelled(.external)])
+        #expect(machine.handle(.chordDown, at: t0 + 2) == [.armed])
+    }
+
     // MARK: otherKey
 
     @Test func otherKeyWhilePressedCancelsAndBlocksUntilRelease() {

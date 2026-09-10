@@ -491,6 +491,7 @@ public final class ScreenRecorder {
             rings: rings,
             clock: clock,
             sampleRate: ScreenRecordingDefaults.audioSampleRate,
+            inputDeviceId: configuration.microphoneDeviceId,
             onStarted: { sink.yield(.micStarted) },
             onLost: { reason in sink.yield(.micLost(reason)) }
         )

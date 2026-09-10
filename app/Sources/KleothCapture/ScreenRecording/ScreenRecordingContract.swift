@@ -30,6 +30,9 @@ public struct ScreenRecordingConfiguration: Sendable {
     public var outputURL: URL
     /// False when the microphone is denied — system audio still records.
     public var captureMicrophone: Bool
+    /// The microphone to open (a CoreAudio device UID, the app-wide pick) or
+    /// nil for the system input. Ignored when `captureMicrophone` is false.
+    public var microphoneDeviceId: String?
     /// `nil` → a plain moov-at-front file (§5.5).
     public var fragmentInterval: TimeInterval?
     /// `nil` disables the stale-grant detector (§5.3).
@@ -39,12 +42,14 @@ public struct ScreenRecordingConfiguration: Sendable {
         target: ScreenRecordingTarget,
         outputURL: URL,
         captureMicrophone: Bool,
+        microphoneDeviceId: String? = nil,
         fragmentInterval: TimeInterval? = ScreenRecordingDefaults.fragmentInterval,
         firstFrameTimeout: TimeInterval? = ScreenRecordingDefaults.firstFrameTimeout
     ) {
         self.target = target
         self.outputURL = outputURL
         self.captureMicrophone = captureMicrophone
+        self.microphoneDeviceId = microphoneDeviceId
         self.fragmentInterval = fragmentInterval
         self.firstFrameTimeout = firstFrameTimeout
     }

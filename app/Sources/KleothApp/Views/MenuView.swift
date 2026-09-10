@@ -46,6 +46,10 @@ struct MenuView: View {
                 dictationAccessNotice
             }
 
+            if let until = dictation.pillHiddenUntil {
+                pillHiddenNotice(until: until)
+            }
+
             recentSection
 
             footer
@@ -358,6 +362,22 @@ struct MenuView: View {
         .buttonStyle(.kleothRow)
         .foregroundStyle(KleothPalette.pendingTint)
         .help("Grant Kleoth Accessibility access so the fn+shift dictation hotkey and paste can work")
+    }
+
+    /// The pill menu's "Hide for 1 hour" is in effect. The pill itself is
+    /// gone, so this is the one place to bring it back early.
+    private func pillHiddenNotice(until: Date) -> some View {
+        Button { dictation.showPillNow() } label: {
+            Label(
+                "Pill hidden until \(until.formatted(date: .omitted, time: .shortened)) · Show now",
+                systemImage: "eye.slash"
+            )
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.kleothRow)
+        .foregroundStyle(.secondary)
+        .help("Dictation still works while the pill is hidden. Click to show the pill again now.")
     }
 
     // MARK: - Recent meetings (quick links into the History window)

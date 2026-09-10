@@ -63,6 +63,12 @@ struct SettingsView: View {
     /// means recordings wait in the list as "Untranscribed").
     @State private var autoTranscribe: Bool = false
 
+    /// The microphone pick (a device UID; "" = Automatic) and the devices
+    /// CoreAudio lists, refreshed while the window is open so a headset that
+    /// connects shows up without reopening Settings.
+    @State private var inputDeviceId: String = ""
+    @State private var inputDevices: [InputDevice] = []
+
     /// Provider-reported account usage — the ONLY place money appears in the
     /// app. Both numbers come live from the providers (ElevenLabs subscription
     /// credits, OpenRouter credit balance); Kleoth keeps no tally of its own.
@@ -106,6 +112,7 @@ struct SettingsView: View {
             summarizationSection
             usageSection
             shortcutsSection
+            microphoneSection
             SettingsDictationSection(
                 dictationModel: $dictationModel,
                 dictionaryText: $dictionaryText,
@@ -449,6 +456,41 @@ struct SettingsView: View {
         return formatter.string(from: date)
     }
 
+    /// The one microphone setting, honoured by meeting recordings, dictation
+    /// and screen recordings (the pill's Microphone submenu writes the same
+    /// value). A pick that is not connected stays selectable, says so, and
+    /// falls back to the system input at capture time.
+    private var microphoneSection: some View {
+        Section {
+            Picker("Microphone", selection: $inputDeviceId) {
+                Text("Automatic").tag("")
+                ForEach(inputDevices) { device in
+                    Text(device.name).tag(device.id)
+                }
+                if !inputDeviceId.isEmpty, !inputDevices.contains(where: { $0.id == inputDeviceId }) {
+                    Text("Not connected").tag(inputDeviceId)
+                }
+            }
+            .onChange(of: inputDeviceId) { _, newValue in
+                dictation.setInputDevice(newValue.isEmpty ? nil : newValue)
+            }
+            // Devices come and go (a headset connecting) and CoreAudio posts
+            // nothing SwiftUI can observe, so poll gently while the window is
+            // open — the dictation section's trust-poll idiom.
+            .task {
+                while !Task.isCancelled {
+                    let devices = InputDevices.list()
+                    if devices != inputDevices { inputDevices = devices }
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+        } header: {
+            KleothSectionHeader("Microphone", systemImage: "mic.fill")
+        } footer: {
+            captionFooter("Used for meetings, dictation and screen recordings. Automatic follows the system input; a microphone that is not connected falls back to it.")
+        }
+    }
+
     private var shortcutsSection: some View {
         Section {
             KeyboardShortcuts.Recorder("Start / stop recording:", name: .toggleRecording)
@@ -592,6 +634,8 @@ struct SettingsView: View {
         dictationModel = dictation.dictationModel
         dictionaryText = PersonalDictionaryStore.render(dictation.dictionaryTerms())
         loadedDictionaryText = dictionaryText
+        inputDevices = InputDevices.list()
+        inputDeviceId = dictation.inputDeviceId ?? ""
 
         // Migrate a stored model whose provider 404s under this account's
         // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") or that has

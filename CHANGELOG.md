@@ -10,11 +10,14 @@ All notable changes to Kleoth are documented here. The format is based on
 
 - **Pill peek dock.** Hovering the resting pill now pulls out a dock of three captioned fields —
   Dictate, Record, More — in Liquid Glass on macOS 26 (a dark ink look elsewhere), with a quiet
-  hover lift and a hand cursor. Record starts a screen recording as before; More (or a
-  right-click anywhere on the pill) opens the pill's own menu: start dictation, record the
-  screen, pick a microphone, paste the last dictation, open the dictation history, hide the
-  pill for an hour, settings. The Dictate field and the menu's dictation rows are not wired to
-  the app yet — they log the action; the fn+shift hotkey is unchanged.
+  hover lift and a hand cursor. Dictate starts a hands-free dictation from a click (click the
+  listening pill, press fn+shift or Esc to end it), Record starts a screen recording as before,
+  and More (or a right-click anywhere on the pill) opens the pill's own menu: start dictation,
+  record the screen, pick a microphone, paste the last dictation, open the dictation history,
+  hide the pill for an hour, settings. The fn+shift hotkey is unchanged.
+- **Microphone setting.** Settings → Microphone (and the pill menu's Microphone submenu) picks the
+  input device Kleoth records from — meetings, dictation and screen recordings alike. Automatic
+  follows the system input; a microphone that is not connected falls back to it.
 
 ### Changed
 
