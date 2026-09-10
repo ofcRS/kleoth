@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import KleothCore
+import os
 
 /// Owns the dictation pill's panel: when it is on screen, where it sits, how it
 /// moves between phases, and when it hides itself (design §3.19, §5.6).
@@ -428,8 +429,16 @@ public final class DictationPillController: DictationPillPresenting {
     /// after an explicit `NSApp.activate` — the one place on this path where
     /// stealing focus is intended). Don't "fix" it back to the environment value.
     public func perform(_ action: DictationPillAction) {
-        closeMenu()
-        onAction?(action)
+        // One main-queue turn later: the caller is usually a SwiftUI button
+        // INSIDE the pill's own hosting view, and the host's handler resizes
+        // that very window (`show`) — synchronously, from inside the view's
+        // own event callback, under its press animation. Let the callback
+        // return first; nothing the user can see happens in between.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.closeMenu()
+            self.onAction?(action)
+        }
     }
 
     /// ✕, or a click anywhere on a `.failed` pill.
@@ -470,10 +479,61 @@ public final class DictationPillController: DictationPillPresenting {
             self.model.apply(pointer: point)
         }
         hosting.onSecondaryClick = { [weak self] in self?.openMenu() }
-        panel.contentView = hosting
+        // The hosting view is a SUBVIEW of a plain container — never the
+        // panel's content view. As a window's content view `NSHostingView`
+        // takes part in sizing the WINDOW itself (`windowDidLayout` →
+        // `updateAnimatedWindowSize` → `setFrame`), whatever `sizingOptions`
+        // says; on 2026-09-10 that fought the controller's own frame writes
+        // inside one display cycle until AppKit aborted the process ("more
+        // Update Constraints in Window passes than there are views in the
+        // window"). An embedded hosting view only lays out its own content.
+        panel.contentView = Self.container(for: hosting, size: size)
+        installFrameTrace(on: panel)
         self.panel = panel
         return panel
     }
+
+    /// A plain, layer-backed container the hosting view fills (autoresizing) —
+    /// see the note in `ensurePanel`. `captureFrame` renders its layer.
+    private static func container(for hosting: NSView, size: CGSize) -> NSView {
+        let container = NSView(frame: CGRect(origin: .zero, size: size))
+        container.wantsLayer = true
+        container.autoresizesSubviews = true
+        hosting.frame = container.bounds
+        hosting.autoresizingMask = [.width, .height]
+        container.addSubview(hosting)
+        return container
+    }
+
+    /// Opt-in diagnostics for the panel's frame: every resize/move is logged
+    /// with the phase and the first non-system frame of the call stack, so a
+    /// layout fight can be attributed (`defaults write dev.kleoth.app
+    /// KleothPillTrace -bool YES`, then `/usr/bin/log show --predicate
+    /// 'subsystem == "dev.kleoth" AND category == "PillTrace"'`).
+    private func installFrameTrace(on panel: DictationPanel) {
+        guard UserDefaults.standard.bool(forKey: "KleothPillTrace") else { return }
+        let log = Logger(subsystem: "dev.kleoth", category: "PillTrace")
+        for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
+            let token = NotificationCenter.default.addObserver(forName: name, object: panel, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let panel = self.panel else { return }
+                    // The first few frames that are neither this closure nor the system: a Kleoth-driven write reads
+                    // "withTransaction < DictationPillController.settle…", a SwiftUI-driven one names
+                    // NSHostingView.updateAnimatedWindowSize / windowDidLayout.
+                    let noise = ["Foundation", "CoreFoundation", "AppKit", "libdispatch", "libswift", "libobjc",
+                                 "installFrameTrace", "assumeIsolated", "Sendable"]
+                    let origin = Thread.callStackSymbols.dropFirst(2)
+                        .filter { frame in !noise.contains { frame.contains($0) } }
+                        .prefix(3)
+                        .map { $0.split(separator: " ", maxSplits: 3).last.map(String.init) ?? $0 }
+                        .joined(separator: " < ")
+                    log.error("\(name == NSWindow.didResizeNotification ? "resize" : "move", privacy: .public) phase=\(String(describing: self.model.phase), privacy: .public) frame=\(NSStringFromRect(panel.frame), privacy: .public) from=\(origin, privacy: .public)")
+                }
+            }
+            frameTraceTokens.append(token)
+        }
+    }
+    private var frameTraceTokens: [Any] = []
 
     // MARK: Hover (resting pill peeks out)
 
@@ -653,7 +713,8 @@ public final class DictationPillController: DictationPillPresenting {
         hosting.sizingOptions = []
         hosting.autoresizingMask = [.width, .height]
         hosting.onPointerMove = { [weak self] point in self?.menuModel.pointer = point }
-        menuPanel.contentView = hosting
+        // Same container as the pill's panel (see `ensurePanel`).
+        menuPanel.contentView = Self.container(for: hosting, size: menuPanel.contentRect(forFrameRect: menuPanel.frame).size)
         self.menuPanel = menuPanel
         return menuPanel
     }
@@ -785,12 +846,17 @@ public final class DictationPillController: DictationPillPresenting {
             // `NSEvent` is not Sendable, so only a Bool crosses the isolation
             // boundary; the event itself is returned (or swallowed) out here.
             let type = event.type
-            let keyCode = event.keyCode
+            // `keyCode` is only valid on key events: on a mouse event AppKit
+            // raises NSInternalInconsistencyException ("Invalid message sent
+            // to event"), and the run loop swallows that exception TOGETHER
+            // WITH THE EVENT — every click on a menu row vanished before it
+            // reached the row (2026-09-10). Read it only for a key-down.
+            let isEscape = type == .keyDown && event.keyCode == 53
             let window = event.window
             let swallow: Bool = MainActor.assumeIsolated {
                 guard let self else { return false }
                 if type == .keyDown {
-                    guard keyCode == 53 else { return false }
+                    guard isEscape else { return false }
                     self.closeMenu()
                     return true
                 }
@@ -927,11 +993,15 @@ public final class DictationPillController: DictationPillPresenting {
 
         guard !Self.reduceMotion else {
             pendingFrame = nil
-            model.apply(offset: .zero)
-            model.apply(phase: phase)
-            model.apply(capsuleSize: capsule)
-            model.apply(flat: flat)
-            panel.setFrame(target, display: true)
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                model.apply(offset: .zero)
+                model.apply(phase: phase)
+                model.apply(capsuleSize: capsule)
+                model.apply(flat: flat)
+                panel.setFrame(target, display: true)
+            }
             releaseDockSurface()
             reconsiderPointer()
             return
@@ -956,12 +1026,16 @@ public final class DictationPillController: DictationPillPresenting {
             // panel — in one turn, without animation, so nothing on screen
             // moves. `display: true` lays the hosting view out synchronously
             // with the new offset already applied.
+            // The frame write sits INSIDE the transaction too: `display: true`
+            // lays the hosting view out synchronously, and that layout must
+            // not run under whatever animation the caller is in (a pill
+            // button's press animation, say).
             var still = Transaction()
             still.disablesAnimations = true
             withTransaction(still) {
                 model.apply(offset: Self.offset(ofCenter: currentCenter, in: stage))
+                panel.setFrame(stage, display: true)
             }
-            panel.setFrame(stage, display: true)
         }
 
         let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
@@ -1050,8 +1124,10 @@ public final class DictationPillController: DictationPillPresenting {
             return
         }
         pendingFrame = nil
-        withTransaction(still) { model.apply(offset: .zero) }
-        panel.setFrame(target, display: true)
+        withTransaction(still) {
+            model.apply(offset: .zero)
+            panel.setFrame(target, display: true)
+        }
     }
 
     /// A screen-space center → the capsule `offset` that puts it there on a

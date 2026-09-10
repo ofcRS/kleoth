@@ -566,6 +566,14 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             holdFor = Double(name.dropFirst(5)) ?? args.hold
         } else if name.hasPrefix("hover:") {
             controller.setPointer(filmPointer(String(name.dropFirst(6)), edge: args.edge, controller: controller))
+        } else if name.hasPrefix("click:") {
+            // "click:mic|rec|menu|center" — a REAL click on the pill: a
+            // synthesized mouse down + up delivered to the pill's own window,
+            // so the SwiftUI button under that spot fires from inside its own
+            // hosting view's event handling (what `perform:` skips — and what
+            // the 2026-09-10 crash needed). No Accessibility involved: an app
+            // may send events to its own windows.
+            filmClick(String(name.dropFirst(6)), edge: args.edge, controller: controller)
         } else if name.hasPrefix("perform:") {
             // "perform:startScreenRecording|stopScreenRecording|startHandsFreeDictation|…"
             // — fires a pill action through the controller, so the SANDBOX
@@ -791,6 +799,29 @@ func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationP
     case .right: return CGPoint(x: center.x, y: center.y + along)
     case .left: return CGPoint(x: center.x, y: center.y - along)
     }
+}
+
+/// A real click at a named spot on the pill (see `filmPointer`): mouse down
+/// and up synthesized in the pill window's coordinates and sent straight to
+/// that window. SwiftUI's `Button` fires on the up, inside the hosting view's
+/// own event handling — the one thing the timer-driven `perform:` cannot do.
+@MainActor
+func filmClick(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) {
+    guard let point = filmPointer(spot, edge: edge, controller: controller),
+          let frame = controller.panelFrame,
+          let window = NSApp.windows.first(where: { String(describing: type(of: $0)) == "DictationPanel" })
+    else { print("click:\(spot): no pill window"); return }
+    // Root space is y-down from the top-left; NSEvent wants y-up from the bottom-left.
+    let location = CGPoint(x: point.x, y: frame.height - point.y)
+    let now = ProcessInfo.processInfo.systemUptime
+    for (type, pressure) in [(NSEvent.EventType.leftMouseDown, Float(1)), (.leftMouseUp, 0)] {
+        guard let event = NSEvent.mouseEvent(
+            with: type, location: location, modifierFlags: [], timestamp: now,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: pressure
+        ) else { continue }
+        window.sendEvent(event)
+    }
+    print("click:\(spot) at \(location) in window \(window.windowNumber)")
 }
 
 /// The film's stage: a plain light or dark window behind the pill, for grabs

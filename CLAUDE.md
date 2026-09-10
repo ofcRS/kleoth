@@ -4,7 +4,7 @@ Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alte
 Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
 user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
 
-_Last updated: 2026-09-08. This file is living context for future sessions — keep it current._
+_Last updated: 2026-09-10. This file is living context for future sessions — keep it current._
 
 ## Environment
 - macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
@@ -157,7 +157,8 @@ interface contract, §5.10 the controller design, §7 the error matrix, §8.2 th
   modifier never arms. `no_verbatim` always on, so stored `raw_text` is already filler-light.
   Translation-guard mismatch → raw + warning (revisit if it fires on real mixed RU/EN).
 - **Probe:** `swift build --package-path app --product dictate && app/.build/debug/dictate 4`
-  (prints a 20 Hz RMS meter, raw/language/billed duration/cost, polished/fallback reason).
+  (prints a 20 Hz RMS meter, raw/language/billed duration/cost, polished/fallback reason);
+  `dictate --list-devices` / `dictate 4 --device <uid>` exercise the microphone pick on the real capture.
   `log stream --predicate 'subsystem == "dev.kleoth" AND (category == "DictationHotkey" OR
   category == "Dictation")'` is the live hotkey/controller probe.
 
@@ -378,14 +379,104 @@ also hold `variants/<tier>/` (archived transcript set of the non-active tier + `
 sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
 source of truth for which tiers exist (no new meta key).
 
-## Current status (2026-09-08/09 — pill menu + peek dock: DECIDED, committed, app installed)
+## Current status (2026-09-08/09/10 — pill menu + peek dock: DECIDED, WIRED, menu clicks FIXED, app installed)
 User, after a Wispr Flow comparison ("their pills… so smooth, so responsive… ours does nothing, no hovering,
 no nothing"): "Show me the demo and we will decide whether it makes sense to do or not." **Decided 2026-09-09
-("feel free to commit and rebuild app, i like it"): committed as `af71499` (pill) + `50e0309` (ident), release
-app rebuilt + installed (running instance NOT killed — relaunch to see the dock).** ⚠️ In the installed app
-the dock and menu APPEAR but the dictation actions still only log ("pill action not wired yet"): Record and
-Settings work; Dictate / hands-free stop / microphone pick / paste last / history / hide-for-an-hour need the
-engineering below. CHANGELOG `[Unreleased]` says so. The rest of this block is the demo's history.
+("feel free to commit and rebuild app, i like it"): committed as `af71499` (pill) + `50e0309` (ident). Same
+day ("let's finish the pill itself… make the buttons actionable, clickable"): every pill action is WIRED —
+uncommitted as of this note; release app rebuilt + installed (running instance NOT killed — relaunch to test).**
+How each one works:
+- ⚠️ **First human test (2026-09-10; user: "none of the …more buttons are working, tested after restart"): every menu
+  row was DEAD — root-caused from the system log, not guessed.** `log show --predicate 'process == "Kleoth"'` had an
+  AppKit `Invalid message sent to event` error at the click's timestamp with `-[NSEvent keyCode]` ←
+  `installMenuMonitors` in the backtrace: the menu's LOCAL event monitor read `event.keyCode` before checking the type;
+  `keyCode` raises `NSInternalInconsistencyException` on a mouse event, and AppKit swallows the exception at the run
+  loop TOGETHER WITH THE EVENT, so a click on a row (or on any other Kleoth window while the menu was up) never reached
+  the button. Reproduced with a 5-line probe (`NSEvent.mouseEvent(...).keyCode` → the same exception). Fixed:
+  `keyCode` is read only for `.keyDown` (`isEscape`). The sandbox never caught it because its film hooks call
+  `perform(_:)` directly. Release app rebuilt + installed (running instance NOT killed — relaunch to test); the rows
+  are still not human-verified AFTER the fix.
+- ⚠️ **Second human test (2026-09-10 14:42, twice in 30 s; user: "once i finish dictation the app is crashed"): SIGABRT
+  from AppKit's layout-loop guard on the PILL PANEL** — `NSGenericException: The window has been marked as needing another
+  Update Constraints in Window pass, but it has already had more Update Constraints in Window passes than there are views
+  in the window. <DictationPanel> {{712, 11}, {160, 68}}` (crash reports `~/Library/Logs/DiagnosticReports/Kleoth-2026-09-10-1442{30,56}.ips`).
+  Evidence: the throw stack is `NSHostingView.windowDidLayout` → `updateAnimatedWindowSize` → `-[NSWindow _setFrameCommon:]`
+  → `setFrameSize` KVO → `NSHostingView.invalidateSafeAreaInsets` → `setNeedsUpdateConstraints` → next pass, with NO Kleoth
+  frame in it: SwiftUI's hosting view resizes the window on every layout pass and each resize schedules the next. lldb on
+  SwiftUI (`disassemble -n '$s7SwiftUI13NSHostingViewC15windowDidLayoutyyF'`): the callback is skipped when
+  `NSHostingView.windowSizeBridge` is nil, otherwise `WindowSizeBridge.clampedWindowSize(minSize:maxSize:)` clamps the window
+  to the root view's min/max (`AnimatedRootSizeFeatureDelegate.animatedRootSizeChanged`). Both crashes came ~100 ms after
+  the Scribe upload started (`CFNetwork "Task … resuming, timeouts(30.0, 60.0)"` at 14:42:23.906 / 14:42:53.592 — the
+  dictation transport's timeouts), i.e. while the listening → transcribing morph was in flight: 160×68 is the STAGE
+  (`transition`'s union rect), not a settled phase. A dictation into Telegram at 14:30:54 on the same process was fine;
+  the pill placement plist was rewritten at 14:38 (the user dragged the pill: `relativeCenterX` 0.5472 = 788 px);
+  today's day file has no rows for the crashing runs (the process died before the log append).
+  **NOT reproduced in `pillsandbox`** — 12 films (bottom/right, hidden backdrop, 10 s in each wave phase, 30 alternating
+  morphs at 60 fps, fractional anchors, the menu rows, and REAL clicks on the Dictate field + the hands-free capsule via
+  the new film item `click:mic|rec|menu|center`, which sends a synthesized mouse down/up to the pill's own window so its
+  SwiftUI `Button` fires) all ran clean, and lldb breakpoints show `windowDidLayout` is NEVER called for the pill in the
+  sandbox, with the old wiring or the new: the bridge only exists in the app (SwiftUI `App` lifecycle, presumably).
+  **Applied (all in `DictationPillController`, compile-checked + filmed, NOT human-verified):** (1) the hosting view is a
+  SUBVIEW of a plain layer-backed container (`Self.container(for:size:)`) for BOTH panels — never the window's content
+  view, so SwiftUI has no window to size; (2) every `panel.setFrame(…, display: true)` in `transition`/`settle` runs
+  inside `withTransaction(disablesAnimations)`; (3) `perform(_:)` dispatches `closeMenu()` + `onAction` one main-queue
+  turn later (a pill button must not resize its own window from inside its press callback); (4) opt-in frame trace:
+  `defaults write dev.kleoth.app KleothPillTrace -bool YES` (SET on this Mac) logs every panel resize/move with the phase
+  and the top three non-system stack frames (pipe `log show` through `swift demangle`) to `subsystem == "dev.kleoth" AND category == "PillTrace"` at error level —
+  if it recurs, that log + the crash report say whether SwiftUI (`updateAnimatedWindowSize`) or Kleoth wrote the frame.
+  Release app rebuilt + installed 15:09; the trace attribution was fixed and reinstalled at 20:30. **Held on first real use:** two
+  dictations into Ghostty at 20:01 and 20:07 on the fixed build ran listening → transcribing → polishing → done →
+  paste with no crash, every frame write attributed to `DictationPillController.transition/settle`, none to `NSHostingView`.
+  Still open: how were the two crashing
+  dictations started and ended (fn+shift vs the pill's Dictate field / a click on the listening capsule)?
+- **Dictate field / "Start dictation" row = a hands-free session from a click.** `DictationController.
+  startHandsFreeFromPill()`: the same `preflight()` gates as chord-down (extracted from `handleArmed`), the same
+  `DictationCapture`, then `monitor.syncHandsFree(true)` → new `ChordSignal.externalHandsFreeOn` parks
+  `DictationChordMachine` in `.handsFree` (tested), so the next fn+shift press reads as `.toggledOff` and ends
+  the session like a double-tap one, and Esc / ✕ abort it through the paths that already existed. The click on
+  the listening capsule → `stopHandsFreeFromPill()` → `syncHandsFree(false)` (`.externalHandsFreeOff`:
+  `.handsFree → .idle`, silent) → `finishListening()`. The pill goes straight to `.listening` (no `.armed` beat).
+- **Microphone ▸ = ONE app-wide input-device setting, honoured by all three captures** (meetings, dictation,
+  screen recordings — the open question "meetings too?" was decided this way without asking; the user was told).
+  `Settings.inputDeviceId` (config `input_device`; Keychain `Keychain.Account.inputDevice` = `input_device`,
+  an EMPTY value = explicit Automatic that overrides config.json) ← Settings → new "Microphone" section (Picker,
+  2 s device poll, a "Not connected" row keeps an unplugged pick selectable) and the pill menu
+  (`DictationController.setInputDevice`). Plumbing: new **`KleothCapture/InputDevices.swift`** (`InputDevice`
+  = UID + name; `list()`, `defaultInputName()`, `resolvedName(for:)`, `select(_:on:)`);
+  `DictationCapture.inputDeviceId` / `MicCapture.inputDeviceId` / `Recorder.inputDeviceId` /
+  `MicrophoneSource(inputDeviceId:)` ← `ScreenRecordingConfiguration.microphoneDeviceId`;
+  `RecordingController.start` and `ScreenRecordingController` read `AppConfig.settings().inputDeviceId`.
+  ⚠️ HOW: `AudioUnitSetProperty(inputNode.audioUnit, kAudioOutputUnitProperty_CurrentDevice, …)` on the
+  session's fresh engine BEFORE `inputFormat(forBus:)` is read — probed 2026-09-09 with the WH-1000XM5 as the
+  system input (16 kHz): the pinned built-in mic came back at 48 kHz with frames (`dictate 2 --device
+  BuiltInMicrophoneDevice` → "captured 1.92 s @ 48000 Hz"; unpinned → 16000 Hz). The system default is never
+  touched. A pick that is not connected falls back to the system input silently (os_log notice). Not probed: a
+  PINNED device unplugged mid-session (the config-change handlers read the node's format as before).
+  `dictate --list-devices` prints UIDs; `dictate N --device <uid>` pins one.
+- **Paste last dictation** → `pasteLastDictation()`: the newest log row (`logStore.loadAll(limit: 1)`) through
+  the same `TextInserter` (snapshot → ⌘V → restore), `.done` check / `.warning` on clipboard-only; refused
+  unless `phase == .idle`. The row's subtitle = the first 48 chars (`preview(of:)`); disabled on an empty log.
+- **Dictation history…** → `DictationController.dictationsHistoryRequest += 1`: `KleothMenuBarLabel` (the one
+  view with a SwiftUI environment) observes it → `openWindow("kleoth-history")` + activate; `HistoryView`
+  observes it → `scope = .dictations` (the `meetingsHistoryRequest` idiom).
+- **Hide for 1 hour** → `hidePill(for:)`: `pillHiddenUntil` + `updateResting()` = `pill.setResting(isMonitoring
+  && pillHiddenUntil == nil)` (`isMonitoring.didSet` goes through it now); `pillSnoozeTask` brings it back; the
+  popover shows "Pill hidden until h:mm · Show now" (`MenuView.pillHiddenNotice` → `showPillNow()`). The hotkey
+  keeps working while hidden (a session rises and sinks into nothing). ⚠️ Pill-side fix that came with it:
+  `DictationPillController.handleHover` also requires `backdrop == .idle` — a resting pill FADING OUT is still
+  `.idle` for `fadeOutDuration` (0.18 s) and `closeMenu()`'s pointer re-check at 0.13 s could `show(.idle)` it
+  back (a menu row on a side edge lies inside the pill panel's shadow margin).
+- **Contract:** `DictationPillPresenting.menuContent` (forwarded by `PillCoordinator`'s `DictationFace`;
+  `DictationController.menuContent()` builds `PillMenuContent` from `InputDevices` + the log on every open) and
+  `DictationHotkeyMonitoring.syncHandsFree(_:)`. `handlePillAction` no longer `dismiss()`es after the menu
+  actions (only Settings / Accessibility do). 354 core tests (+8: 6 machine, 2 settings). The "never edit
+  AudioFormat/DictationCapture/MicCapture" rule from the parallel-lane days is retired — no lane owns them now.
+- ⚠️ **NOT runtime-verified by a human (all of it):** the click-started hands-free session end to end (click →
+  listening → click / fn+shift / Esc → paste), the mic pick in the real app (Settings picker, the menu's check
+  mark and "in use" subtitle, a meeting + a screen recording on the pinned device), paste-last into a real app,
+  the History window opening on Dictations from the pill, hide-for-an-hour + the popover row. `pillsandbox`
+  keeps its own demo `InputDevices` copy (linking KleothCapture would pull WhisperKit into the sandbox build).
+The rest of this block is the demo's history.
 - **What the demo does (KleothPillUI, driven by `pillsandbox`):** hovering the resting sliver now pulls out a
   **peek dock** — `PeekDock` in `DictationPillView.swift`. **Since 2026-09-09 (user on the first cut: "so
   small… too dense… three independent fields"): three captioned FIELDS — Dictate · Record · More — each a
@@ -473,14 +564,14 @@ engineering below. CHANGELOG `[Unreleased]` says so. The rest of this block is t
   `.stopHandsFreeDictation`, `.selectMicrophone(String?)`, `.pasteLastDictation`, `.openDictationHistory`,
   `.hideForAnHour`; `PillMicrophone`, `PillMenuContent`. The three app-side switches (`PillCoordinator.route`,
   `DictationController.handlePillAction`, `ScreenRecordingController.handlePillAction`) list them; the
-  dictation one only logs "pill action not wired yet". **If the app is rebuilt/installed as is, the dock and
-  menu appear but do nothing** — the mic picker needs a real input-device setting honoured by all three
-  captures (the one piece with real engineering), hands-free-from-click needs a chord-machine sync path.
+  dictation one only logged "pill action not wired yet" until 2026-09-09 — see the top of this block.
 - **Sandbox (`pillsandbox`):** `menuContent` lists REAL input devices via CoreAudio (`InputDevices`, read-only,
   no mic permission; showed "WH-1000XM5" live), actions are simulated (`SandboxDriver.handle`: hands-free =
   listening on synthetic speech → transcribing → polishing → done; record = recording backdrop with meters;
   hide for 1 hour = 6 s) and logged in a new "Pill menu + peek dock (demo)" section. Film mode gained
-  `hover:mic|rec|menu|center|off` (`setPointer`, edge-aware, steps by `dockMetrics.pitch`) and `menu` (opens the panel, `menu.png` screen
+  `hover:mic|rec|menu|center|off` (`setPointer`, edge-aware, steps by `dockMetrics.pitch`), `click:<spot>` (2026-09-10: a REAL
+  mouse down/up synthesized in the pill window's coordinates and sent with `window.sendEvent` — the SwiftUI button under
+  the spot fires from inside its own hosting view; no Accessibility needed) and `menu` (opens the panel, `menu.png` screen
   grab at +0.5 s via `CGWindowListCreateImage`, closes after `--hold`); the control window is 760 pt tall
   (was collapsing to 32); `applicationShouldTerminateAfterLastWindowClosed` is false in film mode (a closing
   menu window quit the process with exit 0 and no frames). Run: `swift build --package-path app --product
@@ -488,12 +579,9 @@ engineering below. CHANGELOG `[Unreleased]` says so. The rest of this block is t
   which sits at the same bottom-centre spot while the app runs).
 - ⚠️ Synthetic `CGEvent` clicks from the agent's shell do nothing here (no Accessibility for the terminal;
   `osascript` says the same) — the pointer probe `scratchpad/probe.swift` is dead; film hooks are the way.
-- **Next (engineering, not started):** wire the six logged actions in `DictationController.handlePillAction` —
-  hands-free start/stop from a click needs a chord-machine sync path (`monitor.abort()` idiom); the microphone
-  pick needs a real input-device setting honoured by `DictationCapture`, `MicCapture` and `MicrophoneSource`
-  (open: does it apply to meeting recordings too? — ask); paste last / history / hide-for-an-hour are plumbing.
-  Also unverified by a human: `reconsiderPointer()` (parked pointer → peek) and the user's "after recording all
-  3 are dispersed for some time" report (not reproduced on film; awaiting their description).
+- **Done 2026-09-09 (top of this block):** the six actions are wired. Still unverified by a human:
+  `reconsiderPointer()` (parked pointer → peek) and the user's "after recording all 3 are dispersed for some
+  time" report (not reproduced on film; awaiting their description).
 
 ## Current status (2026-09-08 — new ident + `/gpt-images` skill)
 User: "go beyond refactoring Kleoth — configure a tool so Claude can use GPT Codex for image generation
@@ -1530,7 +1618,8 @@ Settings/variant/remove tests); both packages build; release app installed to /A
 - **Recovery surfacing:** `loadRecentMeetings` lists audio-only folders (no `meta.json`) as
   `isProcessed=false` ("Untranscribed"), excluding the in-progress recording dir. `~/Kleoth/dictations/`
   never shows as a meeting (no audio inside).
-- **Dictation keys/paths (2026-09-03):** Keychain `dictation_enabled` / `dictation_model` (NOT in
+- **Dictation keys/paths (2026-09-03):** Keychain `dictation_enabled` / `dictation_model` / (2026-09-09)
+  `input_device` — the app-wide microphone pick, a CoreAudio device UID, empty = Automatic (NOT in
   `Keychain.legacyAccounts`); `~/Kleoth/dictations/<day>.json`; `~/.config/kleoth/dictionary.json`;
   UserDefaults `dev.kleoth.dictation.pillPlacement`; `$TMPDIR/kleoth-dictation/`. Every stored
   property is acronym-free (`appBundleId`, `displayId`) — the snake_case rule above applies.
@@ -1551,6 +1640,18 @@ Settings/variant/remove tests); both packages build; release app installed to /A
 - **`AppDelegate` ↔ `@MainActor` controllers:** delegate callbacks run on the main thread; use
   `MainActor.assumeIsolated { … }`, never `Task { @MainActor in … }` — in `applicationWillTerminate`
   the process can exit before the hop runs.
+- **`NSEvent.keyCode` / `characters` / `charactersIgnoringModifiers` / `isARepeat` are key-event-only:** on a mouse
+  event they raise `NSInternalInconsistencyException` ("Invalid message sent to event"), and AppKit's run loop swallows
+  the exception WITH the event — the symptom is a dead click, not a crash or a logged error of ours (the pill menu's
+  local monitor, 2026-09-10). Check `event.type` first in any monitor that matches mouse AND key events. Evidence
+  recipe: `/usr/bin/log show --last 30m --predicate 'process == "Kleoth" AND eventMessage CONTAINS "Invalid message"'`
+  prints the backtrace.
+- **An `NSHostingView` must never be a floating panel's `contentView`:** as a window's content view it owns a
+  `windowSizeBridge` (in the SwiftUI `App` lifecycle at least) that resizes the WINDOW to the root view's min/max on every
+  layout pass, whatever `sizingOptions` says — against a controller that sets the panel's frame itself that is a layout
+  loop AppKit aborts (2026-09-10, the pill). Wrap it in a plain container (`DictationPillController.container(for:size:)`)
+  and write panel frames inside `withTransaction(disablesAnimations)`. `pillsandbox` (AppKit lifecycle) never gets the
+  bridge, so it cannot catch this class of bug — the opt-in `KleothPillTrace` log can.
 
 ## Security (hard rules)
 - **API keys NEVER printed to stdout or committed.** `.env` (ELEVEN_API_KEY, OPENROUTER_API_KEY)
