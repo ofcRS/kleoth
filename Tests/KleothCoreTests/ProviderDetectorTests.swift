@@ -4,7 +4,7 @@ import Foundation
 
 @Suite struct ProviderDetectorTests {
     static func probes(
-        local: @escaping @Sendable (URL) async -> Result<[String], Error> = { _ in .failure(URLError(.cannotConnectToHost)) },
+        local: @escaping @Sendable (URL, String?) async -> Result<[String], Error> = { _, _ in .failure(URLError(.cannotConnectToHost)) },
         claude: @escaping @Sendable () async -> ProviderAvailability = { .unavailable(reason: "Not installed") },
         codex: @escaping @Sendable () async -> ProviderAvailability = { .unavailable(reason: "Not installed") },
         apple: @escaping @Sendable () async -> ProviderAvailability = { .unavailable(reason: "Needs macOS 26") }
@@ -14,7 +14,7 @@ import Foundation
 
     @Test func snapshotCoversEveryProvider() async {
         let detector = ProviderDetector(probes: Self.probes(
-            local: { _ in .success(["llama3", "qwen3"]) },
+            local: { _, _ in .success(["llama3", "qwen3"]) },
             claude: { .available(detail: "Claude Code 2.1.272 · signed in") }))
         let snap = await detector.snapshot(settings: ProviderSettings(), openRouterKey: "test-key")
         #expect(snap.count == AIProvider.allCases.count)
@@ -34,7 +34,7 @@ import Foundation
 
     @Test func snapshotIsCachedUntilRefreshOrInputChange() async {
         let counter = Counter()
-        let detector = ProviderDetector(probes: Self.probes(local: { _ in
+        let detector = ProviderDetector(probes: Self.probes(local: { _, _ in
             await counter.bump()
             return .success(["m"])
         }))
@@ -50,6 +50,40 @@ import Foundation
         #expect(await counter.value == 3)
     }
 
+    @Test func localProbeReceivesTheServerKey() async {
+        let recorder = KeyRecorder()
+        let detector = ProviderDetector(probes: Self.probes(local: { _, key in
+            await recorder.record(key)
+            return .success([])
+        }))
+        var withKey = ProviderSettings()
+        withKey.localServerKey = "test-key"
+        _ = await detector.snapshot(settings: withKey, openRouterKey: nil)
+        #expect(await recorder.lastKey == "test-key")
+
+        var withoutKey = ProviderSettings()
+        withoutKey.localServerKey = nil
+        _ = await detector.snapshot(settings: withoutKey, openRouterKey: nil)
+        #expect(await recorder.lastKey == nil)
+    }
+
+    @Test func changingTheLocalKeyInvalidatesTheCache() async {
+        let counter = Counter()
+        let detector = ProviderDetector(probes: Self.probes(local: { _, _ in
+            await counter.bump()
+            return .success(["m"])
+        }))
+        var withKeyA = ProviderSettings()
+        withKeyA.localServerKey = "key-a"
+        _ = await detector.snapshot(settings: withKeyA, openRouterKey: nil)
+        #expect(await counter.value == 1)
+
+        var withKeyB = ProviderSettings()
+        withKeyB.localServerKey = "key-b"
+        _ = await detector.snapshot(settings: withKeyB, openRouterKey: nil)
+        #expect(await counter.value == 2)
+    }
+
     @Test func localModelListDecodesTheOpenAIShape() async throws {
         let transport = MockTransport(json: #"{"object":"list","data":[{"id":"llama3:8b","object":"model"},{"id":"qwen3","object":"model"}]}"#)
         let models = try await LocalModelList.fetch(baseURL: URL(string: "http://localhost:11434/v1")!, apiKey: nil, transport: transport)
@@ -60,5 +94,10 @@ import Foundation
     actor Counter {
         var value = 0
         func bump() { value += 1 }
+    }
+
+    actor KeyRecorder {
+        var lastKey: String?
+        func record(_ key: String?) { lastKey = key }
     }
 }

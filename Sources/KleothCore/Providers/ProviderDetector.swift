@@ -7,8 +7,9 @@ import Foundation
 /// server probe each time).
 public actor ProviderDetector {
     public struct Probes: Sendable {
-        /// Model ids served at the URL, or the connection error.
-        public var localServer: @Sendable (URL) async -> Result<[String], Error>
+        /// Model ids served at the URL with the given bearer key (LM Studio can
+        /// require one; Ollama needs none), or the connection error.
+        public var localServer: @Sendable (URL, String?) async -> Result<[String], Error>
         public var claudeCode: @Sendable () async -> ProviderAvailability
         public var codex: @Sendable () async -> ProviderAvailability
         /// Supplied by the app (Foundation Models lives there); the core
@@ -16,7 +17,7 @@ public actor ProviderDetector {
         public var apple: @Sendable () async -> ProviderAvailability
 
         public init(
-            localServer: @escaping @Sendable (URL) async -> Result<[String], Error>,
+            localServer: @escaping @Sendable (URL, String?) async -> Result<[String], Error>,
             claudeCode: @escaping @Sendable () async -> ProviderAvailability,
             codex: @escaping @Sendable () async -> ProviderAvailability,
             apple: @escaping @Sendable () async -> ProviderAvailability = { .unavailable(reason: "Needs macOS 26") }
@@ -36,17 +37,24 @@ public actor ProviderDetector {
             apple: @escaping @Sendable () async -> ProviderAvailability = { .unavailable(reason: "Needs macOS 26") }
         ) -> Probes {
             Probes(
-                localServer: { url in
-                    do { return .success(try await LocalModelList.fetch(baseURL: url, apiKey: nil, transport: transport)) }
+                localServer: { url, apiKey in
+                    do { return .success(try await LocalModelList.fetch(baseURL: url, apiKey: apiKey, transport: transport)) }
                     catch { return .failure(error) }
                 },
                 claudeCode: {
                     guard let exe = locator.find("claude") else { return .unavailable(reason: "Not installed") }
                     let env = locator.environment()
                     let version = await Self.version(of: exe, runner: runner, environment: env)
-                    guard let status = try? await runner.run(executable: exe, arguments: ["auth", "status"], stdin: nil,
-                                                             environment: env, timeout: 10),
-                          let object = try? JSONSerialization.jsonObject(with: status.stdout) as? [String: Any],
+                    let status: ProcessResult
+                    do {
+                        status = try await runner.run(executable: exe, arguments: ["auth", "status"], stdin: nil,
+                                                       environment: env, timeout: 10)
+                    } catch {
+                        // A hung/killed CLI answered nothing — do not tell the
+                        // user to sign in, they may already be.
+                        return .unavailable(reason: "Did not answer")
+                    }
+                    guard let object = try? JSONSerialization.jsonObject(with: status.stdout) as? [String: Any],
                           object["loggedIn"] as? Bool == true else {
                         return .unavailable(reason: "Not signed in")
                     }
@@ -56,9 +64,14 @@ public actor ProviderDetector {
                     guard let exe = locator.find("codex") else { return .unavailable(reason: "Not installed") }
                     let env = locator.environment()
                     let version = await Self.version(of: exe, runner: runner, environment: env)
-                    guard let status = try? await runner.run(executable: exe, arguments: ["login", "status"], stdin: nil,
-                                                             environment: env, timeout: 10),
-                          status.stdoutText.contains("Logged in") else {
+                    let status: ProcessResult
+                    do {
+                        status = try await runner.run(executable: exe, arguments: ["login", "status"], stdin: nil,
+                                                       environment: env, timeout: 10)
+                    } catch {
+                        return .unavailable(reason: "Did not answer")
+                    }
+                    guard status.stdoutText.contains("Logged in") else {
                         return .unavailable(reason: "Not signed in")
                     }
                     return .available(detail: "Codex \(version) · signed in")
@@ -78,6 +91,10 @@ public actor ProviderDetector {
 
     private struct CacheKey: Equatable {
         let localURL: URL
+        /// The actual key, not just its presence: it never leaves this
+        /// actor-private struct, and comparing the value (not a boolean) is
+        /// what makes editing it in Settings invalidate the cache.
+        let localServerKey: String?
         let hasOpenRouterKey: Bool
     }
 
@@ -96,11 +113,14 @@ public actor ProviderDetector {
     }
 
     public func snapshot(settings: ProviderSettings, openRouterKey: String?) async -> ProviderSnapshot {
-        let key = CacheKey(localURL: settings.localServerURL, hasOpenRouterKey: !(openRouterKey ?? "").isEmpty)
+        let key = CacheKey(
+            localURL: settings.localServerURL,
+            localServerKey: settings.localServerKey,
+            hasOpenRouterKey: !(openRouterKey ?? "").isEmpty)
         if let cached, cached.key == key, Date().timeIntervalSince(cached.at) < cacheTTL {
             return cached.snapshot
         }
-        async let local = probes.localServer(settings.localServerURL)
+        async let local = probes.localServer(settings.localServerURL, settings.localServerKey)
         async let claude = probes.claudeCode()
         async let codex = probes.codex()
         async let apple = probes.apple()
