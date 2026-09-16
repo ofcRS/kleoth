@@ -74,15 +74,22 @@ enum AppConfig {
         // OpenRouter, so an existing user would upgrade straight into a
         // different (and much slower) backend for summaries AND dictation.
         // Seeded only when there is a working OpenRouter key AND the install has
-        // been through onboarding; a fresh install stays Automatic.
+        // been used before — `onboarding_completed` for anything since 2026-06,
+        // `consent_acknowledged` for the installs that predate that flag. A
+        // fresh install stays Automatic. This fires at most once: choosing
+        // Automatic writes the `"auto"` sentinel, not an empty string (an empty
+        // write DELETES the key, which would look like "never set" and re-seed
+        // here on every settings read) — see `updateAIProvider`.
         if Keychain.get(Keychain.Account.aiProvider) == nil,
            let openRouterKey = Keychain.get(Keychain.Account.openRouterKey), !openRouterKey.isEmpty,
-           Keychain.get(Keychain.Account.onboardingCompleted) == "true" {
+           Keychain.get(Keychain.Account.onboardingCompleted) == "true"
+            || Keychain.get(Keychain.Account.consentAcknowledged) == "true" {
             Keychain.set(AIProvider.openRouter.rawValue, Keychain.Account.aiProvider)
             merged.providerSettings.pick = .openRouter
         }
-        // AI provider: an EMPTY stored pick is the user's explicit Automatic
-        // and overrides any `config.json` pick (the `input_device` idiom).
+        // AI provider: a stored `"auto"` is the user's explicit Automatic and
+        // overrides any `config.json` pick (the `input_device` idiom;
+        // `AIProvider.parse` maps `"auto"`/unknown → nil).
         if let pick = Keychain.get(Keychain.Account.aiProvider) {
             merged.providerSettings.pick = AIProvider.parse(pick)
         }

@@ -498,9 +498,16 @@ public final class RecordingController: ObservableObject {
     }
 
     /// Persists the AI provider pick ("auto" or an `AIProvider` raw value).
+    ///
+    /// Automatic is stored as the non-empty sentinel `"auto"` — NOT as an empty
+    /// string, which `Keychain.set` treats as "clear this secret" and deletes.
+    /// A deleted key is indistinguishable from never having been set, so the
+    /// one-time OpenRouter seed in `AppConfig.mergeSettingsFromKeychain` would
+    /// re-fire on the next settings read and flip the picker back off Automatic
+    /// forever. `AIProvider.parse` already maps `"auto"` → nil on the way in.
     public func updateAIProvider(_ raw: String) {
         let pick = AIProvider.parse(raw)
-        Keychain.set(pick?.rawValue ?? "", Keychain.Account.aiProvider)
+        Keychain.set(pick?.rawValue ?? "auto", Keychain.Account.aiProvider)
         settings.providerSettings.pick = pick
         providerSettingsChanged()
     }

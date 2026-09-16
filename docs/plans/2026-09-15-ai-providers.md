@@ -234,8 +234,11 @@ What shipped differs from the design above in these ways — all deliberate, non
 7. **One-time `ai_provider = openrouter` seed for existing OpenRouter installs.** With no stored pick
    the Automatic order puts local/Claude Code/Codex ahead of OpenRouter, so a user who already had a
    working key would silently upgrade onto a different backend. `AppConfig.mergeSettingsFromKeychain`
-   seeds the pick once when there is a non-empty OpenRouter key AND onboarding is completed; fresh
-   installs stay Automatic.
+   seeds the pick once when there is a non-empty OpenRouter key AND the install has been used before
+   (`onboarding_completed` or, for older installs, `consent_acknowledged`); fresh installs stay
+   Automatic. Because of it, Automatic MUST be persisted as §4's `"auto"` string and never as an
+   empty one — an empty `Keychain.set` deletes the key, which reads back as "never picked" and would
+   re-seed OpenRouter on every settings read.
 8. **Claude Code dictation polish measured ~8–10 s per cleanup on this Mac** (vs ~1 s on
    `google/gemini-3.5-flash-lite` through OpenRouter). It works and is listed for dictation, but the
    README calls it slow and it is why 7 exists.
