@@ -54,6 +54,27 @@ public struct Settings: Sendable {
         self.providerSettings = providerSettings
     }
 
+    /// `providerSettings` with OpenRouter's two models filled from the
+    /// legacy `defaultModel` / `dictationModel` settings when no `ai_models`
+    /// override names them — those keys stay the OpenRouter picks.
+    ///
+    /// Without this, an existing user's `default_model` / `dictation_model`
+    /// would be silently ignored the moment the provider layer took over:
+    /// `ProviderFactory` resolves OpenRouter's model through
+    /// `AIProvider.defaultModel(for:)`, which knows only the shipped constants.
+    /// The seeded values are NOT written back to `ai_models` — the legacy keys
+    /// remain the single source of truth for OpenRouter.
+    public var effectiveProviderSettings: ProviderSettings {
+        var effective = providerSettings
+        if effective.models[.openRouter]?[.summary] == nil {
+            effective = effective.settingModel(defaultModel, for: .summary, on: .openRouter)
+        }
+        if effective.models[.openRouter]?[.dictation] == nil {
+            effective = effective.settingModel(dictationModel, for: .dictation, on: .openRouter)
+        }
+        return effective
+    }
+
     /// Loads settings, applying defaults:
     /// - `outputDir`: `~/Kleoth` (callers create it lazily).
     /// - `defaultModel`: `ModelCatalog.defaultModel`.

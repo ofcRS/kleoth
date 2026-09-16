@@ -59,4 +59,27 @@ import Foundation
         let settings = Settings.load(config: ["ai_provider": "local"])
         #expect(settings.providerSettings.pick == .localServer)
     }
+
+    /// `default_model` / `dictation_model` keep meaning "OpenRouter's models"
+    /// (spec §4): the provider layer must read them rather than fall back to
+    /// `AIProvider.defaultModel(for:)`. Note `Settings.load(config:)` parses
+    /// `dictation_model` but NOT `default_model` — in the app the latter arrives
+    /// through the Keychain overlay, which assigns `settings.defaultModel`, so
+    /// that is how it is driven here.
+    @Test func effectiveProviderSettingsSeedsOpenRouterFromLegacyKeys() {
+        var settings = Settings.load(config: ["dictation_model": "a/b"])
+        settings.defaultModel = "x/y"
+        #expect(settings.effectiveProviderSettings.model(for: .summary, on: .openRouter) == "x/y")
+        #expect(settings.effectiveProviderSettings.model(for: .dictation, on: .openRouter) == "a/b")
+
+        // An explicit `ai_models` override wins over the legacy key.
+        var overridden = Settings.load(config: ["ai_models": #"{"openrouter":{"summary":"o/p"}}"#])
+        overridden.defaultModel = "x/y"
+        #expect(overridden.effectiveProviderSettings.model(for: .summary, on: .openRouter) == "o/p")
+        // The task without an override still falls back to the legacy key.
+        #expect(overridden.effectiveProviderSettings.model(for: .dictation, on: .openRouter)
+                == DictationDefaults.polishModel)
+        // Seeding never mutates the stored settings.
+        #expect(overridden.providerSettings.models[.openRouter]?[.dictation] == nil)
+    }
 }

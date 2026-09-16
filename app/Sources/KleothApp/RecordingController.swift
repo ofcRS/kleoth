@@ -327,6 +327,9 @@ public final class RecordingController: ObservableObject {
             statusMessage = "No meeting to summarize yet."
             return
         }
+        let dir = latest.directory
+        guard !isProcessingMeeting(dir) else { return }  // already queued or running
+
         let summarizer: Summarizer
         let selection: ProviderFactory.Selection
         do {
@@ -335,9 +338,12 @@ public final class RecordingController: ObservableObject {
             statusMessage = error.localizedDescription
             return
         }
-
-        let dir = latest.directory
-        guard !isProcessingMeeting(dir) else { return }  // already queued or running
+        // Resolving the provider suspended, so the guard above is stale: re-check
+        // before claiming the folder or two rapid triggers (`kleoth://summarize-latest`
+        // twice, a Shortcut fired twice) would both summarize and both rewrite it.
+        // This guard and `markProcessing` run in one main-actor turn, so nothing
+        // can slip between them.
+        guard !isProcessingMeeting(dir) else { return }
         markProcessing(dir)
         statusMessage = "Summarizing latest meeting…"
         let store = MeetingStore(baseDir: dir.deletingLastPathComponent())

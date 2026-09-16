@@ -736,7 +736,16 @@ final class DictationController: ObservableObject {
             return
         }
 
-        // 6. Transcribe through the `Transcriber` seam.
+        // 6. Transcribe through the `Transcriber` seam. Resolving the polisher
+        //    can cost the provider probes (CLI `auth status`, the local server)
+        //    whenever the detector's cache is cold, so it runs ALONGSIDE the
+        //    upload instead of after it — by the time step 7 awaits the task,
+        //    the answer is almost always already there. Every exit below leaves
+        //    through the `defer`, which cancels it; the detector's work is not
+        //    cancellation-sensitive, so cancelling simply drops the result.
+        let polisherTask = Task { try await AppConfig.makePolisher() }
+        defer { polisherTask.cancel() }
+
         let terms = Keyterms.sanitize(dictionary.load())
         let options = ScribeOptions.dictation(keyterms: terms)
         let transcriber: any Transcriber = injectedTranscriber ?? makeTranscriber(elevenLabsKey: key)
@@ -795,30 +804,36 @@ final class DictationController: ObservableObject {
         if case let .skip(reason) = gate {
             log.debug("polish skipped: \(reason, privacy: .public)")
             polish = .skipped(text: rawText, reason: reason)
-        } else if let made = try? await AppConfig.makePolisher() {
-            let (polisher, selection) = made
-            polishSelection = selection
-            phase = .polishing
-            pill.show(.polishing)
-            // Runs as its own task so Esc can cancel the model call alone
-            // (`handleEscape`); `cancelPipeline()` cancels both together.
-            polishCancelledByUser = false
-            let started = ContinuousClock.now
-            let task = Task { await polisher.polish(rawText: rawText, context: context) }
-            polishTask = task
-            let attempted = await task.value
-            polishTask = nil
-            let elapsed = started.duration(to: .now)
-            polishSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-            if polishCancelledByUser {
-                polish = .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
-            } else {
-                polish = attempted
-            }
-            log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
         } else {
-            let reason = (await Self.polishUnavailableReason()) ?? ProviderError.noProvider.localizedDescription
-            polish = .raw(text: rawText, reason: "\(reason) — pasted the raw transcript.")
+            do {
+                // Resolved alongside the upload (step 6), so this normally
+                // returns at once; only a cold detector cache makes it wait.
+                let (polisher, selection) = try await polisherTask.value
+                polishSelection = selection
+                phase = .polishing
+                pill.show(.polishing)
+                // Runs as its own task so Esc can cancel the model call alone
+                // (`handleEscape`); `cancelPipeline()` cancels both together.
+                polishCancelledByUser = false
+                let started = ContinuousClock.now
+                let task = Task { await polisher.polish(rawText: rawText, context: context) }
+                polishTask = task
+                let attempted = await task.value
+                polishTask = nil
+                let elapsed = started.duration(to: .now)
+                polishSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+                if polishCancelledByUser {
+                    polish = .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
+                } else {
+                    polish = attempted
+                }
+                log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
+            } catch {
+                // No backend could be built. `ProviderError`'s copy is a full
+                // sentence, so drop its final period before the suffix turns
+                // the whole line into one.
+                polish = .raw(text: rawText, reason: "\(Self.asClause(error.localizedDescription)) — pasted the raw transcript.")
+            }
         }
         // Esc during the polish call: the polisher swallows cancellation into a
         // `.raw` result, so check here before anything reaches the pasteboard.
@@ -878,9 +893,11 @@ final class DictationController: ObservableObject {
         pill.show(warning.map { .warning($0) } ?? .done)
     }
 
-    /// Why no polisher could be built, for the pill (`makePolisher` threw).
-    private static func polishUnavailableReason() async -> String? {
-        do { _ = try await AppConfig.makePolisher(); return nil } catch { return error.localizedDescription }
+    /// A finished sentence turned into a clause, so appending
+    /// " — pasted the raw transcript." does not leave a stray period mid-line.
+    private static func asClause(_ sentence: String) -> String {
+        let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasSuffix(".") ? String(trimmed.dropLast()) : trimmed
     }
 
     /// Deletes every temp file the current run registered. Idempotent

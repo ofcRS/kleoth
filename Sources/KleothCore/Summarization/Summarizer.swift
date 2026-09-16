@@ -26,7 +26,7 @@ extension SummarizerError: LocalizedError {
 
 /// Produces a structured `MeetingSummary` from a normalized transcript,
 /// using any ``ChatCompleting`` backend.
-public struct Summarizer {
+public struct Summarizer: Sendable {
     public let client: any ChatCompleting
     public var model: String
 

@@ -89,19 +89,21 @@ enum AppConfig {
 
     // MARK: - AI providers
 
-    /// One detector for the whole app: its 60 s cache is what keeps a
-    /// dictation from paying a server probe on every run.
+    /// One detector for the whole app. Its 10 min cache is what keeps a
+    /// dictation off the CLI/server probes on the hot path; every provider
+    /// setting change calls `refresh()`, so a stale cache is never what the
+    /// user is looking at after they edit something.
     static let detector = ProviderDetector(probes: .standard(
         locator: .standard,
         runner: FoundationProcessRunner(),
         transport: URLSessionTransport(),
-        apple: { AppleOnDeviceClient.availability() }))
+        apple: { AppleOnDeviceClient.availability() }), cacheTTL: 600)
 
     /// The factory for one resolution pass: every backend the user could be
     /// routed to, wired with the app's transport, runner and Apple adapter.
     static func factory(settings: KleothCore.Settings, credentials: Credentials) -> ProviderFactory {
         ProviderFactory(
-            settings: settings.providerSettings,
+            settings: settings.effectiveProviderSettings,
             openRouterKey: credentials.openRouterKey,
             transport: URLSessionTransport(),
             runner: FoundationProcessRunner(),
@@ -111,22 +113,22 @@ enum AppConfig {
 
     /// The summarizer for the current settings, or the `ProviderError` that
     /// says why there is none.
-    static func makeSummarizer() async throws -> sending (Summarizer, ProviderFactory.Selection) {
+    static func makeSummarizer() async throws -> (Summarizer, ProviderFactory.Selection) {
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)
-        let snapshot = await detector.snapshot(settings: settings.providerSettings, openRouterKey: credentials.openRouterKey)
+        let snapshot = await detector.snapshot(settings: settings.effectiveProviderSettings, openRouterKey: credentials.openRouterKey)
         let selection = try factory.select(task: .summary, snapshot: snapshot).get()
         return (try factory.summarizer(for: selection), selection)
     }
 
     /// The dictation polisher for the current settings, or the `ProviderError`
     /// that says why there is none.
-    static func makePolisher() async throws -> sending (DictationPolisher, ProviderFactory.Selection) {
+    static func makePolisher() async throws -> (DictationPolisher, ProviderFactory.Selection) {
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)
-        let snapshot = await detector.snapshot(settings: settings.providerSettings, openRouterKey: credentials.openRouterKey)
+        let snapshot = await detector.snapshot(settings: settings.effectiveProviderSettings, openRouterKey: credentials.openRouterKey)
         let selection = try factory.select(task: .dictation, snapshot: snapshot).get()
         return (try factory.polisher(for: selection), selection)
     }
@@ -137,7 +139,7 @@ enum AppConfig {
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)
-        let snapshot = await detector.snapshot(settings: settings.providerSettings, openRouterKey: credentials.openRouterKey)
+        let snapshot = await detector.snapshot(settings: settings.effectiveProviderSettings, openRouterKey: credentials.openRouterKey)
         return ProviderStatus(
             snapshot: snapshot,
             summary: factory.select(task: .summary, snapshot: snapshot),
