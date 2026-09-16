@@ -13,6 +13,11 @@ struct SettingsAIProviderSection: View {
 
     private var status: ProviderStatus? { controller.providerStatus }
 
+    /// The pick as stored right now, in the picker's own vocabulary.
+    private var storedProvider: String {
+        controller.settings.providerSettings.pick?.rawValue ?? "auto"
+    }
+
     var body: some View {
         Section {
             Picker("AI provider", selection: $aiProvider) {
@@ -21,7 +26,14 @@ struct SettingsAIProviderSection: View {
                     Text(provider.displayName).tag(provider.rawValue)
                 }
             }
-            .onChange(of: aiProvider) { _, newValue in controller.updateAIProvider(newValue) }
+            // Only a real change is written: `loadFromController()` seeds this
+            // from the stored pick while the picker is already mounted, and a
+            // no-op write would drop the detector's cache and re-spawn every
+            // probe just for opening the window.
+            .onChange(of: aiProvider) { _, newValue in
+                guard newValue != storedProvider else { return }
+                controller.updateAIProvider(newValue)
+            }
             // Keep the status rows honest while the window is open. Cheap: the
             // detector caches for 10 min, so this only picks up changes. It
             // rides on the always-present picker row rather than the Section

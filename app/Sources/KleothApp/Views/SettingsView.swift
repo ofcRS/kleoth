@@ -218,6 +218,18 @@ struct SettingsView: View {
         }
     }
 
+    /// Flushes one provider model field on close — but only when the user
+    /// actually changed it. Comparing against `model(for:on:)` (the stored
+    /// override, else the provider's own default) means an untouched field, and
+    /// a value retyped to equal the default, both write nothing: an override
+    /// nobody asked for would outlive any future change of that default.
+    private func commitProviderModel(_ model: String, for task: AIProvider.Task) {
+        guard let provider = resolvedProvider(task), provider != .openRouter,
+              provider.modelChoice != .fixed,
+              model != controller.settings.providerSettings.model(for: task, on: provider) else { return }
+        controller.updateProviderModel(model, for: task, on: provider)
+    }
+
     @ViewBuilder
     private func pageSections(_ page: SettingsPage) -> some View {
         switch page {
@@ -846,10 +858,13 @@ struct SettingsView: View {
         controller.updateOpenRouterKey(openRouterKey)
         controller.updateOutputDir(outputDirPath)
         controller.updateDefaultModel(selectedModel)
-        // The provider picker and the model fields commit on change; these two
-        // are free text, so an unsubmitted edit only lands here.
+        // The provider picker and the model pickers commit when they are
+        // operated; the free-text fields only commit on Return, so an
+        // unsubmitted edit lands here.
         controller.updateLocalServerURL(localServerURL)
         controller.updateLocalServerKey(localServerKey)
+        commitProviderModel(summaryProviderModel, for: .summary)
+        commitProviderModel(dictationProviderModel, for: .dictation)
         dictation.setDictationModel(dictationModel)
         // Flushes whatever the dictionary editor's 0.5 s debounce hasn't written —
         // but only if the user actually edited it (see `loadedDictionaryText`).

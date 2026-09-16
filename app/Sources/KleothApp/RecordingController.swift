@@ -220,8 +220,14 @@ public final class RecordingController: ObservableObject {
     /// (`SettingsView.commitAll()`) collapses into a single pass.
     private var providerRefreshTask: Task<Void, Never>?
 
+    /// Re-resolves both tasks and publishes the result — but only when it
+    /// differs. Settings polls this every 5 s while it is open, and an
+    /// unconditional assignment would invalidate every observer (the menu-bar
+    /// label, the popover, History) five times a minute for an identical value.
     public func refreshProviderStatus() async {
-        providerStatus = await AppConfig.providerStatus()
+        let status = await AppConfig.providerStatus()
+        guard status != providerStatus else { return }
+        providerStatus = status
     }
 
     // MARK: - Init
@@ -531,7 +537,7 @@ public final class RecordingController: ObservableObject {
         providerRefreshTask = Task {
             await AppConfig.detector.refresh()
             let status = await AppConfig.providerStatus()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, status != providerStatus else { return }
             providerStatus = status
         }
     }
