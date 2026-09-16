@@ -140,6 +140,25 @@ Open **Settings** from the menu bar. Everything here is optional:
 
 Keys are stored in the macOS Keychain and are **never** printed or committed.
 
+## Bring your own AI
+
+Summaries and dictation cleanup need a language model. Kleoth uses whatever you already have,
+in this order, unless you pick one in Settings → Accounts:
+
+| Provider | What it needs | Summaries | Dictation |
+|---|---|---|---|
+| Local server (Ollama, LM Studio, any OpenAI-compatible URL) | the server running, default `http://localhost:11434/v1` | ✓ | ✓ |
+| Claude Code | the `claude` CLI installed and signed in | ✓ | ✓ (slow — several seconds per cleanup) |
+| Codex | the `codex` CLI installed and signed in | ✓ | — |
+| OpenRouter | an API key | ✓ | ✓ |
+| Apple on-device | macOS 26 with Apple Intelligence on | — | ✓ |
+
+Codex only summarizes (no dictation cleanup path); Apple's on-device model only cleans up
+dictation and needs macOS 26 with Apple Intelligence turned on in System Settings.
+
+Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
+with their own login; the local server and Apple's model never leave the machine.
+
 ## CLI
 
 The repo also ships a `kleoth` command-line tool for the same pipeline (audio file → transcript →

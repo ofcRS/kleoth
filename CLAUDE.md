@@ -13,17 +13,17 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (~354 tests)
+swift build && swift test                        # core + CLI (434 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
 pkill -x Kleoth; open -a Kleoth                  # relaunch (make-app does NOT kill the running instance)
 bash app/make-dmg.sh                             # app/dist/Kleoth-<version>.dmg (version = app/bundle/Info.plist)
-swift run kleoth summarize <dir> --model <slug>  # re-summarize a meeting in place
+swift run kleoth summarize <dir> --model <slug> --provider claude-code|codex|local|openrouter  # re-summarize in place
 
 # Headless probes (use --product, not --target — --target links no binary)
 swift build --package-path app --product localtranscribe && app/.build/debug/localtranscribe <meeting-dir> [scribe]
-swift build --package-path app --product dictate && app/.build/debug/dictate 4 [--no-polish] [--device <uid>] [--text "<raw>" --runs N]
+swift build --package-path app --product dictate && app/.build/debug/dictate 4 [--no-polish] [--device <uid>] [--provider claude-code|codex|local|openrouter] [--text "<raw>" --runs N]
 swift build --package-path app --product screenrec && app/.build/debug/screenrec 10 [--inspect f.mp4] [--extract f.mp4] [--words f.m4a]
 swift run --package-path app pillsandbox                                # pill playground
 app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs
@@ -106,6 +106,16 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   meetings; they auto-transcribe on device with word timestamps after save.
 - **UI wording:** tier badges say "On-device" / "Cloud". Money appears only in Settings → Usage.
   History deletes go to Trash without confirmation (Finder norm). No illustration in Settings or forms.
+- **AI providers (2026-09-16):** `ChatCompleting` is the seam under `Summarizer`/`DictationPolisher`;
+  backends = OpenRouter, local OpenAI-compatible server, Claude Code CLI (`claude -p` with settings/MCP
+  isolation + `--system-prompt`, prompt on stdin), Codex CLI (summaries only), Apple on-device (dictation
+  only, `KleothOnDevice` target, weak-linked). `ProviderResolver` auto order: local → Claude Code → Codex →
+  OpenRouter → Apple. `ProviderDetector` caches its snapshot for 600 s, dropped on every provider-setting
+  write, `applicationDidBecomeActive`, and the Settings Refresh button. Keys: `ai_provider`,
+  `local_server_url`, `local_server_key`, `ai_models`; meta `summary_provider`, log `polish_provider`
+  (nil = OpenRouter). OpenRouter's own model still comes from the legacy `default_model`/`dictation_model`
+  keys via `Settings.effectiveProviderSettings`, with `ai_models` overrides taking priority. Design:
+  `docs/plans/2026-09-15-ai-providers.md`.
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -133,6 +143,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   nothing (no Accessibility for the terminal); drive the pill through `pillsandbox` film hooks.
 - A shell-launched probe gets the TERMINAL's TCC grant; it proves nothing about Kleoth's own.
 - App Intents don't surface in Shortcuts (SwiftPM skips `appintentsmetadataprocessor`); URL scheme works.
+- Provider detection: the local-server probe opens its own 2 s/3 s ephemeral `URLSession` (the default
+  `URLSessionTransport` waits for connectivity and hangs forever with no server listening); `codex login
+  status` prints "Logged in using ChatGPT" to **stderr**, not stdout — check both streams.
 
 ## Security (hard rules)
 - API keys are never printed or committed. `.env` and `config.json` are gitignored; inspect `.env`
@@ -140,8 +153,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - The repo is public — anything on `main` is world-readable.
 
 ## State (update in place, keep to a few lines)
-- Uncommitted: Settings redesign — six-page `NavigationSplitView` (`Views/SettingsPage.swift`,
-  `SettingsView.swift`), installed but not yet reviewed by eye. Also `docs/CODE-REVIEW.md` (local by request).
-- Not human-verified yet: pill menu actions end to end, screen-recording manual checklist items 1–8
-  (design doc §8), recordings viewer checklist (design doc §7).
-- Open threads: `.scratch/video-recording-thread/`.
+- Uncommitted: none on this branch. `feat/ai-providers` (five backends, T1–T13 implementation + this
+  T14 docs pass, all committed) awaits the
+  user's visual check of Settings → Accounts and the human checklist: provider rows on this Mac, a
+  meeting via Automatic (`summary_provider` in `meta.json`), a dictation via Automatic and via Apple
+  on-device (`polish_provider` in the day file), signing out of Claude Code, a local Ollama server,
+  and `kleoth summarize <dir> --provider codex`.
+- Not human-verified yet: all of the above, plus pill menu actions end to end, screen-recording
+  manual checklist items 1–8 (design doc §8), recordings viewer checklist (design doc §7).
+- Open threads: `.scratch/video-recording-thread/`. `docs/CODE-REVIEW.md` stays local/uncommitted by request.
