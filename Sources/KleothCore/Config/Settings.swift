@@ -29,6 +29,8 @@ public struct Settings: Sendable {
     /// recordings alike. A pick that is not connected falls back to the
     /// system input at capture time (the capture layer decides, not this).
     public var inputDeviceId: String?
+    /// Which language-model backend runs summaries and dictation polish (design doc 2026-09-15).
+    public var providerSettings: ProviderSettings
 
     public init(
         outputDir: URL,
@@ -38,7 +40,8 @@ public struct Settings: Sendable {
         dictationEnabled: Bool = false,
         dictationModel: String = DictationDefaults.polishModel,
         dictationPolishAlways: Bool = false,
-        inputDeviceId: String? = nil
+        inputDeviceId: String? = nil,
+        providerSettings: ProviderSettings = ProviderSettings()
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
@@ -48,6 +51,7 @@ public struct Settings: Sendable {
         self.dictationModel = dictationModel
         self.dictationPolishAlways = dictationPolishAlways
         self.inputDeviceId = inputDeviceId
+        self.providerSettings = providerSettings
     }
 
     /// Loads settings, applying defaults:
@@ -99,6 +103,8 @@ public struct Settings: Sendable {
             inputDeviceId = device
         }
 
+        let providerSettings = ProviderSettings.load(config: config)
+
         return Settings(
             outputDir: outputDir,
             defaultModel: defaultModel,
@@ -107,7 +113,8 @@ public struct Settings: Sendable {
             dictationEnabled: dictationEnabled,
             dictationModel: dictationModel,
             dictationPolishAlways: dictationPolishAlways,
-            inputDeviceId: inputDeviceId
+            inputDeviceId: inputDeviceId,
+            providerSettings: providerSettings
         )
     }
 
