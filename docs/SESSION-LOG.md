@@ -1,0 +1,1694 @@
+# Kleoth — session log (archived from CLAUDE.md on 2026-09-15; not loaded into sessions)
+
+Local-first, bot-free macOS meeting recorder (open-source tl;dv / Fireflies alternative).
+Captures system audio + mic locally → transcribes → summarizes → writes Markdown/JSON the
+user owns. Native Swift 6 / SwiftUI menu-bar app + a `kleoth` CLI.
+
+_Last updated: 2026-09-10. This file is living context for future sessions — keep it current._
+
+## Environment
+- macOS 26.5 (Tahoe), Apple Silicon, Swift 6.3.2, Xcode 26.5. Git repo (root `.git`).
+- Deployment floors: KleothCore/CLI = macOS 13; app (`app/`) = macOS 14.4. App bundle
+  `LSMinimumSystemVersion` = 14.4. Liquid Glass bits gated behind `if #available(macOS 26, *)`.
+
+## Architecture — two SwiftPM packages
+**Package 1 (repo root)** — `platforms: [.macOS(.v13)]`, dep: swift-argument-parser only.
+- `KleothCore` (lib): Models, `HTTPTransport` seam, `Transcription` (ScribeClient, Multipart,
+  TranscriptNormalizer, **Transcriber protocol**), Summarization (OpenRouterClient, Summarizer),
+  Rendering, SpeakerMapping, Storage (MeetingStore), Config (Credentials, Settings), Pipeline
+  (MeetingPipeline), `Dictation/`, **`ScreenRecording/`** (Defaults, Types, ElapsedFormatter,
+  FileNaming, CaptureGeometry, SessionMachine, HostClockMath, AudioRing, MixMath, **Record** +
+  **Store** — the per-recording transcript sidecar, 2026-09-07),
+  `Concurrency/` (`withTimeout`, `withDeadline`).
+- `kleoth` (exe): subcommands `transcribe`, `summarize`, `rename`, `render`. (Slack removed 2026-06-08.)
+- `KleothCoreTests` (51 tests, all green).
+
+**Package 2 (`app/`)** — `platforms: [.macOS("14.4")]`, deps: `..` (KleothCore),
+`sindresorhus/KeyboardShortcuts`, `argmaxinc/argmax-oss-swift` (WhisperKit @ 0.18.0).
+- `KleothCapture` (lib): Recorder (writes `mic.m4a` + `system.m4a`, builds 2-channel
+  `meeting.m4a`), MicCapture, SystemAudioTap (Core Audio process tap),
+  **LocalTranscriber** (WhisperKit), **DictationCapture** (own AVAudioEngine input tap → temp m4a),
+  **`ScreenRecording/`** (`@MainActor ScreenRecorder` + MicrophoneSource, SystemAudioSink,
+  AudioMixPump, VideoFrameGate, MovieWriter, VideoFormat, ScreenRecordingPermission, Contract,
+  **LevelWord** (live mic/system RMS), **RecordingAudioExtractor** (mp4 → m4a for transcription)).
+  (`ScreenshotCapture` was deleted 2026-09-06 — dead code.)
+- `KleothPillUI` (lib): the pill — `DictationPanel`, `DictationPillController`,
+  `DictationPillModel`, `DictationPillView`, `PillTypes` (the pill contract, incl. the
+  `DictationPillBackdrop` and the `.recording`/`.saving`/`.saved` states). Shared by the app and
+  `pillsandbox`.
+- `pillsandbox` (exe): pill playground + `--film` filmstrip renderer (see the 2026-09-03 status);
+  `--backdrop hidden|idle|recording` films the screen-recording backdrop states.
+- `KleothApp` (exe): MenuBarExtra agent, `RecordingController` (`@MainActor`, owns capture +
+  pipeline, app-lifetime `shared`), `DictationController` (`@MainActor`, see "Dictation" below),
+  `AppConfig` (Settings/Credentials + Keychain overlay, shared by both controllers), Views
+  (MenuView, HistoryView, MeetingDetailView, Settings, Consent, SpeakerRename, Dictation*,
+  SettingsScreenRecordingSection, **RecordingsListView / RecordingDetailView + RecordingPlayerModel /
+  RecordingTranscriptView / RecordingWordFlowLayout** — the Loom-style viewer), `Dictation/` (hotkey monitor, pill panel, text inserter),
+  **`ScreenRecording/`** (`ScreenRecordingController` `@MainActor`, `PillCoordinator` — the single
+  face in front of the pill, `RegionPicker`), App Intents, `kleoth://` URL scheme, global hotkey.
+- `taptest` (exe): dev probe for the audio tap.
+- `localtranscribe` (exe): headless recovery tool — re-transcribe a meeting folder with the
+  same engine the app uses. `localtranscribe <meeting-dir> [scribe]`.
+- `dictate` (exe): headless dictation pipeline probe — record N s → prepare → Scribe → polish,
+  print the result, no paste. `dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish]`.
+- `screenrec` (exe): headless screen-recording probe — frames/audio blocks/writer failures, track
+  durations, bit rate. `screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic] [--out file]
+  [--inspect file] [--extract file] [--words file [--segments] [--language xx]]` — `--extract` pulls
+  the audio track to an `.m4a`, `--words` runs the on-device transcriber with word timestamps on it.
+- `app/Package.swift` declares the root dependency as `.package(name: "kleoth-app", path: "..")` —
+  the explicit `name:` is what lets the app package build from a worktree/checkout NOT named
+  `kleoth-app` (SwiftPM otherwise derives the identity from the directory name).
+
+## Transcription model (the core design — decided with the user)
+Two tiers, engine-agnostic via the `Transcriber` protocol (`var usdPerHour`, `transcribe(fileURL:options:)`):
+- **Tier 0 — default, free, on-device:** `LocalTranscriber` = WhisperKit (Whisper Core ML / ANE).
+  Multilingual with **auto language detection** (handles **Russian** — the user's primary
+  meeting language — which Apple's `SpeechTranscriber` does NOT; Apple supports only 8 langs,
+  no `ru`, which is why we chose WhisperKit over Apple). Default model
+  `large-v3-v20240930_626MB`. $0, nothing leaves the machine.
+- **Tier 1 — on-demand SOTA:** ElevenLabs Scribe (`ScribeClient`, $0.22/audio-hour). Surfaced as
+  the **"Fully transcribe"** action in MeetingDetailView (with spend confirmation). For 2-channel
+  captures it uses `ChannelAttributedScribeTranscriber`: mic+system are **mixed to one mono file**
+  (`ChannelAudio.mixToMono`, resampled to a common rate) sent as a single channel — **1× cost &
+  correct duration** (Scribe sums/bills per channel, so a 2-channel upload was 2×). Scribe runs
+  **with diarization ON**; we then map each diarization **cluster** to You/Them by **per-cluster
+  channel energy** (`ChannelAudio.envelope` → `ChannelAttribution.mapDiarizedSpeakers`), falling
+  back to per-word energy (`assignSpeakers`) only if Scribe returns <2 clusters. Deciding the
+  channel **once per cluster** (not per word) keeps Scribe's coherent voice turns and stops
+  mid-utterance speaker flips. **A/B on a live RU meeting (2026-06-03):** this hybrid scored
+  **96.2%** You/Them vs multichannel ground truth, beating per-word energy (94.4%) and raw Scribe
+  diarization (90.4%). The earlier "Scribe diarization = 61.8%" finding was on the mono mix
+  **without** the cluster→channel map and is superseded. (Multichannel — one Scribe pass per
+  channel — is exact and captures overlap, but costs 2×; rejected for the 1× mono path.)
+- **You vs Them is free:** local transcribes mic & system as **separate channels** → `speaker_0`/
+  `speaker_1`; Scribe uses the mono diarization + per-cluster channel-energy path above. The app
+  writes a default `speakers.json` `{speaker_0: "You", speaker_1: "Them"}` for 2-channel meetings.
+- `MeetingMetadata.transcriptTier` ∈ `TranscriptTier.local` (`"local-whisper"`) /
+  `.sotaScribe` (`"sota-scribe"`). Badges in History + Detail read **"On-device" / "Cloud"**
+  (`TranscriptTier.label` — was "Local"/"SOTA", jargon the user vetoed 2026-06-04); stored tier
+  strings are unchanged.
+- **Duration is wall-clock, derived from the audio file** (`AudioProbe.durationSeconds`, used in
+  the pipeline + History list), never the STT-reported value — engine-robust, and fixes legacy
+  2× Scribe meetings on next view.
+
+### WhisperKit specifics
+- `WhisperKit(WhisperKitConfig(model:, useBackgroundDownloadSession: true))` — background session
+  avoids the 60s URLSession request-timeout that killed the in-line first-run download.
+- **Prewarm at launch:** `RecordingController.prewarmTranscriptionModel()` (called from `init`)
+  downloads the model in the background, surfacing `modelDownloadProgress` in the popover.
+  First run pulls ~600 MB once, then offline.
+- `LocalTranscriber.downloadModel(useBackgroundSession:progress:)` is the download entry point.
+- **Language (⚠️ gotcha):** WhisperKit's `DecodingOptions.detectLanguage` defaults to
+  `!usePrefillPrompt` = **`false`**, so `language: nil` alone silently resolves to **`"en"`** —
+  this made RU meetings transcribe in English. `LocalTranscriber.resolveLanguage` now runs ONE
+  global `pipe.detectLanguage(audioPath:)` pass (most-confident channel wins, short-circuits at
+  ≥0.85) and forces that language across all VAD chunks; `detectLanguage: true` is only the
+  last-resort fallback. The resolved code is also returned as `ScribeResponse.languageCode` (via
+  `resolvedLanguage ?? …`) so the summarizer writes in that language. Pinnable via Settings →
+  `transcription_language` (Keychain), `nil`/`"auto"` = detect. Verified live: RU meeting → `ru`.
+
+## Dictation (fn+shift voice typing — v1, 2026-09-03)
+Design doc = `docs/plans/2026-09-03-dictation.md` (single source of truth; §3 is the binding
+interface contract, §5.10 the controller design, §7 the error matrix, §8.2 the manual checklist).
+- **Flow:** hold **fn+shift** → `DictationHotkeyMonitor` (NSEvent global+local monitors, needs
+  `AXIsProcessTrusted()`) feeds the pure, tested `DictationChordMachine` (KleothCore) → `.armed`
+  (mic on at key-down; the resting pill hops out as `.armed`) → `.began` at 0.20 s (bars appear; double-tap within 0.40 s =
+  hands-free `.toggledOn`) → release `.ended` → `DictationCapture.stop(min 0.5 s)` → off-main
+  `prepareForUpload` (`ChannelAudio.mixToMono` with a nonexistent 2nd channel = mono + loudness
+  + peak normalize, 64 kbps) → **`any Transcriber`** (`ScribeClient`, `ScribeOptions.dictation`:
+  `scribe_v2`, `no_verbatim`, diarize/audio-events off, ≤100 sanitized `keyterms`, 25 s
+  `withTimeout`) → `DictationPolisher` (ONE OpenRouter call, json_schema, temp 0.2, 30 s ceiling (was 8 s), Esc while polishing = paste raw now,
+  **non-throwing** → `.polished` or `.raw(reason)`; translation guard: model language ≠ Scribe's
+  → raw) → `TextInserter` (full pasteboard snapshot → marked write → synthetic ⌘V via
+  `CGEvent.post(.cgSessionEventTap)` → restore after 0.5 s iff `changeCount` still ours) →
+  `DictationLogStore` actor append → `logRevision += 1` → pill `.done` (1 s) / `.warning` (3 s).
+- **Controller:** `DictationController` (`@MainActor`, `shared`, `@EnvironmentObject` in views —
+  never read `.shared` from SwiftUI). `Phase` idle/armed/listening/transcribing/polishing/inserting;
+  `endSession()` is the ONLY place `phase`/`escapeCancels`/`isSessionActive` reset (called from
+  the two listening exits + `run()`'s single `defer`, which also deletes both temp clips).
+  Preflight at `.armed`: enabled → trusted → ElevenLabs key → mic not denied → no secure input →
+  `capture.start()`; each failure is a sticky `.failed` pill (no spend, no log row). Chord while
+  the pipeline runs → 1 s "Finishing the previous dictation…" then the phase's pill returns
+  (a bare `.warning` would auto-hide mid-run). Esc cancels listening or the in-flight pipeline
+  (`pipelineTask.cancel()` + `Task.isCancelled` checks after prepare/STT/polish so a cancelled
+  polish never pastes). `.cancelled(.external)` mid-pipeline (trust lost) is a deliberate no-op —
+  the paste then falls back to clipboard-only. **Machine ↔ phase resync:** every controller-side
+  session exit the machine did not drive (`cancel()`, Esc while hands-free, `refuseWhileBusy()`)
+  calls `monitor.abort()` — otherwise the machine parks in `.handsFree` and the next press is eaten. Pill `.openSettings` = `NSApp.activate` +
+  `NSApp.sendAction(Selector(("showSettingsWindow:")))` (AppKit panel, no SwiftUI env — don't "fix").
+- **Lifecycle:** `AppDelegate` hooks via `MainActor.assumeIsolated` (never a `Task` hop —
+  `applicationWillTerminate` may exit first): `startIfEnabled()` (sweeps stale temp clips, installs
+  monitors), `refreshTrust()` on `didBecomeActive` (+ the Settings section's 1 Hz poll) reinstalls
+  monitors on grant; `shutdown()` on terminate. The monitor's own 30 s health timer tears down on
+  trust loss. `eventTask` (one `for await` over `monitor.events`) lives for the app's lifetime
+  across Settings off→on cycles.
+- **Keys/files:** Keychain `dictation_enabled` ("true" strict, default off — existing installs stay
+  off), `dictation_model` (default `DictationDefaults.polishModel`, passed through
+  `ModelCatalog.migrating`); UserDefaults `dev.kleoth.dictation.pillPlacement`;
+  `~/Kleoth/dictations/<yyyy-MM-dd>.json` (bare array, snake_case, oldest-first; costs stored,
+  never shown); `~/.config/kleoth/dictionary.json` (≤1000 stored, ≤100 sent);
+  `$TMPDIR/kleoth-dictation/{dictation,prep}-<uuid>.m4a` (deleted on every exit; 1 h sweep at launch).
+- **Decisions:** Kleoth **stays un-sandboxed** (`CGEvent.post` is blocked under App Sandbox with no
+  re-enabling entitlement — `app/bundle/Kleoth.entitlements` must never gain
+  `com.apple.security.app-sandbox`; no Mac App Store path without rebuilding insertion). The
+  **stable "Kleoth Self-Signed" identity is now required**, not just nice: Accessibility trust is
+  bound to the code signature and would be lost on every rebuild otherwise. `kVK_ANSI_V` is
+  hardcoded (QWERTY-family incl. RU; plain Dvorak/Colemak deferred). fn+shift with any extra
+  modifier never arms. `no_verbatim` always on, so stored `raw_text` is already filler-light.
+  Translation-guard mismatch → raw + warning (revisit if it fires on real mixed RU/EN).
+- **Probe:** `swift build --package-path app --product dictate && app/.build/debug/dictate 4`
+  (prints a 20 Hz RMS meter, raw/language/billed duration/cost, polished/fallback reason);
+  `dictate --list-devices` / `dictate 4 --device <uid>` exercise the microphone pick on the real capture.
+  `log stream --predicate 'subsystem == "dev.kleoth" AND (category == "DictationHotkey" OR
+  category == "Dictation")'` is the live hotkey/controller probe.
+
+## Screen recording (v1, 2026-09-06)
+Design doc = `docs/plans/2026-09-06-screen-recording.md` (single source of truth; §2 behavior,
+§3 the binding interface contract, §4 audio, §5 video/encode, §6 pill integration, §7 the error
+matrix, §8 the manual checklist, §10 the per-lane implementation notes).
+- **Flow:** hover the resting pill → a red **record glyph** appears next to the mic (or popover
+  **"Record screen…"**) → `ScreenRecordingController.start(from: .pill/.popover)` → preflight
+  (Screen Recording TCC → free disk ≥ 500 MB → output dir) → **`RegionPicker`** (one borderless
+  `.screenSaver`-level overlay per `NSScreen`, 30 % dim with the selection punched out, live
+  "W×H pt → w×h px" label; Esc cancels, Return = whole display under the pointer, a drag < 64 pt
+  on either side = whole display) → `.recording(since:)` pill with live `mm:ss` digits → hover →
+  stop glyph → click (or the popover's stop row) → `.saving` → **`.saved("02:14 · 48 MB")`** for
+  4 s → click reveals the file in Finder → back to `.idle` (dictation armed) or hidden.
+- **Architecture per target:**
+  - **KleothCore `ScreenRecording/`** (pure, tested): `ScreenRecordingDefaults` (THE constants),
+    `ScreenRecordingTypes` (`ScreenRecordingSummary.pillText`, failures, backdrop payloads),
+    `ElapsedFormatter` (zero-padded `mm:ss`/`h:mm:ss`), `ScreenRecordingFileNaming`
+    (`screen-<yyyy-MM-dd-HHmmss>`, in-flight `.recording.mp4` → final `.mp4` /
+    `-recovered.mp4`, uniquing, `sizeText`), `CaptureGeometry` (`outputPixelSize`, `sourceRect`,
+    region normalize/clamp, `videoBitRate`), `ScreenRecordingSessionMachine` (9 states × 12
+    events, effects, totality-tested), `HostClockMath`, `AudioRing`, `MixMath`.
+  - **KleothCapture `ScreenRecording/`:** `@MainActor ScreenRecorder` (owns the SCStream, the
+    writer and the session origin; `start()` / `stop(reason:)` / `events` AsyncStream / `stats`)
+    + `MicrophoneSource` (its own `AVAudioEngine`, per-device `presentationLatency` offset),
+    `SystemAudioSink`, `AudioMixPump` (960-frame blocks at 20 ms, 0.25 s read latency, partial
+    tail flush on stop), `VideoFrameGate` (monotonic PTS, stop-time re-append, optional
+    keepalive), `MovieWriter` (`AVAssetWriter`), `VideoFormat`, `ScreenRecordingPermission`,
+    `ScreenRecordingContract`. `ScreenshotCapture.swift` was **deleted** (dead since 2026-06).
+  - **KleothPillUI:** the pill gained a **backdrop** (`DictationPillBackdrop` .hidden/.idle/
+    `.recording(since:)`) plus the `.recording` / `.saving` / `.saved(String)` states;
+    `DictationPillController.setBackdrop(_:)` and `currentState` are the public contract, and
+    `dismiss()`/`collapseToResting()` land on the backdrop instead of `.idle`. **Since 2026-09-07
+    `.recording` is a horizontal TOOLBAR** (≈222×30 pt: pulsing dot · `mm:ss` · mic meter · system
+    meter · explicit Stop button — only Stop stops, the bar is the drag handle; levels via
+    `setRecordingLevels(_:)`), and `.recording/.saving/.saved` + every dictation phase over a
+    `.recording` backdrop **never rotate** on a side edge (`Layout.flat`: the bar lies flat against
+    the edge, its near end pinned 8 pt in); only the `.idle` sliver still stands up there.
+  - **KleothApp:** `ScreenRecordingController` (`@MainActor`, `@EnvironmentObject` on all four
+    scenes — drives the machine, owns the recorder, the launch sweep and the quit handshake),
+    `PillCoordinator` (the single face in front of the pill: merges dictation phases with the
+    recording backdrop, queues a `.saved` behind a live dictation), `RegionPicker`,
+    `SettingsScreenRecordingSection`, MenuView rows (record / stop-with-digits / "Saving screen
+    recording…" / "Last screen recording · 02:14 · 48 MB" + header subtitle with live digits).
+  - **`screenrec` (exe):** headless probe — `screenrec <seconds> [--display N]
+    [--region x,y,w,h] [--no-mic] [--out file] [--inspect file]`; prints frames appended/dropped,
+    audio blocks emitted/dropped, writer failures, track durations, bit rate.
+- **Keys/paths:** output = `<Settings output dir>/screen-recordings/` (default
+  `~/Kleoth/screen-recordings/`), resolved fresh per session so moving the folder in Settings
+  takes effect immediately; files `screen-<yyyy-MM-dd-HHmmss>.mp4`. **No Settings/Keychain key
+  at all** — screen recording is always available (only TCC gates it); the one persisted value is
+  UserDefaults `dev.kleoth.screenRecording.permissionRequestedAt`
+  (`ScreenRecordingDefaults.permissionRequestedDefaultsKey`) for the stale-grant detector.
+  `~/Kleoth/screen-recordings/` shows in **History → Recordings** (since 2026-09-07; it never
+  shows as a meeting). Each `.mp4` may have a `<stem>.json` transcript sidecar (see the 2026-09-07 status).
+- **Decisions:** SCStream `.screen` + `.audio` **plus a third `AVAudioEngine` mic tap**, mixed to
+  **ONE AAC track** (48 kHz stereo, 128 kbps) — no separate lanes, so a post-hoc per-lane offset
+  is not measurable. H.264, long edge ≤ **1920 px**, **30 fps**, 3 Mbps at 1080p scaled by area
+  with a **1 Mbps floor** (short clips read a few percent over 3 Mbps because of the leading
+  keyframe — it is an average, not a ceiling). **fMP4** (`fragmentInterval` 10 s) +
+  `shouldOptimizeForNetworkUse` so a crash still leaves a playable file — **player/uploader
+  compatibility is UNVERIFIED**; flipping `fragmentInterval` to nil is the one-constant retreat.
+  **Whole-app SCK exclusion** (`SCContentFilter(excludingApplications:)` on Kleoth's bundle id),
+  so the pill and the picker are never in the frame — and neither is the History window (v1
+  accepted). Quit mid-recording → `.terminateLater`, and the reply is **deferred one main-queue
+  turn** (`beginTerminationStop` can complete synchronously when the picker is up).
+  The pill is visible ⇔ `dictation.isMonitoring || recording is live`, merged in
+  `PillCoordinator.recompute()` — a recording outranks the resting capsule.
+- **Measured (this Mac, 2026-09-06):** `screenrec 10` → **10.05 s** file (video) / 10.00 s audio,
+  296 frames / 0 dropped, 500 audio blocks / 1 dropped, H.264 3.07 Mbps + AAC 48 kHz stereo.
+  Real 5-min work session → **22.2–22.6 MB/min** (target was ≤ 25). Clap test: the mic copy
+  trails the system copy by **≈30 ms** (budget < 60 ms wired) → `micOffsetCompensation` stays 0.
+  First `.screen` sample 0.38 s after start. **334 core tests green**; both packages build.
+- **Lane deviations worth knowing** (full list in the design doc §10):
+  - `CaptureGeometry.outputPixelSize` assigns the cap to the long edge **verbatim** (the old
+    `scale = cap/longEdge` then even-floor produced 1918, not 1920, on any source that does not
+    divide 1920 exactly).
+  - The machine accepts `startRequested` from the terminal `.saved`/`.failed` states (a sticky
+    fault must not block a retry) and `stopRequested` from `.checkingPermission`/`.pickingRegion`
+    (quit with the picker up → `.idle`, no file); it carries a private `pendingSince` so the
+    elapsed clock counts from the click, not the first frame.
+  - `ScreenRecorderStats.sessionOriginHostTime` was added: without anchoring on the origin the
+    probe measured 10.23 s for a 10 s recording (SCK hands the first frame over ~0.19 s in the past).
+  - `AudioMixPump` flushes a **partial tail block** on stop (whole 960-frame blocks left the audio
+    track up to 20 ms short of the video's retimed stop frame).
+  - `MicrophoneSource.handleConfigurationChange` recomputes the latency offset from the NEW
+    device (built-in → Bluetooth HFP would otherwise keep the old shift for the rest of the run).
+  - `ScreenRecorder.stop()`'s `eventSink.finish()` moved into a `defer` — a throwing exit used to
+    hang the controller's `for await recorder.events` loop forever.
+  - `RegionPicker` debounces cancel-on-lost-key by one main-queue turn (crossing to a sibling
+    overlay on a second display posts `didResignKey` on the first) and falls back to the key
+    overlay's screen when `NSEvent.mouseLocation` lands in a gap between displays.
+  - Preflight failures other than TCC ride `.permissionMissing(ScreenRecordingFailure)` — it is
+    the generic `checkingPermission` failure carrier and also delivers `.diskFull`.
+  - A stop requested while `recorder.start()` is in flight **awaits** the start task rather than
+    cancelling it (cancelling would tear a half-built SCStream apart behind `ScreenRecorder`'s back).
+  - The queued `.saved` is flushed on a forwarded dictation `dismiss()` **and** polled at 250 ms,
+    because `DictationPillController.scheduleAutoHide` calls `dismiss()` directly (so `.done` and
+    `.warning` — the two common endings — never reach the coordinator's face).
+  - `finalizeTimedOut` shows `.warning("Saved with a delay")` via a `faultOverride`, and a
+    `micLost` during the session turns the confirmation into "Saved — the microphone dropped out
+    at m:ss".
+  - The popover row renders **"02:14"**, not "2:14": it reuses `ScreenRecordingSummary.pillText`
+    verbatim so the pill and the row can never desync. If unpadded minutes are wanted, fix
+    `ElapsedFormatter`/`pillText`, never the popover.
+  - `MenuView.headerSubtitleView` is a `@ViewBuilder` (live digits need a `TimelineView`); the
+    1 Hz tick exists ONLY on the recording branch, so a resting popover schedules no redraw.
+  - `SettingsScreenRecordingSection` carries its own copy of the 5-line `captionFooter` helper
+    (`SettingsView`'s is private) — a tidy-up could hoist it into `KleothTheme.swift`.
+
+## Summarization
+- OpenRouter chat-completions. **Default model: `z-ai/glm-5.3-flash`** = `ModelCatalog.defaultModel`
+  (the ONE place the literal lives; `Settings.load`, `Summarizer.init` read it).
+  `DictationDefaults.polishModel` is DIFFERENT since the latency pass: `google/gemini-3.5-flash-lite`
+  (median 0.85–1.05 s per polish) with `fallbackPolishModel` = `ModelCatalog.defaultModel` (a test
+  pins that equality) — see the 2026-09-03 latency bullet. **Verified live
+  2026-09-03** (200 with strict `json_schema`, RU preserved). Chosen over `google/gemini-3.8-flash`
+  because this account's ZDR guardrail 404s every `google/*` endpoint — see the data-policy note
+  below; Gemini 3.8 stays selectable in `curatedFallback`. Was `google/gemini-3-flash-preview`
+  (retired) and before that `openai/gpt-4.1-mini` (policy-404'd); both are in
+  `ModelCatalog.retiredModels` and are migrated in memory on every `AppConfig` load and persisted to
+  the Keychain the first time Settings opens. ⚠️ GLM 5.3 flash is a **reasoning model** and OpenRouter
+  says reasoning "is mandatory for this endpoint and cannot be disabled" — expect ~100–500 reasoning
+  tokens per call; polish latency measured 2.6–14 s (see the 2026-09-03 status block).
+- The summary model is config: Settings → Keychain `default_model` (app), or `--model` (CLI).
+- `OpenRouterClient` sends `provider: {require_parameters: true}` and requests **structured output
+  via `response_format: {type: json_schema, strict}`** (the `MeetingSummary` schema, incl. a
+  generated `title`), transparently falling back to `{type: json_object}` on a 400/404 (keeps
+  no-train-provider compatibility). Summarizer keeps lenient JSON parse + one repair retry.
+- **Output language follows the transcript:** the system prompt mandates writing every field in the
+  transcript's language (never translating to English), and `buildUserContent` names the detected
+  language via `Summarizer.languageName` (maps both Scribe `rus` and Whisper `ru` → "Russian"), so
+  a RU meeting summarizes in RU. Was the root cause of RU meetings summarized in EN (the prompt
+  never specified an output language, so the model defaulted to its instruction language).
+- **Title from summary:** `MeetingSummary.title` becomes the meeting title only when the existing
+  title is an auto-placeholder (`MeetingMetadata.isPlaceholderTitle` — "Meeting <date>" /
+  "Recording <date>" / "Recording · …" / empty); calendar/user titles are preserved.
+- **Summary shape (lean since 2026-06-04):** `MeetingSummary` = `title?`, `tldr`, **`overview?`**
+  (detailed multi-paragraph prose — the "Summary" section), `action_items`,
+  `per_speaker_highlights`. The old decisions / key_points / open_questions / suggested_tags were
+  removed as slop at the user's request; legacy summary.json files still decode (extra keys
+  ignored, `overview` nil → section omitted, arrays lenient-default to `[]`). Reading order
+  everywhere (app view, summary.md): TL;DR → Summary → Action Items → Per-Speaker Highlights →
+  Transcript. `maxOutputTokens` 8192.
+
+### ⚠️ OpenRouter data-policy constraint (important, account-specific)
+This account's privacy settings apply TWO guardrails, and `require_parameters: true` turns both
+into **404s**:
+1. **No-train:** `"No endpoints available matching your guardrail restrictions and data policy"`
+   for `openai/*`, `mistralai/*`, `qwen/qwen3.x-max`, `x-ai/grok-*`.
+2. **Zero Data Retention (since 2026-09-03):** `google/gemini-3.8-flash` returns **404
+   `zdr-violation-by-account`** ("ZDR violation (account settings): 1 endpoint excluded") whenever
+   the body carries **`temperature`** under `require_parameters` — with `json_schema` AND
+   `json_object` alike (the parameter forces routing onto the one excluded endpoint). ⚠️ It is NOT
+   "every Google endpoint" (an earlier note said so — wrong): the same body without `temperature`
+   (= the Summarizer's) returns 200 on 3.8-flash, and `gemini-3.5-flash` / `gemini-3.1-pro-preview`
+   return 200 with schema + temperature (re-probed 2026-09-03). Since the root fixer pass,
+   `OpenRouterClient.complete`'s 400/404 retry drops `temperature` + `reasoning` (and downgrades
+   `json_schema` → `json_object`), so a polish on 3.8-flash now succeeds on the second round trip
+   instead of pasting raw. To avoid that extra round trip, relax the ZDR guardrail at
+   https://openrouter.ai/settings/privacy.
+- **Works (verified live 2026-09-03):** **`z-ai/glm-5.3-flash` = the shipped default** (200 with
+  strict structured output, RU preserved, fillers removed; reasoning model, ~100–500 reasoning tokens
+  per polish — OpenRouter rejects `reasoning: {enabled: false}` for it with 400 "Reasoning is
+  mandatory for this endpoint"). Also fine under no-train (verified 2026-06): `deepseek/*` (v4),
+  `z-ai/glm-*`, `moonshotai/kimi-*`, `minimax/*`, `meta-llama/*`.
+- To use OpenAI/Mistral: enable **"Paid endpoints that may train on request data"** at
+  https://openrouter.ai/settings/privacy (or stop sending `require_parameters`).
+- The original "OpenRouter key doesn't work" report was THIS 404, not a bad key.
+
+## Build / run
+```bash
+# Core + CLI
+swift build && swift test                       # 86 tests
+swift run kleoth summarize <dir> --model <slug> # re-summarize an existing meeting in place
+
+# App
+swift build --package-path app
+bash app/setup-signing.sh                       # one-time: self-signed "Kleoth Self-Signed" cert
+bash app/make-app.sh release                    # bundle + sign + install /Applications/Kleoth.app
+pkill -x Kleoth; open -a Kleoth                 # relaunch
+
+# Distribution
+bash app/make-dmg.sh                            # → app/dist/Kleoth-<version>.dmg (drag-to-/Applications,
+                                                #   Read Me, volume icon, signed; prints SHA-256)
+# Public (Gatekeeper-clean) tier once in the Apple Developer Program:
+#   KLEOTH_SIGN_IDENTITY="Developer ID Application: …" KLEOTH_NOTARY_PROFILE=<profile> bash app/make-dmg.sh
+# Version comes from app/bundle/Info.plist CFBundleShortVersionString (0.1.0).
+
+# Recovery / headless transcribe (NOTE: --product, not --target — see gotchas)
+swift build --package-path app --product localtranscribe
+app/.build/debug/localtranscribe <meeting-dir> [scribe]
+
+# Screen-recording probe (the shell's own Screen Recording grant applies — NOT proof of Kleoth's;
+# see §8 #0). --inspect prints bitrate / fps / track durations of an existing file and exits.
+swift build --package-path app --product screenrec
+app/.build/debug/screenrec 10 [--display N] [--region x,y,w,h] [--no-mic] [--out file]
+app/.build/debug/screenrec --inspect ~/Kleoth/screen-recordings/screen-….mp4
+app/.build/debug/screenrec --extract <file.mp4> && app/.build/debug/screenrec --words <file.m4a>  # word timings
+
+# Brand imagery (Codex image_gen via the user-level /gpt-images skill; brief = app/branding-src/BRAND.md)
+bun ~/.claude/skills/gpt-images/scripts/gpt-images.ts app/branding-src/<set>/jobs.json [--force] [--dry-run]
+swift app/branding-src/make-iconset.swift app/branding-src/icon-v2/icon-a-charcoal.png   # → Kleoth.iconset + bundle/Kleoth.icns
+swift app/branding-src/readme-images/generate.swift                                     # → docs/assets/hero.png + social-preview.png
+
+# Pill playground / filmstrip, incl. the screen-recording backdrop
+swift run --package-path app pillsandbox
+app/.build/debug/pillsandbox --film <dir> --edge right --backdrop recording \
+  --sequence idle,armed,listening,recording,saving,saved,idle
+```
+
+## Meeting folder layout (`~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`)
+`mic.m4a`, `system.m4a`, `meeting.m4a` (2-channel combined) · `transcript.json` (raw Scribe or
+synthesized) · `transcript.md` · `summary.json` · `summary.md` · `speakers.json` · `meta.json`
+(always). One meeting = one folder. Folder name encodes start time. Since 2026-07-22 a meeting can
+also hold `variants/<tier>/` (archived transcript set of the non-active tier + `variant.json`
+sidecar: tier/model/language/cost) — the six root filenames stay THE active set; filesystem is the
+source of truth for which tiers exist (no new meta key).
+
+## Current status (2026-09-10 evening — Settings window: six-page sidebar, restyled FLAT after the banner cut was rejected; installed, NOT yet seen)
+The pill batch was committed as `b2462b5` (actions + Microphone setting) and `907ac8d` (menu clicks + crash fix); the
+crash fix HELD on two real dictations (see the pill block). The Settings redesign then went through two cuts the same
+evening. **Uncommitted.** Release app rebuilt + installed (running instance NOT killed — relaunch, then ⌘, or the pill
+menu's Settings…).
+- **Cut 1 — rejected on sight.** Serif 30 pt page titles + a charcoal-gradient banner per page with 3D object art from
+  `/gpt-images` (chosen via AskUserQuestion after the Wispr Flow comparison). The user's verdict, pasted as a critique:
+  "muddy dark-gray-on-dark-gray… huge serif typography is bizarre here… 3D art looks like generic AI/SaaS stock… card
+  soup… it's trying to look premium instead of trying to look precise" → push toward Raycast / Linear / native macOS
+  utility. Decided (AskUserQuestion): native grouped form · the banner actions survive as plain rows · follow the system
+  appearance (no forced dark). The banner code, the six `Resources/Banner*.png` and `branding-src/banners/` (incl. its
+  `jobs.json`) were DELETED — none of it was ever committed. BRAND.md now says: no illustration in Settings or any form.
+- **Cut 2 — current.** `SettingsView` = `NavigationSplitView` at a fixed 780×560 inside the SwiftUI `Settings` scene (⌘,
+  and `showSettingsWindow:` still work). Sidebar 180 pt = `SettingsPage` (`Views/SettingsPage.swift`, enum only):
+  Features → Meetings / Dictation / Screen Recording; App → Microphone / Accounts / General; the pick persists in
+  `@AppStorage("dev.kleoth.settings.page")`. Each page is ONE `.formStyle(.grouped)` `Form` under
+  `.navigationTitle(page.title)` — no custom chrome at all; `.id(page)` per page. Settings section headers are plain
+  `Text` (the accent-icon `KleothSectionHeader` stays for the popover / consent / summary / rename views — untouched).
+  Sections: Meetings = on-device model + summarization + calendar + a "History → Open Meetings" row; Dictation =
+  `SettingsDictationSection` + "History → Open Dictations" (`DictationController.requestDictationHistory()`, shared
+  with the pill menu); Screen Recording = `SettingsScreenRecordingSection` + "Record → Record Screen…" /
+  "History → Open Recordings" rows; Microphone = the device picker; Accounts = keys + a "Get a key" row linking to the
+  ElevenLabs / OpenRouter key pages + usage; General = output + shortcuts + Onboarding ("Show Welcome Window", back as
+  it was). `openHistory(_:)` = bump the scope's request counter + `openWindow("kleoth-history")` (the popover idiom).
+  All `@State` and `commitAll()` stay on `SettingsView` (every page's edits flush on close as before).
+- ⚠️ **Not seen by anyone yet** (the shell cannot screenshot the app; the debug binary would be a second Kleoth). Check by
+  eye: the window title reads the page name; group panels + plain headers look like System Settings in BOTH
+  appearances; 780×560 fits every page (the dictionary editor, the model pickers) without cramping; the History /
+  Record rows; ⌘, from the popover and Settings… from the pill both land on the last page.
+
+## Current status (2026-09-08/09/10 — pill menu + peek dock: DECIDED, WIRED, menu clicks FIXED, app installed)
+User, after a Wispr Flow comparison ("their pills… so smooth, so responsive… ours does nothing, no hovering,
+no nothing"): "Show me the demo and we will decide whether it makes sense to do or not." **Decided 2026-09-09
+("feel free to commit and rebuild app, i like it"): committed as `af71499` (pill) + `50e0309` (ident). Same
+day ("let's finish the pill itself… make the buttons actionable, clickable"): every pill action is WIRED —
+uncommitted as of this note; release app rebuilt + installed (running instance NOT killed — relaunch to test).**
+How each one works:
+- ⚠️ **First human test (2026-09-10; user: "none of the …more buttons are working, tested after restart"): every menu
+  row was DEAD — root-caused from the system log, not guessed.** `log show --predicate 'process == "Kleoth"'` had an
+  AppKit `Invalid message sent to event` error at the click's timestamp with `-[NSEvent keyCode]` ←
+  `installMenuMonitors` in the backtrace: the menu's LOCAL event monitor read `event.keyCode` before checking the type;
+  `keyCode` raises `NSInternalInconsistencyException` on a mouse event, and AppKit swallows the exception at the run
+  loop TOGETHER WITH THE EVENT, so a click on a row (or on any other Kleoth window while the menu was up) never reached
+  the button. Reproduced with a 5-line probe (`NSEvent.mouseEvent(...).keyCode` → the same exception). Fixed:
+  `keyCode` is read only for `.keyDown` (`isEscape`). The sandbox never caught it because its film hooks call
+  `perform(_:)` directly. Release app rebuilt + installed (running instance NOT killed — relaunch to test); the rows
+  are still not human-verified AFTER the fix.
+- ⚠️ **Second human test (2026-09-10 14:42, twice in 30 s; user: "once i finish dictation the app is crashed"): SIGABRT
+  from AppKit's layout-loop guard on the PILL PANEL** — `NSGenericException: The window has been marked as needing another
+  Update Constraints in Window pass, but it has already had more Update Constraints in Window passes than there are views
+  in the window. <DictationPanel> {{712, 11}, {160, 68}}` (crash reports `~/Library/Logs/DiagnosticReports/Kleoth-2026-09-10-1442{30,56}.ips`).
+  Evidence: the throw stack is `NSHostingView.windowDidLayout` → `updateAnimatedWindowSize` → `-[NSWindow _setFrameCommon:]`
+  → `setFrameSize` KVO → `NSHostingView.invalidateSafeAreaInsets` → `setNeedsUpdateConstraints` → next pass, with NO Kleoth
+  frame in it: SwiftUI's hosting view resizes the window on every layout pass and each resize schedules the next. lldb on
+  SwiftUI (`disassemble -n '$s7SwiftUI13NSHostingViewC15windowDidLayoutyyF'`): the callback is skipped when
+  `NSHostingView.windowSizeBridge` is nil, otherwise `WindowSizeBridge.clampedWindowSize(minSize:maxSize:)` clamps the window
+  to the root view's min/max (`AnimatedRootSizeFeatureDelegate.animatedRootSizeChanged`). Both crashes came ~100 ms after
+  the Scribe upload started (`CFNetwork "Task … resuming, timeouts(30.0, 60.0)"` at 14:42:23.906 / 14:42:53.592 — the
+  dictation transport's timeouts), i.e. while the listening → transcribing morph was in flight: 160×68 is the STAGE
+  (`transition`'s union rect), not a settled phase. A dictation into Telegram at 14:30:54 on the same process was fine;
+  the pill placement plist was rewritten at 14:38 (the user dragged the pill: `relativeCenterX` 0.5472 = 788 px);
+  today's day file has no rows for the crashing runs (the process died before the log append).
+  **NOT reproduced in `pillsandbox`** — 12 films (bottom/right, hidden backdrop, 10 s in each wave phase, 30 alternating
+  morphs at 60 fps, fractional anchors, the menu rows, and REAL clicks on the Dictate field + the hands-free capsule via
+  the new film item `click:mic|rec|menu|center`, which sends a synthesized mouse down/up to the pill's own window so its
+  SwiftUI `Button` fires) all ran clean, and lldb breakpoints show `windowDidLayout` is NEVER called for the pill in the
+  sandbox, with the old wiring or the new: the bridge only exists in the app (SwiftUI `App` lifecycle, presumably).
+  **Applied (all in `DictationPillController`, compile-checked + filmed, NOT human-verified):** (1) the hosting view is a
+  SUBVIEW of a plain layer-backed container (`Self.container(for:size:)`) for BOTH panels — never the window's content
+  view, so SwiftUI has no window to size; (2) every `panel.setFrame(…, display: true)` in `transition`/`settle` runs
+  inside `withTransaction(disablesAnimations)`; (3) `perform(_:)` dispatches `closeMenu()` + `onAction` one main-queue
+  turn later (a pill button must not resize its own window from inside its press callback); (4) opt-in frame trace:
+  `defaults write dev.kleoth.app KleothPillTrace -bool YES` (SET on this Mac) logs every panel resize/move with the phase
+  and the top three non-system stack frames (pipe `log show` through `swift demangle`) to `subsystem == "dev.kleoth" AND category == "PillTrace"` at error level —
+  if it recurs, that log + the crash report say whether SwiftUI (`updateAnimatedWindowSize`) or Kleoth wrote the frame.
+  Release app rebuilt + installed 15:09; the trace attribution was fixed and reinstalled at 20:30. **Held on first real use:** two
+  dictations into Ghostty at 20:01 and 20:07 on the fixed build ran listening → transcribing → polishing → done →
+  paste with no crash, every frame write attributed to `DictationPillController.transition/settle`, none to `NSHostingView`.
+  Still open: how were the two crashing
+  dictations started and ended (fn+shift vs the pill's Dictate field / a click on the listening capsule)?
+- **Dictate field / "Start dictation" row = a hands-free session from a click.** `DictationController.
+  startHandsFreeFromPill()`: the same `preflight()` gates as chord-down (extracted from `handleArmed`), the same
+  `DictationCapture`, then `monitor.syncHandsFree(true)` → new `ChordSignal.externalHandsFreeOn` parks
+  `DictationChordMachine` in `.handsFree` (tested), so the next fn+shift press reads as `.toggledOff` and ends
+  the session like a double-tap one, and Esc / ✕ abort it through the paths that already existed. The click on
+  the listening capsule → `stopHandsFreeFromPill()` → `syncHandsFree(false)` (`.externalHandsFreeOff`:
+  `.handsFree → .idle`, silent) → `finishListening()`. The pill goes straight to `.listening` (no `.armed` beat).
+- **Microphone ▸ = ONE app-wide input-device setting, honoured by all three captures** (meetings, dictation,
+  screen recordings — the open question "meetings too?" was decided this way without asking; the user was told).
+  `Settings.inputDeviceId` (config `input_device`; Keychain `Keychain.Account.inputDevice` = `input_device`,
+  an EMPTY value = explicit Automatic that overrides config.json) ← Settings → new "Microphone" section (Picker,
+  2 s device poll, a "Not connected" row keeps an unplugged pick selectable) and the pill menu
+  (`DictationController.setInputDevice`). Plumbing: new **`KleothCapture/InputDevices.swift`** (`InputDevice`
+  = UID + name; `list()`, `defaultInputName()`, `resolvedName(for:)`, `select(_:on:)`);
+  `DictationCapture.inputDeviceId` / `MicCapture.inputDeviceId` / `Recorder.inputDeviceId` /
+  `MicrophoneSource(inputDeviceId:)` ← `ScreenRecordingConfiguration.microphoneDeviceId`;
+  `RecordingController.start` and `ScreenRecordingController` read `AppConfig.settings().inputDeviceId`.
+  ⚠️ HOW: `AudioUnitSetProperty(inputNode.audioUnit, kAudioOutputUnitProperty_CurrentDevice, …)` on the
+  session's fresh engine BEFORE `inputFormat(forBus:)` is read — probed 2026-09-09 with the WH-1000XM5 as the
+  system input (16 kHz): the pinned built-in mic came back at 48 kHz with frames (`dictate 2 --device
+  BuiltInMicrophoneDevice` → "captured 1.92 s @ 48000 Hz"; unpinned → 16000 Hz). The system default is never
+  touched. A pick that is not connected falls back to the system input silently (os_log notice). Not probed: a
+  PINNED device unplugged mid-session (the config-change handlers read the node's format as before).
+  `dictate --list-devices` prints UIDs; `dictate N --device <uid>` pins one.
+- **Paste last dictation** → `pasteLastDictation()`: the newest log row (`logStore.loadAll(limit: 1)`) through
+  the same `TextInserter` (snapshot → ⌘V → restore), `.done` check / `.warning` on clipboard-only; refused
+  unless `phase == .idle`. The row's subtitle = the first 48 chars (`preview(of:)`); disabled on an empty log.
+- **Dictation history…** → `DictationController.dictationsHistoryRequest += 1`: `KleothMenuBarLabel` (the one
+  view with a SwiftUI environment) observes it → `openWindow("kleoth-history")` + activate; `HistoryView`
+  observes it → `scope = .dictations` (the `meetingsHistoryRequest` idiom).
+- **Hide for 1 hour** → `hidePill(for:)`: `pillHiddenUntil` + `updateResting()` = `pill.setResting(isMonitoring
+  && pillHiddenUntil == nil)` (`isMonitoring.didSet` goes through it now); `pillSnoozeTask` brings it back; the
+  popover shows "Pill hidden until h:mm · Show now" (`MenuView.pillHiddenNotice` → `showPillNow()`). The hotkey
+  keeps working while hidden (a session rises and sinks into nothing). ⚠️ Pill-side fix that came with it:
+  `DictationPillController.handleHover` also requires `backdrop == .idle` — a resting pill FADING OUT is still
+  `.idle` for `fadeOutDuration` (0.18 s) and `closeMenu()`'s pointer re-check at 0.13 s could `show(.idle)` it
+  back (a menu row on a side edge lies inside the pill panel's shadow margin).
+- **Contract:** `DictationPillPresenting.menuContent` (forwarded by `PillCoordinator`'s `DictationFace`;
+  `DictationController.menuContent()` builds `PillMenuContent` from `InputDevices` + the log on every open) and
+  `DictationHotkeyMonitoring.syncHandsFree(_:)`. `handlePillAction` no longer `dismiss()`es after the menu
+  actions (only Settings / Accessibility do). 354 core tests (+8: 6 machine, 2 settings). The "never edit
+  AudioFormat/DictationCapture/MicCapture" rule from the parallel-lane days is retired — no lane owns them now.
+- ⚠️ **NOT runtime-verified by a human (all of it):** the click-started hands-free session end to end (click →
+  listening → click / fn+shift / Esc → paste), the mic pick in the real app (Settings picker, the menu's check
+  mark and "in use" subtitle, a meeting + a screen recording on the pinned device), paste-last into a real app,
+  the History window opening on Dictations from the pill, hide-for-an-hour + the popover row. `pillsandbox`
+  keeps its own demo `InputDevices` copy (linking KleothCapture would pull WhisperKit into the sandbox build).
+The rest of this block is the demo's history.
+- **What the demo does (KleothPillUI, driven by `pillsandbox`):** hovering the resting sliver now pulls out a
+  **peek dock** — `PeekDock` in `DictationPillView.swift`. **Since 2026-09-09 (user on the first cut: "so
+  small… too dense… three independent fields"): three captioned FIELDS — Dictate · Record · More — each a
+  visible rounded plate (`PillDockTile`), tinted under the pointer (accent / red / white), 1.05× lift,
+  pointing-hand cursor, tooltip, pressed squash (`PillDockTileStyle`); every point of the capsule belongs to
+  a field (gaps + insets are folded into the hit areas). Geometry comes from ONE scale factor —
+  `PillDockMetrics` (public, end of `DictationPillView.swift`): default 2.5× = 210×60 pt (was 96×26 at 1×);
+  tile 24s×20s, pitch = tile + gap, captions from 1.8× — read by both the view and
+  `DictationPillController.layout(for:…dock:)`, so they cannot disagree. The controller exposes
+  `dockMetrics` / `setDock(_:)` (re-lays the dock out in place, menu follows); the sandbox has a
+  "Dock scale" slider 1–4×. **Two LOOKS, compared live (same day; user on the first tiles: "ugly gray…
+  cheap highlighting… regular liquid glass controls, or beautiful"):** `PillDockStyle` (.glass / .ink, in
+  `PillDockMetrics.style`; `resolvedStyle` applies availability). Glass = the capsule itself is REAL Liquid
+  Glass — the CLEAR variant over a dimming capsule in the same window (`ZStack { Capsule().fill(black
+  0.45); Color.clear.glassEffect(.clear, in: Capsule()) }` as the capsule's background under
+  `#available(macOS 26, *)`, no rim/sheen, white ink); both pill panels are pinned to `.darkAqua`; Ink = a near-black, slightly blue
+  gradient surface with a top-lit rim (`PillDockStyle.inkSurface/inkRim`). In both, fields have NO plates at
+  rest — hairline dividers — and the field under the pointer gets only a QUIET lift: a faint white plate
+  (0.12 / 0.09), ink to full white, 3 % scale, neighbouring hairlines fade (user on the first, tinted
+  version: "less provocative, less nudgy… nothing turning blue").
+  The fields are deliberately NOT glass themselves (Apple: never stack glass on glass). Verified with REAL
+  screen grabs — film item `grab` (`grab-N.png`; `captureFrame` sees only our window's pixels, so glass
+  looks empty there) + `--dock-style glass|ink --dock-scale N`. ⚠️ **Why clear-over-dim, root-caused with timed grabs
+  (user: "a white background for a couple of seconds when I hover, then it animates into the glass"):**
+  `.regular` Liquid Glass ADAPTS its tone to the backdrop's brightness ~0.5 s after it appears — grabs at
+  0.1 s were dark, from 0.5 s on near-WHITE over a light page (white ink on it), regardless of a black
+  `.tint` (glass tints are faint accents) and of pinning the window's appearance. Ink never adapts either:
+  `Color.primary` and the hierarchical `.primary` both resolve from the panel's appearance, not the backdrop.
+  `.clear` glass does not adapt; the dark capsule beneath it in the same window is what it refracts, so the
+  dock is dark from the first frame over light and dark backdrops (grabbed both). Film rig for this:
+  `--stage light|dark` opens a plain `StagePanel` behind the pill (created lazily once the pill's panel
+  exists — a `.zero` frame put it at x = −450), `wait:<s>` items for timed grabs, and
+  `DictationPillController.ignoresRealPointer` (set in film mode) so the user's mouse cannot tuck a film. The dock is thicker than the anchor's reference size, so `activeOrigin`'s clamp
+  nudges it inward (near side ≈ 26 pt from the screen edge, grows inward) — no dock-specific placement code.
+  ⚠️ **Collapse ghost — root-caused with a 60 fps film + a red-paint test (user, 2026-09-09: "the boxes become
+  oversized and then glitchy added into the idle state"):** SwiftUI keeps a REMOVED view on screen for its
+  transition at the size it had when removed, top-left anchored, and never re-lays it out. The dock's surface
+  was a `switch` in `.background` swapped back to the pill's fill the moment `peeking` dropped, one turn BEFORE
+  the capsule started shrinking — so a full-size 210×60 ghost of the outgoing surface faded behind the sliver
+  as it shrank (painted red to prove it), and the fields' own removal ghost drifted off-centre. Rule now: **two
+  layers, never a swap while the capsule is resized.** `DictationPillModel.dockHeld` (set in `setPeeking(true)`,
+  cleared only by `releaseDockSurface()` from `settle()` / the Reduce Motion jump / `finishHide`) keeps the
+  dock's surface (`dockFill`) AND the `PeekDock` mounted through the collapse; the pill's fill and rim are always
+  mounted and only fade (`opacity(dockOut ? 0 : 1)`, 0.2 s); the fields fade in place in 0.1 s and are removed
+  with `.identity` at settle, already invisible. Filmed clean on bottom + right edges, ink + glass (real grabs
+  over the light stage: `--grab-frames` writes `shot-NNNN.png` of a fixed 440×170 region every tick — the only
+  way to film Liquid Glass in motion), and dock → `.armed` → listening. Pre-existing, left alone: on a SIDE edge
+  the peek transition's completion never fires (the panel stays at the 133-wide stage until the unpeek; the
+  bottom edge settles in 0.3 s) — invisible, only the transparent margin is wider.
+  Same day, user on the record cycle ("only the icon-text for More is not the same as for the rest"): the tile
+  glyph now sits in a fixed slot (`PillDockMetrics.iconSlotHeight` = 1.25 × icon size) so the three captions
+  share a line — the ⋯ is a quarter of the mic's height and pushed its caption up. The sandbox's Stop used to
+  drop the recording backdrop BEFORE `.saving`, which tucked the bar and left the saving capsule EMPTY for its
+  1.2 s; it now follows the app's order (`show(.saving)`, drop the backdrop 1.2 s later, `.saved`). And a phase
+  that lands on `.idle` under a PARKED pointer (the `.saved` confirmation after a recording, a dismissed fault)
+  now peeks straight out: `DictationPillController.reconsiderPointer()` re-reads `NSEvent.mouseLocation` once
+  the phase is `.idle` (AppKit sends `mouseEntered` only on movement, so the pill used to stay tucked until
+  the pointer left and came back) — not runtime-verified by a human. Film items added for this: `perform:<action>`
+  (fires the pill action, so the sandbox driver's own Record/Stop simulation runs), `backdrop:hidden|idle|recording`.
+  `DictationPillController.perform(_:)` is public now. User's "after recording all 3 are dispersed for some
+  time" is NOT reproduced by the filmed cycle (`idle,peek,hover:rec,perform:startScreenRecording,…,
+  perform:stopScreenRecording,…,peek` comes back with three aligned fields) — awaiting the user's description.
+  Hover per field is computed from the panel-wide pointer re-expressed relative to the capsule and UN-ROTATED
+  (`DictationPillView.dockPointer`; root is a `GeometryReader` now) — filmed correct on the right edge, where
+  the three fields stack with upright captions.
+  Mic glyph → `.startHandsFreeDictation`; the hands-free capsule shows a stop square under the pointer and a
+  click → `.stopHandsFreeDictation`. Record glyph → `.startScreenRecording` (a tap on the capsule BODY no
+  longer starts a recording — it opens the menu). ⋯ / body tap / **right-click** (`DictationPillHostingView.
+  onSecondaryClick`) → `DictationPillController.openMenu()`.
+- **The menu is the pill's OWN panel (`PillMenu.swift`: `PillMenuPanel` + `PillMenuModel` + `PillMenuView`),
+  NOT an `NSMenu`:** AppKit silently refuses `NSMenu.popUp` for an app that is not active (verified: `popUp`
+  returned at once, no window; after `NSApp.activate` the window existed but never came on screen from the
+  headless sandbox), and activating steals the caret from the app being dictated into. The panel is a
+  `.nonactivatingPanel` at `.statusBar` level with SwiftUI rows (dark, `PillMenuStyle.surface`), hover rows
+  from an `.activeAlways` tracking area (works while another app is active), placed on the pill's inward side
+  from the capsule's DESTINATION rect (`layoutMenu`, size computed by `menuContentSize`, never measured),
+  scales in on `peekSpring`. Rows: Start dictation (subtitle "or hold fn + shift") · Record screen… ·
+  Microphone ▸ (subtitle = device in use; click expands the list INLINE: Automatic + every CoreAudio input
+  device with a check) · Paste last dictation (subtitle = preview; disabled when none) · Dictation history… ·
+  Hide for 1 hour · Settings…. Closes on a click anywhere else (global + local `NSEvent` monitors), Esc, any
+  action, a drag, or the ⋯ glyph again; the peek is held while it is open (`menuOpen` guard in `handleHover`).
+  Content comes from the host: `DictationPillController.menuContent: () -> PillMenuContent` (`PillMicrophone`
+  list, selected id, in-use name, last-dictation preview, hotkey) — the pill library keeps no audio state.
+- **Contract additions (`PillTypes.swift`):** `DictationPillAction` gained `.startHandsFreeDictation`,
+  `.stopHandsFreeDictation`, `.selectMicrophone(String?)`, `.pasteLastDictation`, `.openDictationHistory`,
+  `.hideForAnHour`; `PillMicrophone`, `PillMenuContent`. The three app-side switches (`PillCoordinator.route`,
+  `DictationController.handlePillAction`, `ScreenRecordingController.handlePillAction`) list them; the
+  dictation one only logged "pill action not wired yet" until 2026-09-09 — see the top of this block.
+- **Sandbox (`pillsandbox`):** `menuContent` lists REAL input devices via CoreAudio (`InputDevices`, read-only,
+  no mic permission; showed "WH-1000XM5" live), actions are simulated (`SandboxDriver.handle`: hands-free =
+  listening on synthetic speech → transcribing → polishing → done; record = recording backdrop with meters;
+  hide for 1 hour = 6 s) and logged in a new "Pill menu + peek dock (demo)" section. Film mode gained
+  `hover:mic|rec|menu|center|off` (`setPointer`, edge-aware, steps by `dockMetrics.pitch`), `click:<spot>` (2026-09-10: a REAL
+  mouse down/up synthesized in the pill window's coordinates and sent with `window.sendEvent` — the SwiftUI button under
+  the spot fires from inside its own hosting view; no Accessibility needed) and `menu` (opens the panel, `menu.png` screen
+  grab at +0.5 s via `CGWindowListCreateImage`, closes after `--hold`); the control window is 760 pt tall
+  (was collapsing to 32); `applicationShouldTerminateAfterLastWindowClosed` is false in film mode (a closing
+  menu window quit the process with exit 0 and no frames). Run: `swift build --package-path app --product
+  pillsandbox && app/.build/debug/pillsandbox --fraction 0.7` (0.7 keeps it clear of the real Kleoth's pill,
+  which sits at the same bottom-centre spot while the app runs).
+- ⚠️ Synthetic `CGEvent` clicks from the agent's shell do nothing here (no Accessibility for the terminal;
+  `osascript` says the same) — the pointer probe `scratchpad/probe.swift` is dead; film hooks are the way.
+- **Done 2026-09-09 (top of this block):** the six actions are wired. Still unverified by a human:
+  `reconsiderPointer()` (parked pointer → peek) and the user's "after recording all 3 are dispersed for some
+  time" report (not reproduced on film; awaiting their description).
+
+## Current status (2026-09-08 — new ident + `/gpt-images` skill)
+User: "go beyond refactoring Kleoth — configure a tool so Claude can use GPT Codex for image generation
+(icons, illustrations, idents), keep it focused on Kleoth for now, and inject the new ident icons and
+animations I already built." Decisions (AskUserQuestion): lyre variant **05 Green stone**; all four
+surfaces switched (empty states, in-app lyre mark, app icon, README images); skill invoked both
+automatically and as **`/gpt-images`**. Nothing committed; release app reinstalled (running instance NOT killed).
+- **`~/.claude/skills/gpt-images/`** (user-level; SKILL.md + `scripts/gpt-images.ts`): one headless
+  `codex exec --json -s read-only` per job → Codex's built-in `image_gen` (no API key; the ChatGPT login)
+  → PNG lands in `~/.codex/generated_images/<thread>/` → copied to the job's `out`, plus `prompts.json`
+  manifest + `preview.html` contact sheet next to it. Jobs = `[{out, prompt, transparent?, refs?, size?,
+  maxEdge?}]`; idempotent (skip if `out` exists, `--force`), `--concurrency 2`, `--dry-run`. Verified:
+  transparent request → genuine-alpha 1254×1254 PNG in ~45–60 s; four icons at concurrency 2 in ~100 s.
+  ⚠️ Gotchas: the prompt goes in on **stdin** (`-`) — `-i <FILE>...` is variadic and swallows a positional
+  prompt as another image path ("No prompt provided via stdin"); macOS has no `timeout`; the image model
+  **cannot count** (six / seven / five strings across three tries) — never re-roll for a count. The skill
+  reads a per-project brief: **`app/branding-src/BRAND.md`** (the satin-silver + muted-teal object family,
+  forbidden list, surfaces/sizes, the canonical prompts). Going system-wide = a BRAND.md in another project.
+  The old Gemini path `branding-src/generate.mjs` stays for OpenRouter experiments only.
+- **Empty states:** the Codex-made V2 cutouts (`cleos-v2/`, 2026-09-06) now ARE `Resources/Empty*.png`
+  (528 px, alpha; 1254 px sources in `cleos-v2/src/`). `KleothIllustration` shows them floating
+  (`scaledToFit`, soft shadow, no tile/clip/hairline — a rounded tile would cut the transparent art).
+- **Lyre mark:** `kleoth-lyre/lyre-green{,-light}.svg` + `lyre-template.svg` exported from the studies page
+  by script (no path data retyped); **`Views/LyreMark.swift`** = `KleothLyre` (SVG paths parsed once),
+  `LyreMotion` .idle breath / .recording quiver / .processing ripple / .still (the page's `animate()`
+  formulas verbatim), `LyreMark(motion:intensity:accessibilityLabel:)` on a `Canvas`; `TimelineView` only
+  while motion ≠ .still, Reduce Motion → .still. Wired: popover header (`MenuView.appMarkMotion`: recording /
+  isProcessing / idle) and onboarding (.idle). Menu bar: `MenuBarGlyph.png` regenerated from the template
+  SVG (`kleoth-lyre/rasterize-template.swift` → `maketemplate.swift`), loader unchanged.
+- **App icon:** `icon-v2/icon-a-charcoal.png` (user's pick of A–D; `dock-preview.html` shows them masked) →
+  new **`branding-src/make-iconset.swift <artwork>`** (Apple grid: 824-px body, r 185.4, transparent 1024) →
+  `Kleoth.iconset` (gitignored, regenerable) + `bundle/Kleoth.icns` (tracked). `readme-images/generate.swift`
+  retargeted (teal glow, silver kiss, Apple-grid clip) → `docs/assets/hero.png` + `social-preview.png` regenerated.
+- ⚠️ **Not runtime-verified:** the floating empty states, the animated header mark and the new Dock icon
+  by eye (relaunch: `pkill -x Kleoth; open -a Kleoth`). shck.dev's two Kleoth images are app screenshots
+  (`public/img/kleoth/{history,popover}.jpg`) — recapture after the relaunch; nothing to regenerate there.
+
+## Current status (2026-09-07 — recordings viewer + live recording toolbar, phase 2)
+✅ **v0.3.0 RELEASED (2026-09-07):** `feat/recordings-viewer` fast-forwarded into `main`, tag `v0.3.0`,
+https://github.com/ofcRS/kleoth/releases/tag/v0.3.0 — `Kleoth-0.3.0.dmg` (12.2 MB, SHA-256
+`00fd1be6…`) + `.sha256` attached; README download link + Homebrew cask draft point at 0.3.0; CHANGELOG
+`[0.3.0]` cut from `[Unreleased]` (the recordings viewer is labelled a proof of concept there and in the
+README). `CFBundleVersion` 3. Self-signed tier (right-click → Open). The user tested the toolbar +
+recordings live before the cut ("more than fine"); after the AVKit fix, two recordings auto-transcribed
+on device (RU, 19 + 100 words). ⚠️ Gotcha seen during the cut: the FIRST WhisperKit load after a new
+binary is installed took **243 s** ("Loaded models for whisper size: large-v3 in 242.98s" — Core ML
+re-specializes the ANE plan per binary), the next 1.4 s — a fresh install looks stuck on its first
+transcription for ~4 min with the app at ~170 MB RSS; nothing is wrong.
+Branch `feat/recordings-viewer` (T0 contract b909a45 + four Opus lanes L2/L3/L4/L5 in worktrees,
+merged; `main` holds v1 at eaa815f + the popover fix 80b15f9). Design doc
+`docs/plans/2026-09-07-recordings-viewer.md`. **346 core tests green** (+7 `ScreenRecordingRecordTests`);
+both packages build with zero warnings; release app installed (running instance NOT killed). Nothing pushed.
+- **User verdict on v1 that drove this:** the recording pill was "ugly, small, non-responsive, not
+  animated"; it must "respond better on orientation change / drag left-right"; "no UI for the
+  transcription — transcript beside the video, current word, click it, maybe change it, plus a list of
+  recorded videos"; popover rows only clickable on the text (fixed: `KleothRowButtonStyle`/`.kleothRow`
+  in KleothTheme — a plain `Label` hit-tests only glyph + letters; `contentShape(Rectangle())` fixes it).
+  Decisions: recordings are **NOT meetings** ("just recordings, similar to Loom"), transcription runs
+  **after** the save (not live subtitles), automatically on device, word timestamps on; PoC depth.
+- **Storage:** flat `~/Kleoth/screen-recordings/`; sidecar `<stem>.json` = `ScreenRecordingRecord`
+  (snake_case, ISO-8601: `schema_version`, `title?`, `duration_secs?`, `language_code?`,
+  `transcript_tier?`, `transcript_model?`, `transcribed_at?`, `transcript_error?`, `words[{text,start,end}]`).
+  No sidecar = untranscribed; error + no words = failed (retryable). Edits (title, words) rewrite the
+  sidecar only. `ScreenRecordingStore.listRecordings/loadRecord/saveRecord/trash`;
+  `ScreenRecordingFileNaming.sidecarURL/isFinishedRecordingName/date(fromStemOf:)`;
+  `ScreenRecordingItem.transcriptState`; `ScreenRecordingRecord.wordIndex(at:)` (binary search),
+  `replacingWord(at:with:)`, `words(from: ScribeResponse)` (drops spacing/audio_event/untimed).
+- **Transcription job (`ScreenRecordingController.transcribe(_:tier:)`):** shares
+  `RecordingController.enqueuePipelineJob` (now internal — one WhisperKit at a time) →
+  `RecordingAudioExtractor` (AVAssetExportSession AppleM4A → `$TMPDIR/kleoth-recordings/<stem>.m4a`,
+  deleted after; measured 8 s movie 1 MB → 174 KB m4a in 0.24 s) → `LocalTranscriber(language:,
+  wordTimestamps: true)` (WhisperKit `segment.words` → one `ScribeWord` per word; `false` = the meetings
+  path, byte-identical — probe: 19 timed words vs 1 segment on the same file) or `ScribeClient`
+  (diarize off; refuses with a written error when no key). Zero words → `transcript_error` "No speech
+  was found…". A failed retry never wipes existing words. `showSaved()` seeds a duration-only sidecar
+  and auto-transcribes on device; recovered/old files only via the viewer's buttons. Scratch dir swept
+  at launch. `transcribingPaths` drives the row spinner.
+- **Viewer:** `HistoryScope.recordings` → `RecordingsListView` (DictationsListView pattern: day
+  sections, search over title + words, badges Untranscribed / Transcribing… / Failed, context menu
+  Reveal / Trash, single selection) → `RecordingDetailView` (editable title, date/duration/size chips,
+  tier badge; AVKit `VideoPlayer` left + 340 pt transcript right, stacks under 760 pt;
+  `RecordingWordFlowLayout` wraps word buttons, paragraph break when the gap > 1.5 s; highlight =
+  `wordIndex(at: currentTime)` from a 0.1 s periodic observer, auto-scroll only while playing and not
+  editing; click = seek, double-click = inline TextField (Return commits, Esc cancels, click-away
+  commits, empty removes); toolbar Copy transcript / Reveal / Re-transcribe menu / Move to Trash with
+  confirmation). Popover "Last screen recording" row gained "Open" → History on Recordings selecting it
+  (`recordingsHistoryRequest` + `selectedRecordingID`, the meetings idiom).
+- **Toolbar + levels:** `ScreenRecorder.levels` (per-buffer RMS in `MicrophoneSource` /
+  `SystemAudioSink` into `LevelWord`s; reset on stop/give-up; system meter live from the first audio
+  block, before the first video frame) → controller `startLevelPump()` (20 Hz `Task` loop from
+  `showRecording()`, stopped + zeroed in `cleanUpSession()`) → `PillCoordinator.setRecordingLevels` →
+  `DictationPillController.setRecordingLevels` (normalized + smoothed like dictation). Pill lane
+  deviations: `.saving` wave is 39 bars (14 left the 222 pt bar mostly empty); `.armed` over a recording
+  backdrop borrows the listening size; Stop hover is a precise pointer-vs-frame test (`DictationPanel`
+  `.mouseMoved` → `onPointerMove`; SwiftUI `.onHover` is dead while another app is active);
+  `referenceSize` on bottom/top now includes the bar, so a pill docked in a corner sits ~34 pt further
+  in even with no recording. `screenrec` prints `mic=0.000 sys=0.223` per second (3 decimals — a
+  headset mic on a desk reads ~5e-4).
+- **Filmed (pillsandbox, `--levels speech`):** bottom `idle,recording,saving,saved,idle` — the bar grows
+  out of the edge, meters move, every phase centred on the anchor, no jump at settle; right edge — bar
+  horizontal, right end pinned at bounds.maxX − 8; left/right `--backdrop recording` with
+  `armed,listening,done` — every dictation phase horizontal, near end pinned; bottom dictation regression
+  unchanged.
+- ⚠️ **NOT runtime-verified (needs the human):** everything in the signed app — the toolbar by eye and
+  its Stop click/hover, the drag across an edge flip mid-recording, the auto-transcription after a real
+  recording, the Recordings scope, playback + highlight + click-seek + inline edit persisting across a
+  relaunch, cloud transcription, the popover "Open" link, trash of both files. Viewer notes: Space-to-play
+  may be claimed by AVKit's own transport; the inline field width is measured with the system font.
+- **TODO for the user — checklist (design doc §7):** relaunch (`pkill -x Kleoth; open -a Kleoth`), then
+  1. Record ~20 s while talking with music playing → both meters move, digits tick, Stop ends it; a
+     stray click elsewhere on the bar does nothing.
+  2. Drag the bar to the left edge mid-recording → stays horizontal, hugs the edge; back to the bottom.
+  3. fn+shift mid-recording on a side edge → the dictation capsule stays horizontal, returns to the bar.
+  4. History → Recordings: the new file shows "Transcribing…", then words; play → the highlight follows;
+     click a word → seeks; double-click → edit → Return → relaunch → the edit is still there.
+  5. An old recording → "Transcribe on device" → words; "Transcribe in cloud" → words (needs the key).
+  6. Move to Trash → both the `.mp4` and the `.json` are in the Trash.
+  Merged → `main` and released as v0.3.0 (see the top of this block).
+
+## Current status (2026-09-06 — screen recording v1)
+Branch `feat/screen-recording` (T0 contract + six parallel lanes T1–T6 + a T7 integration/review
+pass). Design doc `docs/plans/2026-09-06-screen-recording.md`. **338 core tests green** (was 257:
++46 T1 geometry/machine/naming/formatter, +31 T3 HostClockMath/AudioRing/MixMath, +4 `DeadlineTests`); both packages
+build with zero warnings; `screenrec 10` → 10.05 s file, 296 frames / 0 dropped, 500 audio blocks /
+1 dropped, H.264 3.07 Mbps + AAC 48 kHz stereo, 22.2–22.6 MB/min on a real 5-min session; the
+`pillsandbox` film of `recording/armed/listening/done/peek/saving/saved/idle` reads right.
+- **Review fixes applied in the integration pass:** `withDeadline(seconds:operation:)` added to
+  KleothCore (`Sources/KleothCore/Concurrency/Timeout.swift`) — a one-shot continuation raced by the
+  operation task, a deadline task and outer cancellation, so it resumes WITHOUT waiting for a
+  non-cancellable child; `ScreenRecorder.stop()` races `writer.finish()` through it and
+  `shareableContent()` uses it too (`withTimeout` only ever bounded cancellation-aware work, now
+  documented). A late-but-successful finalize no longer strands a complete movie under the in-flight
+  name (`renameWhenFinishLands`). `showSaved()` drops the backdrop BEFORE showing the confirmation,
+  so a `.recording` backdrop can no longer collapse the just-scheduled `.saved` to `.idle`. A retried
+  recording calls `coordinator.dismissRecordingPhase()` before `perform(effect)`, so a sticky
+  `.failed`/stale `.saved` is gone by the time `.recording(since:)` lands. `RegionPicker` records the
+  frontmost non-Kleoth app on `begin` and re-activates it in `teardown()`, so a pick or an Esc hands
+  focus back (Kleoth staying active with zero windows also made a following dictation paste land
+  nowhere).
+- **Two low findings fixed by hand after the review (traced, not runtime-verified):** (1)
+  `DictationPillController.dismissFromUser()` now pins `currentState` to the phase being dismissed
+  for the duration of the `onDismiss` callback (`dismissingState`) — under Reduce Motion the collapse
+  applies the new phase synchronously inside `dismiss()`, so `PillCoordinator.routeDismiss()` read
+  `.idle`/`.hidden` and skipped `DictationController.handlePillDismiss` for a dictation ✕ (and
+  cancelled a queued `.saved` instead of flushing it). (2) `ScreenRecordingController.startFailure`
+  keeps WHY `recorder.start()` threw when a stop had already moved the machine past `.starting`, so
+  `finalize()` surfaces `.permissionStale`/`.noDisplay`/… instead of a generic "Nothing was recorded.".
+  Reset with the rest of the per-session state in `cleanUpSession()`.
+- **Known leftovers from the review (low, unverified, deliberately not chased):** the first 20 ms
+  audio block can be dropped by the writer's `pts >= firstPTS` guard because the origin PTS
+  round-trips through host ticks (`ScreenRecorder.swift` ~:420); mic-vs-host clock drift is never
+  absorbed by `AudioRing` — it becomes a 2 ms discontinuity every N seconds (`AudioRing.swift` ~:80;
+  the 10-min drift check below will show whether it is audible); `isDictationPhaseLive` trails
+  `show()` by one turn so a same-turn recording phase can overwrite a just-shown dictation phase
+  (`PillCoordinator.swift` ~:117); the terminate budget equals the writer's finalize budget so a
+  quit can exit mid-`finishWriting` (fragments make it recoverable). Also: `SettingsScreenRecordingSection`
+  duplicates `captionFooter`; the popover/pill say "02:14" (see #8).
+- ⚠️ **NOT runtime-verified (honest list) — nothing here has been exercised by a human in the signed
+  release app.** Every lane is compile-checked, unit-tested and probe-measured only; the T5 controller
+  and T6 popover/Settings surfaces have never had a session run through them, and the pill films come
+  from `pillsandbox`'s own `CGWindowListCreateImage` capture, not the app. In particular: the TCC
+  grant on Kleoth's own identity, the region picker by eye (dim / crosshair / hint / label
+  repositioning), the picker on two displays, the quit and `kill -9` paths, dictation interleaved with
+  a recording, the fMP4 in real players/uploaders, three concurrent `AVAudioEngine`s, long-run A/V
+  drift, and the Settings permission row's 1 Hz poll + "Open Recordings Folder".
+- **TODO for the user — §8 manual checklist.** Prereq: `bash app/setup-signing.sh` once,
+  `bash app/make-app.sh release`, `pkill -x Kleoth; open -a Kleoth`, `codesign -dv` shows
+  "Kleoth Self-Signed". Reset flows with `tccutil reset ScreenCapture dev.kleoth.app`.
+  0. **DO THIS FIRST — it gates the whole feature. Screen Recording TCC on the self-signed
+     (no Team ID) identity, in the RELEASE APP.** A shell-launched `screenrec` is TCC-attributed to
+     the terminal and proves nothing. So: `tccutil reset ScreenCapture dev.kleoth.app` →
+     `make-app.sh release` → relaunch → popover **"Record screen…"** → the system prompt appears →
+     grant → the sticky "quit and reopen Kleoth" pill → relaunch → "Record screen…" → Return → 5 s →
+     stop → the file plays. **If the relaunched app still gets `-3801` / no frames, STOP and report
+     "Developer ID required"** (Cap reports Sequoia silently rejecting ad-hoc SCK).
+     **✅ PASSED 2026-09-06 (user, release app on macOS 26.5, "Kleoth Self-Signed", no Team ID):** the
+     prompt appeared, the grant took, and a recording from the popover produced a playable file — the
+     self-signed identity is NOT blocked by SCK on this Mac. The feature is unblocked; items 1–8 still open.
+  1. Quit via the popover mid-recording → dialog → Quit Anyway → the app exits within 5 s and the
+     file plays; ⌘Q from the History window → same. Quit while the REGION PICKER is up → prompt exit,
+     no file, no `-recovered.mp4`.
+  2. `kill -9 Kleoth` mid-recording → relaunch → "Recovered a screen recording" row → the sweep
+     renames to `-recovered.mp4` and it plays up to the last fragment (≤ 10 s lost). `kill -TERM` →
+     identical.
+  3. Dictation mid-recording: fn+shift → the capsule morphs in place through
+     `.armed/.listening/…/.done` and returns to `.recording` with the right digits; the text pastes;
+     the recording's mic track has the dictated words. Then stop the recording while a hands-free
+     dictation is live → the `.saved` confirmation appears after it (exercises the queue AND the
+     250 ms auto-hide poll).
+  4. Two displays: an overlay on both, a drag on the secondary returns that display's ID/frame, the
+     picker covers a full-screen app's Space, and the app drops back to `.accessory` after a cancel.
+  5. Play a produced file in **QuickTime, Chrome, Safari, Slack inline, Telegram and iMessage** — the
+     fMP4 risk is untested. Any refusal → flip `ScreenRecordingDefaults.fragmentInterval` to nil (one
+     constant) and re-verify the crash/quit paths (the file is then moov-at-front, crash = total loss).
+  6. **Three concurrent `AVAudioEngine`s** — a meeting recording running + a dictation + a screen
+     recording on one input device: all three get audio, `mic.m4a` has no dropouts. Untested
+     extrapolation.
+  7. **10-minute drift** (§8 #14/#15): metronome flash + click within one frame at the start AND at
+     10 min; the mic echo trails the system copy by a constant < 60 ms wired / < 200 ms Bluetooth with
+     no drift. Only a single-click ≈30 ms offset has been measured. Then decide
+     `micOffsetCompensation` (currently 0).
+  8. Decide **"02:14" vs "2:14"** in the popover row / pill (cosmetic; the fix belongs in
+     `ElapsedFormatter`/`ScreenRecordingSummary.pillText` so both stay identical).
+  Plus, from §8: static screen 60 s mid-recording (scrubbing → maybe `keepaliveInterval = 1`), the
+  stale-grant detector, mic unplug/replug and display disconnect details, output-device and AirPods
+  switches mid-recording, moving `~/Kleoth` in Settings, colors/5K downscale, Reduce Motion +
+  VoiceOver, idle CPU with the `.recording` pill up, and the macOS 26 monthly "bypass the private
+  window picker" alert.
+
+## Current status (2026-09-03 — dictation v1)
+✅ **v0.2.0 RELEASED (2026-09-03):** `feat/dictation` fast-forwarded into `main` (29 commits), tag
+`v0.2.0`, https://github.com/ofcRS/kleoth/releases/tag/v0.2.0 — `Kleoth-0.2.0.dmg` (8.2 MB, SHA-256
+`46544836…`) + `.sha256` attached; README download link + Homebrew cask draft point at 0.2.0;
+CHANGELOG `[0.2.0]` cut from `[Unreleased]`. Self-signed tier (right-click → Open). The user
+confirmed dictation works live ("much better than Wispr Flow" on RU/EN code-switching).
+User-run 9-task workflow (T0 contract → T1–T7 in parallel worktrees → T8 integration), branch
+`feat/dictation` (now merged). Design doc `docs/plans/2026-09-03-dictation.md`.
+**Shipped (compile-checked, 237 core tests green, both packages build, release app installed):**
+- KleothCore `Dictation/`: `DictationDefaults`, `DictationChordMachine` (18 tests),
+  `ChordEdgeDetector` (5 tests), `Keyterms`,
+  `DictationPrompt` + `DictationPolisher` (+ `Concurrency/Timeout.swift` `withTimeout`),
+  `DictationLogEntry`/`DictationLogStore` (actor) / `PersonalDictionaryStore`, `PillGeometry`,
+  `PasteboardPolicy`; `ScribeOptions.noVerbatim/keyterms` + `.dictation(keyterms:)`,
+  `Multipart.writeBody(repeatedFields:)`, `OpenRouterClient: Sendable` + `temperature:`,
+  `Settings.dictationEnabled/dictationModel`, `ModelCatalog.defaultModel/retiredModels/migrating`.
+- KleothCapture: `DictationCapture` (+ `RenderLevel`/`RenderCounter`, `mixToMono(bitRate:)`).
+- KleothApp: `Dictation/` (DictationTypes = contract, DictationController, DictationHotkeyMonitor,
+  AccessibilityPermission, DictationPanel/PillController/PillModel, TextInserter,
+  PasteboardSnapshot, InsertionEnvironment), `AppConfig`, Views (DictationPillView,
+  DictationsListView, DictationDetailView, SettingsDictationSection; HistoryView scope picker
+  Meetings | Dictations; SettingsView mounts the section), MenuView "Dictation needs
+  Accessibility access" line (enabled + untrusted only), AppDelegate hooks, `dictate` probe.
+- **T8 live probes (this Mac, 2026-09-03):** `dictate 3` → capture 3.2 s @ 48 kHz → prep 87 KB →
+  Scribe **200** in 1.6 s (ambient audio → "Why have…", `eng`) → polish **404 zdr-violation** with
+  the THEN-default `google/gemini-3.8-flash` → raw fallback; temp dir empty afterwards.
+  `say -v Milena "Привет, это проверка диктовки, короче нужно задеплоить пул реквест завтра утром"`
+  + `dictate 6 --model z-ai/glm-5.3-flash` → Scribe `rus` in 1.3 s, raw "Привет! Это проверка
+  диктовки. Короче, нужно задеплоить pull request завтра утром" → polished in 2.6 s
+  "Привет! Это проверка диктовки. Нужно задеплоить pull request завтра утром." (filler removed,
+  English term kept, translation guard passed on `rus` vs `ru`), $0.00024. Pipeline plumbing
+  through the `Transcriber` seam is therefore verified end-to-end; only the default model is the
+  account-level blocker above. ElevenLabs' 2026-08-17 `payment_issue` is gone.
+- **Decisions recorded:** Kleoth stays un-sandboxed; stable signing identity required; QWERTY-family
+  layouts assumed; fn+shift+⌘/⌥/⌃ never arms; translation guard kept.
+- **Default model switched to `z-ai/glm-5.3-flash` (fixer pass, same day):** `ModelCatalog.defaultModel`
+  AND `DictationDefaults.polishModel` (test pins them equal); `google/gemini-3.8-flash` stays in
+  `curatedFallback` (selectable, not default); `retiredModels` still map the two dead slugs → the
+  default. Rationale: the T8 probes above showed the Gemini default 404s on this account (ZDR),
+  making every dictation raw-fallback and every summary fail. Design doc §10.3 item 5 records it.
+- **Reasoning cap on the polish call (measured, model-gated):** `OpenRouterClient.complete(…,
+  reasoning:)` is a new optional arg (`OpenRouterReasoning`, nil → body unchanged; a test pins the
+  Summarizer body to exactly `model/messages/max_tokens/provider/response_format`). `DictationPolisher`
+  sends `reasoning: {effort: "low"}` ONLY for slugs in `DictationDefaults.reasoningCappedModels`
+  (= `["z-ai/glm-5.3-flash"]`). Live numbers (verbatim `DictationPrompt.system`, RU + EN samples,
+  json_schema strict, temperature 0.2, `require_parameters: true`, 2026-09-03): baseline glm-5.3-flash
+  = 104–362 reasoning tokens, **4.8–14.2 s (mean 8.4 s RU / 7.4 s EN — one RU run blew the 8 s
+  budget)**; `effort: low` = **0 reasoning tokens, 1.5–4.9 s (mean 3.2 s over 9 runs)**, byte-identical
+  correct output (fillers gone, "Anna, sorry, Boris" self-correction applied, RU stays RU).
+  `enabled: false` → 400 "Reasoning is mandatory for this endpoint"; `exclude: true` only hides the
+  tokens (155–272, 6.7–9.4 s). ⚠️ NOT a general speed-up: the same body **404s on
+  `meta-llama/llama-3.3-70b-instruct`** ("No endpoints found that can handle the requested
+  parameters") and *enables* reasoning on `deepseek/deepseek-v4-flash` (0 → 216 tokens, 4.9 → 9.5 s)
+  — hence the allowlist. Also observed: `z-ai/glm-4.7` and `moonshotai/kimi-k2.6` return EMPTY
+  content under the strict dictation schema (reasoning eats the 1024-token cap, 17–28 s) — poor
+  polish picks; they stay in `curatedFallback` for summaries (8192-token budget) untested.
+  `polishTimeout` stays 8 s (max capped run 4.9 s). Probe scripts were scratch-only (not committed).
+- **Pill redesign (same day; user: "more like Wispr Flow — visible when inactive, animates in on the
+  hotkey, no words"):** `DictationPillState.idle` added — the compact resting capsule (24 pt, five
+  breathing dots) stays on screen whenever the hotkey is armed; `DictationPillPresenting.setResting(_:)`
+  is mirrored from `DictationController.isMonitoring` (`didSet`), and `dismiss()` now collapses to
+  `.idle` instead of hiding (hides fully only when resting is off: disabled / untrusted / quit).
+  Motion phases carry no text: listening = 14-bar live waveform (bell-weighted mic level + slow drift;
+  accent dot = hands-free), transcribing = travelling white wave, polishing = accent-tinted faster
+  wave, done = green check for 1 s. Only `.warning` / `.failed` show words (they need a reason / an
+  action). Surface is a dark capsule (`PillStyle`, white ink) regardless of appearance — NOT the app's
+  material, deliberately. `TimelineView(.animation)` is mounted only in active phases (resting costs
+  nothing); Reduce Motion → static bars/dots. Panel sizes per phase in
+  `DictationPillController.panelSize/capsuleHeight`. Hover `.help` + VoiceOver keep the sentences.
+  ⚠️ Compile-checked only — the user is the visual reviewer (relaunch to see it).
+- **Pill placement v2 (same day; user: "inactive should be small and half outside the screen, and
+  emerge from there on the hotkey"):** ONE anchor per pill (saved `PillPlacement`, else bottom-center
+  just above the screen's bottom edge — `defaultBottomInset` 96 → **26**, over the Dock like Wispr
+  Flow). Active phases sit centered on the anchor; `.idle` is the anchor slid into the **nearest
+  screen edge** until the panel center is ON the edge (`PillGeometry.restingOrigin` /
+  `nearestEdge`, tested) → exactly half the 68×22 capsule peeks in. A chord animates the frame
+  back to the anchor (`setFrame(_:animated:)`, 0.3 s, slight overshoot); `dismiss()` sinks it back;
+  a fresh show starts tucked and rises. The idle capsule has NO content (anything centered would be
+  cut in half) — a `RestingSheen` gradient breathes over it. Active bounds = `PillGeometry.bounds`
+  (screen frame minus the menu bar, INCLUDING the Dock strip; `visibleFrame` is no longer used for
+  placement), `DictationPanel.constrainFrameRect` returns the frame untouched so AppKit can't nudge
+  the tucked panel back on screen, and `currentDisplayId` tracks the anchored screen because a
+  straddling frame can't be resolved from geometry. Dragging pops the resting pill fully on screen
+  (clamped), the drop becomes the new anchor, and an idle pill tucks back on release. 244 tests.
+  Follow-up (user feedback after seeing it): (a) an EMPTY transcript now just `pill.dismiss()`es
+  (was a "Nothing was heard." warning — "worst UI"); (b) a tab tucked into a LEFT/RIGHT edge stands
+  up — `panelSize(for: .idle, edge:)` swaps w/h, the view applies `rotationEffect` (±90°, 180° on
+  top; sheen's bright end faces inward) AFTER the hit shape + gestures so the vertical tab stays
+  clickable, and the rotation unwinds as the bar rises; `DictationPillModel.restingEdge` carries the
+  edge, `PillGeometry.restingOrigin(…edge:in:)` takes it explicitly; (c) idle rim = white 0.42 @ 1 pt
+  (`PillStyle.restingRim`), active keeps the hairline.
+  Second follow-up (user: "it should stay vertical on a side edge in the active state too" + "the
+  size-change animation is ugly — make it beautiful, research best practice"): (a) `DictationPillModel.edge`
+  now rotates the capsule ±90° in EVERY phase on a side edge (left reads bottom-to-top like a spine
+  label; top edge stays horizontal with the sheen flipped); `layout(for:edge:on:)` swaps panel
+  dimensions for every phase there. (b) **The panel frame is never animated any more** — AppKit's
+  timer-driven `animator().setFrame` fighting SwiftUI's own spring on the capsule was the jank.
+  Stage technique: `transition(to:phase:)` sets the panel instantly to the UNION of the current and
+  destination rects, re-expresses the capsule's current position as `model.offset` (relative to the
+  stage center, y-down) under `disablesAnimations`, then on the NEXT main-queue callout runs ONE
+  `withAnimation(.spring(duration: 0.45, bounce: 0.22), completionCriteria: .logicallyComplete)` that
+  moves `offset` + switches `phase` (size, rotation, content transitions all ride that spring — the
+  view has NO `.animation` modifiers of its own), and the completion `settle()`s: panel = destination
+  rect, offset = 0, same turn, invisible. `transitionGeneration` guards stale completions; `beginDrag()`
+  settles first; `finishHide` resets. The capsule is `.fixedSize()` (the stage / a side panel is not its
+  size) and the text label gets an explicit `labelWidth` (measured + capped at 60% of the screen axis)
+  so long messages still truncate. Reduce Motion → the panel just jumps.
+  Third follow-up (user: "on the RIGHT edge it levitates / goes straight up, freezes, goes down" +
+  "make the shape change less linear, more interesting"): root cause = each phase clamped its OWN
+  panel size against the bounds, so near a corner the taller listening panel got a different clamped
+  origin than the resting one → the center shifted by the size difference per phase (vertical on a
+  side edge). Fix: `anchorCenter(edge:on:)` resolves + clamps the anchor ONCE with a
+  `referenceSize` (longest motion phase × text thickness) and every phase is centered on it
+  (`activeOrigin(panelSize:edge:on:)`); `restingEdge` = nearest edge to that center. Motion is now
+  two staggered beats — `moveSpring` (0.55 s, bounce 0.3) and `shapeSpring` (0.5 s, bounce 0.25),
+  `stagger` 0.09 s: rise = move then bloom, sink = shrink then slide; the completion rides the beat
+  that ends last AND actually changes state (a no-op `withAnimation` body completes immediately) —
+  plus a `.phaseAnimator` squash-and-stretch on the capsule (x 1.06 / y 0.88 in its own space,
+  0.2 s out, 0.45 s back) triggered by every phase change as anticipation.
+  Fourth follow-up (user: "don't allow free drag — one axis along the edge, orthogonal axis fixed"):
+  the pill is DOCKED. `PillGeometry.Edge` is now `String, Codable` and stored in `PillPlacement.edge`
+  (optional; older blobs → nearest edge of the saved center). Anchor = `PillGeometry.dockedCenter`
+  (capsule `defaultBottomInset` in from the edge, at the saved along-axis fraction, clamped; tested).
+  Drag: `beginDrag()` records the grab offset along the axis, `dragMoved()` reads
+  `NSEvent.mouseLocation`, picks the edge via `PillGeometry.dragEdge` (re-dock only when the pointer is
+  ≥`redockHysteresis` 48 pt closer to another edge — tested), re-lays the panel out on an edge flip
+  (side edge = stands up), and docks the phase's panel centered on the reference anchor;
+  `commitDraggedPlacement` stores edge + fraction and transitions (tucks if idle). The view's drag
+  gesture no longer computes origins. `defaultOrigin` is now test-only. 247 tests.
+- **Polish latency pass (same day, after the user reported "polishing takes too long"; the user had by
+  then turned every ZDR toggle OFF at openrouter.ai/settings/privacy, so google/* is reachable again):**
+  the `dictate` probe gained a polish-only benchmark — `dictate --text "<raw>" [--language rus]
+  [--runs N] [--model <slug>] [--reasoning minimal|low|medium|high]` — that times the REAL
+  `DictationPolisher` (`reasoningOverride` init param). Medians over 4 runs, RU sample, strict schema:
+  **`google/gemini-3.5-flash-lite` 0.85–1.05 s** ($0.0006, correct) · `gemini-3.8-flash` + low 1.45 s
+  (uncapped: cut off / 8 s timeout — it thinks) · `gemini-3.7-flash` + minimal 1.55 s · `gemini-3.5-flash`
+  + minimal 1.85 s (uncapped 6.5 s) · `z-ai/glm-5.3` 1.75 s · **`z-ai/glm-5.3-flash` + low 3.6–4.1 s
+  (the previous default — what the user felt)** · `deepseek-v4-flash-0731`, `qwen3.7-flash` → 8 s
+  timeout every run. Shipped: `DictationDefaults.polishModel = google/gemini-3.5-flash-lite`;
+  `fallbackPolishModel = z-ai/glm-5.3-flash` (+ `minimumFallbackBudget` 2 s) — `DictationPolisher`
+  tries it once when the primary fails with an HTTP error (guardrail 404 after the client-side relaxed
+  retry, 429, 5xx) and ≥2 s of the 8 s budget remain; never after a timeout/cancel/bad answer
+  (tests: `httpFailureOnThePrimaryFallsThroughToTheFallbackModel`, `fallbackIsNotTried…` ×2);
+  `reasoningCappedModels: Set` → `reasoningCaps: [slug: Effort]` (glm-5.3-flash low, gemini-3.8-flash
+  low, gemini-3.7/3.5/3.5-lite minimal; `reasoningCappedModels` kept as a computed Set);
+  `ModelCatalog.curatedFallback` gained the lite slug. Summary default unchanged (glm works under
+  every privacy setting; no latency pressure). Live after the change: default 0.76–1.29 s over 5 runs;
+  bogus primary → glm fallback 2.3 s (one glm run then hit the remaining-budget timeout — glm variance).
+- **Review pass (same day, 5-dimension multi-agent review — concurrency / macOS APIs / pipeline / UI /
+  compliance; every finding adversarially verified):** 19 findings confirmed (5 medium, 14 low) and
+  ~50 suspected items checked and found CORRECT (recorded in the review brief; e.g. `shared` is set
+  before `applicationDidFinishLaunching`, monitors don't double-fire, `withTimeout` cancels
+  properly, `vDSP_measqv` is already the mean). **All 19 applied** (app fixer, this pass):
+  (1) `monitor.abort()` wired at every controller-side exit the machine didn't drive — `cancel()`
+  listening + pipeline branches, `handleEscape()` listening, `refuseWhileBusy()` — and
+  `DictationChordMachine` `.abort` from `.handsFree` now lands in `.idle` (keys are already up;
+  was `.blocked` → the next press was eaten as `.toggledOff`); (2) new KleothCore
+  `ChordEdgeDetector` (tested): releasing ⌘ off fn+shift+⌘ no longer reads as a chord-down (it
+  armed, or from `tapWindow` started hands-free) — the "add ⌘ mid-hold commits" behavior (§8.2 #7b)
+  is deliberately KEPT; (3) `PasteboardSnapshot.capture` runs off-main on the serial
+  `PasteboardReader` actor under `PasteboardPolicy.captureTimeout` (0.4 s; expiry = "no snapshot to
+  restore"), with a per-item flavor budget (`typesToCapture`, 6 non-preferred + text/url/file-url
+  always) and an early stop at 12 MB — a lazy Photoshop/Figma clipboard no longer freezes the main
+  thread; (4) Scribe HTTP failures show "Transcription failed (HTTP 401)." (body → os.Logger),
+  `DictationPillFault.message` is capped at 140 chars, the panel width is capped to the screen
+  (`PillGeometry.maxPanelWidth`, tested) and the pill label tail-truncates (was `.fixedSize()` →
+  a 512-byte body pushed the ✕ off-screen); (5) popover → History forces the Meetings scope via
+  `RecordingController.meetingsHistoryRequest` (the `selectedMeetingID` observer lived on the
+  unmounted meetings branch while Dictations was showing); lows: Settings writes dictionary.json
+  only if the editor text changed (a malformed file was being overwritten with `[]` on close),
+  `URLError(.cancelled)` from Esc mid-upload dismisses instead of a sticky "Network error", the
+  monitor's health-timer teardown now reports `onTrustLost` → `refreshTrust()` (popover banner
+  appears immediately), pill hit shape is the capsule (the 18 pt shadow margin no longer swallows
+  clicks), `logStore` rebinds when Settings moves the output folder (`syncLogStore()`),
+  `Transcriber.modelIdentifier(for:)` (default = type name; Scribe = `options.modelId`) replaces the
+  hard-coded `scribe_v2` in the log row, detail pills read "Cloud transcription"/"Cleaned up" with
+  the slug in `.help`, header no longer repeats the app name, dictionary caption interpolates
+  `Keyterms.maxTerms` and drops the "20% surcharge" figure, dictation delete failures alert + always
+  reload (`logRevision` bumped in a `defer`), `appEvent` identity map deleted, `RenderLevel` doc now
+  says "deliberate benign race" (a relaxed atomic needs macOS 15), entitlements comment names
+  `CGEvent.post`. NOT done: wiring `isMonitoring`/`isSessionActive` into a view (still unread
+  published state — harmless). 237 core tests green; both packages build; `dictate 3` on the default
+  model → Scribe `rus` + polish OK in 2.25 s, temp dir empty; release app reinstalled (running
+  instance NOT killed). Gotcha: adding a KleothCore source file is invisible to a warm
+  `app/.build` until `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
+- **Three unverified review findings, traced and fixed (same day, after the pass above — the
+  original verifier agents crashed, so each was re-traced from the code first):**
+  1. **Quit mid-pipeline no longer strands mic audio:** `DictationController.inFlightClips` records
+     every temp file the run owns (the raw clip, and the `prep-<uuid>.m4a` destination — now named by
+     the new `DictationCapture.preparedURL(for:)` and passed into `prepareForUpload(_:outputURL:)`
+     *before* the detached prep starts), so `shutdown()` deletes them SYNCHRONOUSLY. `cancel()` only
+     marks `pipelineTask` cancelled; `run()`'s `defer` needs a main-actor hop a terminating process
+     never runs, and `sweepStaleClips(olderThan: 3600)` then skipped the leftovers for an hour.
+  2. **A mid-utterance device switch is no longer silent:** `DictationCapture`'s
+     `.AVAudioEngineConfigurationChange` handler is now `handleConfigurationChange()` — it zeroes
+     `level` (the 20 Hz poll was rendering a frozen RMS, so the pill looked live after the mic had
+     stopped) and sets `DictationCaptureResult.interrupted`, which `run()` turns into
+     `.warning("The microphone changed mid-dictation — only part was captured.")` on the pasted
+     result. A polish fallback reason and the clipboard fallback still outrank it. Restarting on the
+     new device stays out of scope.
+  3. **"Reset pill position" acknowledges the click:** `resetPosition()` animates only a visible
+     pill, which it never is while Settings is open, so the button now flashes "Position reset" for
+     1.5 s (`SettingsDictationSection.resetPillPosition()`, the `flashCopied()` idiom).
+  237 core tests green (unchanged — `DictationCapture` lives in the app package, which has no test
+  target); both packages build; release app reinstalled (running instance NOT killed).
+  ⚠️ Not runtime-verified: all three need a human (quit mid-pipeline + `ls $TMPDIR/kleoth-dictation`,
+  unplugging a mic mid-utterance, the Settings button by eye).
+- **Polish restructures now (same day; user: "I dictate prompts as a non-native speaker, brainstorming
+  out loud — get the core idea and structure it, depending on the app"):** `AppStyle` is an editing
+  INTENSITY — `compose` (AI chats, editors/IDEs, notes/docs, mail, browsers, unknown/nil: reorder, merge,
+  split, list, resolve word hunts, drop thinking-out-loud, keep every point + the speaker's stance, add
+  nothing) / `chat` (messengers: fillers, self-corrections, punctuation, keep sentence order + voice) /
+  ~~`terminal`~~ (REMOVED 2026-09-07 — terminals are `compose`, see the bullet below). Was
+  `code/chat/prose/neutral` with browsers → neutral (§10.3 item 8 in the design doc records it). System
+  prompt is static (cacheable) with the MODES section + a compose few-shot; the user message carries
+  `Mode: <hint>`. **Benchmark (6 inputs: rambling ESL coding prompt, UX notes, Slack, RU prompt, mixed
+  RU/EN Cursor, terminal; 3 runs each, real polisher, 2026-09-03):** `google/gemini-3.5-flash-lite`
+  **0.8–1.3 s median, 18/18 ok, best structure/faithfulness** (numbered plans, problems/ideas split,
+  RU stays RU, Slack + terminal untouched, "Anna, sorry, Boris" applied) → **stays the default**;
+  `gemini-3.5-flash` 1.4–2.8 s (1 timeout), `gemini-3.8-flash` low/minimal 1.3–2.2 s (1 timeout each,
+  outliers to 6.6 s), `z-ai/glm-5.3-flash` low 0.9–2.9 s (fallback, fine), `anthropic/claude-haiku-4.5`
+  1.6–2.7 s (excellent quality, reachable, but 2× slower), `gemini-3.6-flash` cut off on 14/16 (broken
+  under the strict schema — do not use), `deepseek-v4-flash` timed out on 13/18. Bench harness was
+  scratch-only (`bench/run.ts` over the `dictate --text` probe). 248 core tests.
+- **Polish gate (same day, after 0.2.0; user: "disable the LLM enhance for short messages… for
+  Telegram and Russian messages… Scribe itself is doing pretty well"):** `PolishGate.decide(rawText:
+  style:alwaysPolish:)` (KleothCore, 9 tests) runs in `run()` before the polish step — `.chat`
+  targets skip at any length, everything else skips under `DictationDefaults.minimumWordsToPolish`
+  (24 words; language is deliberately NOT a criterion — RU brainstorms still get structured).
+  Skip ≠ fallback: new `DictationPolishResult.skipped` (never returned by the polisher),
+  `usedRawFallback == false`, no pill warning, `polish_model: null`, phase jumps transcribing →
+  inserting. Detail pane badge "As heard" (reason recomputed from stored fields, no new log key).
+  Opt-out = `Settings.dictationPolishAlways` / Keychain `dictation_polish_always` (strict "true",
+  default off) / Settings → Dictation toggle "Also clean up short dictations and chat messages";
+  `DictationController.polishAlways` + `setPolishAlways(_:)`. `dictate` prints the gate verdict
+  but still polishes. Design doc §10.3 item 8. 257 core tests. ⚠️ Not runtime-verified by a human.
+- **Side-edge pill "forced shift" — root-caused with a frame trace (same day; user: "the pill has one
+  position when inactive, and before the animation starts it's being moved slightly to the right"):**
+  a temporary `os.Logger` trace of `panel.frame` + the capsule's `GeometryReader` frame per render
+  (driven by a `KLEOTH_PILL_DEMO=1` cycle hook, both removed) showed the panel set to 58/68 pt wide by
+  `settle()` and **re-widened to 104/131 pt ~2 ms later, top-left anchored** — the un-rotated capsule
+  width + shadow. `NSHostingView` grows its window (`setContentSize`) whenever the panel is smaller
+  than the root view's MINIMUM size; on a side edge the capsule is laid out un-rotated then
+  `rotationEffect`ed, so its ideal width exceeds the thin vertical panel. `sizingOptions = []` did NOT
+  stop it (minSize/contentMin/intrinsic all 0 in the trace). Fix: `DictationPillView.body` is now
+  `Color.clear.overlay { pill }` — an overlay contributes nothing to the root's size, so the minimum
+  is zero; re-traced: widths stay 58/68, capsule center = anchor (1440 / 1395 on this Mac). Bottom/top
+  edges were never affected (panel wider than the capsule). Left over, harmless: AppKit lands every
+  `setFrame` 1 pt lower (y−1, stage h+1) than requested for this panel — not reproduced by a bare
+  NSPanel+NSHostingView probe; idle and active shift equally, ≤0.5 pt hop at settle. Trace recipe:
+  `/usr/bin/log stream --level debug --predicate 'subsystem == "dev.kleoth" AND category == "PillTrace"'`
+  (zsh has a `log` builtin — use the full path).
+- **Pill sandbox + motion rebuild (same day; user: "you can't see the animation… build a little sandbox
+  app… rebuild the animation from scratch, stretching, live, react to the mouse when inactive"):**
+  the pill (panel, controller, model, view + `DictationPillState/Fault/Action/Presenting`, now in
+  `app/Sources/KleothPillUI/PillTypes.swift`) moved into the **`KleothPillUI` library target**
+  (public surface: `DictationPillController.init(defaults:)`, the presenting API, `dock(edge:fraction:)`,
+  `setHovered(_:)`, `captureFrame()`, `panelFrame`). **`pillsandbox`** (`app/Sources/pillsandbox`):
+  `swift run --package-path app pillsandbox` = control window (edge picker, along-edge slider, phase
+  buttons, "Run a whole dictation", simulated speech, "Film"); `app/.build/debug/pillsandbox --film <dir>
+  --edge right --fraction 0.3 --hold 1.2 --sequence idle,peek,unpeek,listening,transcribing,done,idle`
+  = headless filmstrip: `frame-NNNN.png` (panel composited on a canvas around the anchor, screen edge
+  in red, off-screen shaded), `frames.tsv` (time/phase/panel frame), `sheet.png` (≤40 labelled tiles).
+  **Capture must be `CGWindowListCreateImage` on our own window** (no screen-recording permission
+  needed): `cacheDisplay` and `layer.presentation()?.render` both return SwiftUI's MODEL state — the
+  filmed rise looked like a jump until the capture was switched. The agent reads the PNGs with the
+  Read tool. Placement lives in the `dev.kleoth.pillsandbox` defaults suite. Findings from the first
+  film: the old rise popped to the full listening shape (content-driven width is not animatable) while
+  still tucked, then slid up with a 6% squash — "barely a bit". **New motion:**
+  `DictationPillModel.capsuleSize` (explicit, applied inside the shape spring with `phase` →
+  grows out of the edge), `MotionBeat` (rise/sink/morph/peek, bumped per transition) driving a
+  `keyframeAnimator` squash-and-stretch in the capsule's own space (travel is always along its
+  thickness = own y, on every edge) and a `ContentReveal` keyframe (rise: content hidden 0.14 s then
+  blooms; sink: gone by 0.12 s), capsule `scaleEffect(1 + 0.045·level)` breathing, sheen fades in
+  0.12 s. **Hover peek:** `DictationPillHostingView` `.activeAlways` tracking area (SwiftUI `.onHover`
+  is dead while another app is active) → `handleHover` → `peeking` → `origin(for: .idle)` returns the
+  active spot; tucks back `peekLinger` 0.45 s after leave; mic glyph while peeking. Filmed on bottom +
+  right edges (rise: squat → plain stretched blob → bars bloom → settle; peek/unpeek; sink). Not
+  wired: click on the peeking pill (candidate: start hands-free) — needs a controller path that keeps
+  the chord machine in sync. Rise ~0.55 s (`moveSpring` 0.55/0.32, `shapeSpring` 0.5/0.22).
+- **Responsiveness pass (same day; user: "the delay between the hotkey and the pill, and between hover
+  and the active state — intended, or a macOS thing? it can be more responsive"):** both were ours.
+  (1) New pill state **`.armed`** — `DictationController.handleArmed()` shows it the moment the chord
+  is down and the mic is on: the resting sliver hops fully out of its edge with the mic glyph (the
+  hover-peek look, `peekSpring` 0.22 s / bounce 0.2, cue `.peek`); `.listening` then grows out of it in
+  place at `minHold`. A too-short tap holds the capsule out for the `doubleTapWindow` (0.4 s,
+  `armedDismissTask`) so a double-tap does not sink-and-rise; `.otherKey`/external cancels and
+  `cancel()` sink it at once. `.armed` = resting size, no announcement, `pillText` "Keep holding to
+  dictate"; sandbox has an `armed` button/sequence item and `runCycle` starts with it.
+  (2) **`DictationDefaults.minHold` 0.30 → 0.20 s** (tests use the constant). (3) Springs shortened:
+  `moveSpring` 0.55/0.32 → 0.34/0.25, `shapeSpring` 0.5/0.22 → 0.3/0.18, `stagger` 0.09 → 0.06, every
+  view keyframe (rise/sink/peek/morph + `ContentReveal`) scaled to match. Filmed (bottom + right):
+  press → sliver out in ~0.12 s, bars bloom ~0.2 s after `minHold`, sink 0.32 s, hover peek 0.22 s.
+  If it still feels slow the user's next candidate is dropping the double-tap (then `.armed` could go
+  straight to `.listening` at key-down). ⚠️ Not felt by a human yet — verify in the real app.
+- **External-mic fix (2026-09-06; user: "it doesn't work with the external microphone" — Sony WH-1000XM5,
+  errors on both meeting record and dictation):** two root causes, both probed live with scratch Swift
+  tools. (1) **AAC bit-rate cap:** the headset mic is **16 kHz mono**, and the system AAC encoder accepts
+  at most 48 kbps there (measured: 8 kHz→24, 16→48, 24→64, 32→96, 48 mono→256, 48 stereo→320 kbps), so
+  `AVAudioFile(forWriting:)` with our 64 kbps (dictation) / 128 kbps (meeting) threw `'!dat'`
+  (560226676) → dictation `writeFailed`, recorder start error. `AudioFormat.aacSettings` now clamps to
+  `AudioFormat.maxAACBitRate(sampleRate:channels:)` (`kAudioConverterApplicableEncodeBitRates`) and
+  `openAACFile(at:…)` retries once with no bit-rate key — every writer (Recorder combine,
+  ChannelAudio.mixToMono, SystemAudioTap) goes through `aacSettings`, so all are covered. (2) **Bluetooth
+  profile switch:** ~0.1 s after the engine starts on a cold headset (A2DP→HFP) an
+  `AVAudioEngineConfigurationChange` fires; `DictationCapture` treated it as "device switched
+  mid-utterance" and quiesced → 0.1 s clip → discarded (silent "nothing heard"), and `MicCapture` had no
+  handler (in a probe without a run loop the engine stayed stopped: 0 frames). Now: new `TapWriter`
+  (AudioFormat.swift) writes each tap buffer through an `AVAudioConverter` into the already-open file
+  whenever the node's format differs from the file's; both captures handle the change by reinstalling
+  the tap at the node's new format and restarting (no-op if the engine is still running at the same
+  format), quiescing with `interrupted` only if that fails. Frames are counted at the FILE rate.
+  Verified: cold `dictate 4 --no-polish` on the headset → 4.22 s @ 16 kHz, peak 0.59, Scribe OK; earlier
+  the same run gave 0 frames. ⚠️ Meeting recording on the headset not runtime-verified (same code path).
+  Design doc §7 "restart out of scope" is superseded (§10.3 item 11). Gotcha for probes: a script that
+  blocks the main thread (`Thread.sleep`) never receives the configuration change → looks like a dead mic.
+- **Crash after starting a dictation — root-caused + fixed (2026-09-06, user: "Kleoth has been crashing
+  the last couple of times I started dictation… no errors").** Crash reports live in
+  `~/Library/Logs/DiagnosticReports/Kleoth-*.ips` (+ `Retired/`); parse with a small python script
+  (`faultingThread` frames via `usedImages`). All five since 09-04 died in `swift_task_isCurrentExecutor`
+  → `swift_getObjectType` on garbage (main thread; twice in `DictationHotkeyMonitor.start()`'s closure,
+  once in `MeetingAudioPlayer`'s timer). `/usr/bin/log show` 5 s before each: AVFoundation raised
+  `Failed to create tap due to format mismatch <1 ch, 48000 Hz>` ("input hw 44100") from
+  `DictationCapture.installTap` ← `start()` ← `handleArmed()`; AppKit swallowed it (`HIExceptions FAULT`),
+  the unwind skipped the Swift runtime's C++ destructors, and the stale thread-local executor tracking
+  killed the process on the next main-actor check. **Root cause:** after the default input device changes
+  while an `AVAudioEngine` is idle (the headset connecting), `inputNode.outputFormat(forBus:)` keeps the
+  previous run's rate forever (`prepare()`/`reset()` don't refresh it) while `inputFormat(forBus:)` follows
+  the hardware — probed with an aggregate device at 44.1 kHz, then with the real WH-1000XM5. **Fixes:**
+  (a) `DictationCapture`/`MicCapture`/`MicrophoneSource` read **`inputFormat(forBus: 0)`** in `start()` and
+  the configuration-change handlers; (b) new **`KleothObjC`** target (`KLCatchObjCException`) +
+  `catchingObjCExceptions(_:)` (KleothCapture/ObjCExceptions.swift) wrap every `installTap` → thrown
+  `ObjCExceptionError` → `.engineFailed` → red pill + `log.error`, never a swallowed NSException. Verified
+  with a throwaway probe target driving the real `DictationCapture` through idle switches built-in 48 kHz
+  ↔ headset 16 kHz (starts land at 44.1/48/16 kHz, no exception). ⚠️ Rule: any AVFoundation call that
+  can raise (`installTap`, `connect`) goes through `catchingObjCExceptions` — an NSException reaching
+  AppKit is a delayed crash, not a logged error. Leftover: a mid-session default-input switch didn't
+  always post `AVAudioEngineConfigurationChange` in the probe (engine "running", no frames,
+  `interrupted` false) → the clip ends silently at the switch. Design doc §10.3 item 12.
+- **Polish timeouts root-caused (same day; user: "8 s may be not enough for long prompts… don't just
+  throw it on the timeout, allow cancelling manually").** Day files: 16/85 polishes "timed out" at 47–178
+  words, but `dictate --text` polishes the same texts in 1.0–2.2 s on the shipped default. Cause: every
+  polished row had `polish_model: z-ai/glm-5.3-flash` — the few-hours default of 09-03, persisted into the
+  Keychain by Settings and never migrated (3.6–4.1 s median, tail > 8 s). Shipped:
+  `DictationDefaults.retiredPolishModels` (glm → `polishModel`) + `migratingPolishModel(_:)` (chains
+  `ModelCatalog.migrating`; used by `AppConfig`, `setDictationModel`, `SettingsView.loadFromController`
+  persists it; the picker hides retired polish slugs — glm stays the automatic fallback);
+  `polishTimeout` 8 → **30 s** (a ceiling, not the expected wait); **Esc while `.polishing` cancels only
+  `polishTask`** (unstructured child of the run; `cancelPipeline()` cancels both) and pastes raw at once,
+  logged as `.skipped("Cancelled with Esc — pasted as heard.")`, pill `.help` says so; new log key
+  **`polish_seconds`** (nil when skipped). 339 core tests. Design doc §10.3 item 13. ⚠️ The Esc path and
+  the migration on this install are not runtime-verified (open Settings once to persist the new slug).
+- **Headset stuck in hands-free (HFP) mode after a dictation — root-caused + fixed (2026-09-07; user:
+  "when I finish the dictation on my headphones, it sometimes still hangs in this microphone headset mode…
+  ugly sound quality… until I reopen kleoth").** Probed with scratch CoreAudio/AVAudioEngine tools on the
+  WH-1000XM5: an `AVAudioEngine` whose `inputNode` was touched keeps the input device open until the engine
+  OBJECT is deallocated — `engine.stop()` does not release it, and even an engine that was never started
+  (only `inputFormat(forBus:)` read) pins the headset at 16 kHz; freeing the engine restores 44.1 kHz within
+  ~1 s. `DictationCapture` owned one engine for the app's lifetime → HFP until quit. Fix: `DictationCapture`
+  and `MicCapture` create the engine in `start()` (a local until the session is live, so every throw frees
+  it) and release it in `stop`/`cancel`/config-change give-up (`quiesce()` / `releaseEngine()`).
+  Cost measured: fresh engine ≈200 ms to `start()` on the headset vs ≈55 ms warm, so
+  `DictationController.handleArmed()` shows `.armed` BEFORE `capture.start()`. Verified with a throwaway
+  `captureprobe` target (removed) driving the real classes: 4/4 scenarios return the headset to 44.1 kHz
+  with the objects alive. `MicrophoneSource` untouched (released by `ScreenRecorder` at stop). Design doc
+  §10.3 item 14. Bluetooth log recipe: `/usr/bin/log show --predicate 'process == "bluetoothd" AND
+  (eventMessage CONTAINS "SCO" OR eventMessage CONTAINS "coexChanged")'` — `hfp:1` = headset mode;
+  `AVAudioEngine.mm … start/stop` lines under `process == "Kleoth"` (needs `--info --debug`).
+- **Terminal polish mode removed (2026-09-07; user: "polishing of my voice messages is not being polished
+  anymore… no paragraphs, no polishing at all" on a 255-word prompt into Claude Code):** the day file showed
+  the polish HAD run (`gemini-3.5-flash-lite`, 2.3 s, no fallback) and changed only two fillers + two
+  mishearings — exactly what the `terminal` mode (light touch, one line, keep the speaker's words) asked
+  for, because Ghostty is a terminal bundle id and the classifier can't see Claude Code inside it. The
+  user: "I'm not going to dictate the shell prompt anyway… I don't need it." `AppStyle` is now
+  `compose`/`chat` only; the six terminal ids moved to `knownComposeBundleIds`; the MODES line and the two
+  terminal few-shots left the system prompt (the RU one became a compose example). A per-app Settings
+  override and window-title sniffing were offered and declined. Design doc §10.3 item 15; §8.2 #14 now
+  expects two formats. Diagnosis recipe: `bun -e` over `~/Kleoth/dictations/<day>.json` comparing
+  `raw_text`/`polished_text`/`polish_model`/`polish_seconds`/`fallback_reason` per row.
+- **Known leftovers (small):** CLI `summarize`/`rename` + `localtranscribe` bypass variant archiving
+  (from 2026-07-22). `docs/CODE-REVIEW.md` still local/uncommitted.
+- ⚠️ **NOT runtime-verified (honest list):** everything that needs the signed bundle + a human —
+  the hotkey monitor live (chord detection, fn/🌐 double-tap emoji-picker caveat, trust-loss
+  teardown, local monitor while a Kleoth window is key), the real ⌘V paste into real apps,
+  secure-input refusal + 0.5 s clipboard restore + Maccy transient markers, the pill by eye (activation
+  policy, Spaces/full-screen, second display, drag/clamp/persist, VoiceOver, Reduce Motion), the
+  Settings section (trust polling, dictionary file write, delete confirmation), History scope switch
+  not re-running the meetings reload, the model migration on this install, "at most one Keychain
+  prompt", and whether an Accessibility grant takes effect without relaunch. The release app was
+  reinstalled but the RUNNING instance was not killed — relaunch to pick it up.
+- **TODO for the user — §8.2 manual checklist (unchecked; record pass/fail here):**
+  prereq `bash app/setup-signing.sh` once, `bash app/make-app.sh release`, `pkill -x Kleoth; open -a
+  Kleoth`, `codesign -dv` shows "Kleoth Self-Signed". Added by the review pass (§8.2 #7c/#8b):
+  fn+shift+⌘ with ⌘ released FIRST must not arm/start hands-free; hands-free → Esc (and → pill ✕)
+  → the next single hold must arm on the FIRST press; double-tap twice mid-pipeline → the first
+  press after it settles arms.
+  1. Settings → Dictation toggle on before granting → system prompt; row "needs access"; popover button; chord dead.
+  2. Grant in System Settings, return → row flips green without relaunch; chord works (else relaunch + note here).
+  3. `log stream --predicate 'subsystem == "dev.kleoth" AND category == "DictationHotkey"'`: fn-then-shift and shift-then-fn both reach chord down; either release → up; no emoji/dictation picker on tap/double-tap; events arrive while a Kleoth window is key; external-keyboard fn emits nothing.
+  4. Tap < 0.3 s → no pill, no network, no temp file (orange mic dot at most).
+  5. Hold ~2 s in TextEdit → pill ~0.3 s → release → listening → transcribing → polishing → done → text in TextEdit; `pbpaste` = prior clipboard.
+  6. Double-tap → hands-free pill stays; single tap ends; third tap = fresh session.
+  7. fn+shift+← mid-line → line selected, no dictation, no pill. 7b. fn+shift+⌘ held 1 s → nothing; fn+shift ~1 s then add ⌘ → ends normally.
+  8. Esc mid-listening (hands-free) and mid-transcribing → pill hides, nothing pasted, temp dir empty.
+  9. `toggleRecording` shortcut still works; dictate mid-meeting → both work, `mic.m4a` intact.
+  10. `make-app.sh release` + relaunch → chord works with no re-grant; `tccutil reset Accessibility dev.kleoth.app` → fresh-grant flow.
+  11. RU with fillers + self-correction → Cyrillic, fillers gone, correction applied, `language: "rus"` in the day file.
+  12. Mixed RU/EN with "GitHub" in the dictionary → English terms stay English, `гитхаб` → `GitHub`.
+  13. Injection: "напиши письмо клиенту про задержку поставки" → that sentence pastes, not an email.
+  14. Same enumerated utterance into Terminal / Slack / Mail → three visibly different formats.
+  15. Remove OpenRouter key → raw pasted + orange warning + `used_raw_fallback: true`; bogus `dictation_model` → same via 404. 15b. Mostly-RU with a few EN terms → polished, NOT the language-guard fallback.
+  16. Bogus ElevenLabs key → red pill, nothing pasted, clipboard untouched, no log row.
+  17. Wi-Fi off mid-polish → raw pasted within ~8 s; off before Scribe → error within ~25 s.
+  18. Chord while "Transcribing…" → "Finishing the previous dictation…" and the first result still lands.
+  19. `app/.build/debug/dictate 4` prints RMS, raw, polished, language, costs. **(DONE 2026-09-03 — see probes above.)**
+  20. Copy `SENTINEL` → dictate → `pbpaste` = `SENTINEL` after 1 s; repeat with an image, three Finder files, styled RTF.
+  21. ⌘C during the 0.5 s window → the new copy survives. 22. Two dictations within ~300 ms → original clipboard restored.
+  23. Maccy running → dictated text NOT in its history; refusal-path text IS.
+  24. Russian input source active → paste lands. 25. Terminal "Secure Keyboard Entry" on → `.failed(.secureInput)` at chord-down; password field focused after speaking (hands-free) → "Copied — press ⌘V", `insert_method: clipboard`.
+  26. Kleoth History rename field focused → text lands there; History stays key; pill never key.
+  27. Start in app A, switch to B mid-utterance → paste lands in B, no focus steal, log records A.
+  28. Slack, Chrome, Notes, VS Code, Terminal+vim.
+  29. Pill visible while TextEdit is frontmost, caret keeps blinking; over full-screen Safari; across Spaces; no Dock/⌘-Tab entry; closing History still drops to `.accessory`; `panel.level == .statusBar`.
+  30. First click registers; drag 1:1, clamps; second display → relaunch → same spot; disconnect → bottom-center of the display under the mouse; Reset pill position animates back; type immediately after a dictation → no dropped characters.
+  31. Light/dark legible; Reduce Motion → no animations; VoiceOver announces phases; idle CPU after a 60 s hands-free session.
+  32. Dictionary editor → `~/.config/kleoth/dictionary.json` is a plain array; the term transcribes correctly.
+  33. History → Dictations: scope picker, day sections, search, detail polished/raw/copy, delete asks + rewrites; Meetings scope unchanged; scope flip doesn't re-trigger the meetings reload; app stays `.regular`.
+  34. Stored `google/gemini-3-flash-preview`: (a) summarizing before opening Settings already uses `z-ai/glm-5.3-flash`; (b) open Settings once → picker shows the new default, Keychain rewritten.
+  35. At most one Keychain prompt at launch after adding the two keys.
+
+## Current status (2026-08-17 — per-meeting failure surfacing)
+- Root-caused "Transcribe in cloud silently reverts": ElevenLabs returned **401 `payment_issue`**
+  (failed/incomplete subscription payment on the user's account — fix at elevenlabs.io billing;
+  verified with a tiny live Scribe probe). Not an app bug, but the error was invisible: it went
+  only to `statusMessage` (popover header), and the detail banner is gated on
+  `isProcessingMeeting`, which the failure path clears first.
+- ✅ **Per-meeting error surfacing shipped:** `RecordingController.meetingErrors`
+  (`[path: message]`, in-memory like `processingPaths`) + `meetingError(for:)` /
+  `clearMeetingError(for:)` / private `reportMeetingError(_:in:)` (sets statusMessage AND pins
+  the message to the folder). All failure paths wired: stop, runPipeline, both archive-failure
+  aborts, runFullTranscription, runOnDeviceTranscription, summarizeLatestMeeting, switchVariant.
+  Cleared by `markProcessing` (retry), dismiss, trash, and Remove Transcription. UI: dismissible
+  red error card in MeetingDetailView (both processed + unprocessed states, hidden while
+  processing) + red "Failed" `KleothPill` on the History row (`.help` = full message);
+  `KleothPalette.failureTint` added. 120 tests green; release app reinstalled (relaunch to pick
+  up). Not runtime-verified visually.
+
+## Current status (2026-07-22 — transcription-on-demand + 5-item UX pass)
+User-requested workflow run (3 workflows: understand/design → implement → fix; 36 agents total,
+every review finding adversarially verified). Committed + pushed to main (single commit — the five
+features all overlap in RecordingController.swift). 120 core tests green (was 118 → new
+Settings/variant/remove tests); both packages build; release app installed to /Applications
+(running instance NOT killed — relaunch to pick up). docs/CODE-REVIEW.md stays local/uncommitted.
+1. **Auto-transcribe is now OPT-IN (default off, incl. existing installs — CHANGELOG'd):**
+   `Settings.autoTranscribe` ← Keychain `auto_transcribe` ("true" strict; absent/other → false);
+   Settings → On-device transcription toggle "Transcribe automatically after recording". With auto
+   off, `stop()` still does the off-main combine to `meeting.m4a`, then unmarks processing → row
+   shows "Untranscribed", status "Recording saved.", NO meta.json written. Untranscribed detail pane
+   has prominent **Transcribe** (on-device, `transcribeSaved`) + bordered **Transcribe in cloud**
+   (`fullyTranscribe`, disabled w/o ElevenLabs key, no spend dialog — consistent w/ 2026-06-04
+   removal). Calendar naming recovered at transcribe time via `recoveredCalendarNaming` (re-queries
+   EventKit; only for placeholder titles). StopRecordingIntent/onboarding copy updated.
+2. **Playback fix:** `meeting.m4a` is hard-panned stereo (L=mic, R=system) with a historically
+   quiet/clipped mic channel — user heard "system only". `AudioPlayerModel` rewritten AVAudioPlayer
+   → AVAudioEngine + AVAudioPlayerNode + intermediate mixer with a **1-channel connection = live
+   mono downmix** (file untouched — its L/R layout is load-bearing for localtranscribe multichannel
+   recovery). Handles `.AVAudioEngineConfigurationChange` (device switch → rebuild graph, reschedule,
+   resume), seek clamps to duration−0.05 and never kills playback (EOF is tick()'s job). Also
+   `ChannelAudio.normalizeLoudness` gained a ±0.97 vDSP_vclip after the gain stage + maxGain 8→16
+   (live probe had shown mic peaks 6.1× full scale hard-clipping) — future recordings get a sane mic
+   level; legacy files stay quiet-but-audible via the downmix.
+3. **Copy checkmark** reverts after 1.5s (`flashCopied()`, cancel-and-restart task, cancelled on
+   reload/disappear).
+4. **Per-tier transcript variants:** `MeetingStore.archiveActiveVariant` / `availableVariantTiers` /
+   `activateVariant` (pre-validates ALL throwing reads before mutating; promote deletes stale root
+   summary when the variant lacks one; re-renders root .md from promoted JSON + current title +
+   speakers.json — rename-staleness closed). Detail: tier badge becomes a Menu switcher when >1 tier
+   exists; toolbar offers "Fully transcribe"/"Transcribe on device" only when that tier exists
+   NOWHERE (active or archived); crash-mid-switch recovery = "Restore <tier> transcript" button on
+   the unprocessed pane. Reruns: archive failure ABORTS the run (protects existing transcript);
+   stale same-tier archive deleted only AFTER pipeline success; failed rerun auto-restores the
+   just-archived variant (no more demote-to-Untranscribed on a network blip).
+   `runFullTranscription` now writes the default speakers.json for 2-channel (was a HIGH finding —
+   raw speaker_0/1 labels on the new record→cloud path). speakers.json + meta.json stay at root,
+   shared across tiers. Known gap: CLI summarize/rename + localtranscribe bypass archiving.
+5. **Folder sizes + Remove Transcription:** `RecentMeeting.sizeBytes` via one detached
+   enumerator walk, `sizeCache` + `sizingPaths` + `sizeEpoch` generation guard (invalidated in
+   delete/remove/unmark/rename/switchVariant); surfaces: History row "5:26 PM · 12m 03s · 214 MB",
+   multi-select placeholder "<total> on disk", detail pill, Settings Output footer.
+   `MeetingStore.removeTranscription(in:trash:)` trashes the 4 root artifacts + `variants/`, KEEPS
+   audio + speakers.json + meta.json (stripped of tier/model/language/cost; title/date/participants
+   survive) → row reverts to Untranscribed with real title. History context menu + detail toolbar
+   "Remove Transcription" (multi-select, skips processing, no confirmation — trash-recoverable).
+   `RecentMeeting.hasMetadata` added; rename gates moved isProcessed→hasMetadata; `isProcessed` now
+   keys on transcript.json existence (not meta.json).
+- ⚠️ Not runtime-verified (compile-checked + adversarially reviewed only): a live stop with auto
+  off, the downmix player by ear (incl. device-switch mid-play), a variant round-trip in the UI,
+  sizes on a big ~/Kleoth, Remove Transcription end-to-end. Worth one manual pass.
+- Accepted v1 losses (documented in plan/code): participants/consent reset when re-transcribing via
+  `transcribeSaved`; untranscribed rows show no duration; single-file Scribe fallback's speaker ids
+  keep raw diarization semantics.
+
+## Current status (2026-06-08 — code review + Slack removal)
+- ✅ **Whole-project code review** (user-run multi-agent workflow, 72 agents, every finding
+  adversarially verified): **verdict = do NOT rewrite** — clean seams (`Transcriber`/`HTTPTransport`),
+  correct Swift 6 concurrency, tested core; debt is decomposition + duplication, not rot. 54 findings
+  confirmed (2 high, 16 medium, 36 low), 5 refuted. Full report in **`docs/CODE-REVIEW.md`** — kept
+  **LOCAL/uncommitted** at the user's request (lists not-yet-fixed items); commit it (or a trimmed
+  version) once the rest is addressed.
+- ✅ **Applied Tier 1 + both HIGH fixes** (commit `122005b`): summary truncation now retried/surfaced
+  (`finish_reason` plumbed through `OpenRouterClient`/`Summarizer`); onboarding "Start" no longer
+  dead-ends after Skip; Markdown H1 title sanitized; deterministic diarized You/Them; `LocalizedError`
+  for summary errors; single Scribe-price source (`TranscriptTier.usdPerHour`); `renameMeeting` no
+  longer fabricates `summary.md`; removed dead `slug` + vestigial `runPipeline(useMultiChannel:)`;
+  `shared` is `private(set)`; locale currency. (Slack escaping/SecureField from this commit were then
+  superseded by the removal below.)
+- ✅ **Slack integration REMOVED entirely** (user: "i don't want slack integration"). Deleted
+  `SlackRenderer.swift`, the `kleoth slack` CLI subcommand, `RecordingController.postLatestToSlack` +
+  `updateSlackWebhook` + `Command.slackLatest` + `kleoth://slack-latest`, `PostLatestToSlackIntent` +
+  its AppShortcut, the Settings Slack section + `Settings.slackWebhook` + `Keychain.Account.slackWebhook`
+  + the `SLACK_WEBHOOK`/`slack_webhook` config plumbing, and `integrations/raycast/kleoth-slack-latest.sh`.
+  The detail view's "Copy for Slack" became **Copy Summary** (renders the summary as Markdown via
+  `MarkdownRenderer`, no transcript). Docs updated (README/CHANGELOG[Unreleased]/Raycast README).
+  103 core tests green (3 Slack tests removed); both packages build; release app reinstalled.
+- ⚠️ Tier 2/3 from the review still open (app test target, audio resample M4, lazy/off-main detail,
+  pipeline-job timeout, Keychain hardening, capture-silence warning, unified re-summarize op,
+  decompose `RecordingController`). Not started.
+
+## Current status (2026-06-06 — history management + publish-prep pass)
+- ✅ **History sidebar is Finder-like** (user asked: badge visible when selected; ⌘-multi-select +
+  delete; double-click rename — researched against Apple docs/HIG first via 3 parallel agents):
+  1. **Badges legible on selection:** `KleothPill` + `KleothTierBadge` read
+     `@Environment(\.backgroundProminence)` (macOS 14+) and flip to white-on-translucent-white at
+     `.increased` — i.e. exactly when the row draws the *focused* accent fill. The gray inactive
+     selection stays `.standard` **by design** (tint already legible there — do not "fix").
+  2. **Multi-select + delete:** `HistoryView.selection` is now `Set<RecentMeeting.ID>` (⌘/⇧-click
+     native). `contextMenu(forSelectionType:menu:primaryAction:)` + `.onDeleteCommand` sit ON the
+     List; the menu closure's `ids` set is authoritative (clicked-outside-selection ⇒ just that
+     row; empty set on blank-space right-click) — never read `selection` inside it. Context menu:
+     Rename (single, processed only) / Show in Finder / Move to Trash. Deletes go through
+     `RecordingController.deleteMeetings` → `FileManager.trashItem` (recoverable), **no
+     confirmation** per HIG ("avoid alerts for common, undoable actions") — Finder norm; the
+     detail view's single-delete keeps its existing dialog. Bulk delete skips processing/active
+     -recording dirs ("Skipped — still transcribing."), reloads once. Detail pane shows an
+     "N meetings selected" placeholder (combined duration + bulk trash button) when count > 1.
+  3. **Double-click inline rename:** `primaryAction` (fires on double-click AND Return — the
+     idiomatic List API; `.onTapGesture(count:2)` fights selection) → row's title swaps
+     Text→TextField (`.plain`), parent-owned `renamingID`/`renameDraft`, `@FocusState` keyed by
+     row id, focus deferred one runloop tick (same-tick focus no-ops), select-all comes free.
+     Enter commits (`onSubmit`), Esc cancels (`onExitCommand`), click-away commits (focus
+     observer; cancel clears `renamingID` BEFORE focus so the observer can't double-commit).
+     Rename allowed only for processed, non-transcribing rows (untranscribed folders have no
+     meta.json to hold a title). Core: `MeetingStore.loadMetadata(in:)` +
+     `renameMeeting(in:to:)` (rewrites meta.json; re-renders transcript.md/summary.md when a
+     transcript exists so the user-owned Markdown header matches; meta-only otherwise) — 3 new
+     tests. Controller `renameMeeting` trims/guards + `contentRevision` bump (open detail
+     updates live); user titles are durable (`isPlaceholderTitle` gate on summarize).
+- ✅ **Publish prep (parallel agent, worktree, merged):** **secret scan of FULL git history =
+  CLEAN** (.env/config.json never committed; only masked variable *names* in README/tests — safe
+  to make public, no filter-repo needed). Rewrote stale `README.md` (old one described
+  Scribe-as-primary/GPT-4.1-mini), added `CHANGELOG.md` (0.1.0, Keep-a-Changelog),
+  `docs/RELEASING.md` (documents make-app/make-dmg actual behavior + [Developer Program]-gated
+  notarized tier), `packaging/homebrew/kleoth.rb` (draft cask, OWNER/REPO + sha256 placeholders),
+  `.gitignore` += `app/.build/`, `*.dmg`; `app/bundle/Info.plist` += `LSApplicationCategoryType`
+  (productivity) + `NSHumanReadableCopyright`.
+- ✅ **PUBLIC (2026-06-07):** user chose **Apache-2.0** (LICENSE at root; the Raycast extension
+  deliberately stays **MIT** — the Raycast Store requires MIT — carve-out documented in README)
+  and **repo created + pushed**: `https://github.com/ofcRS/kleoth` (public, `origin` wired,
+  topics set, cask placeholders filled with `ofcRS/kleoth`). The repo is LIVE — anything
+  committed to main is now world-readable; keep the no-keys discipline absolute.
+- ✅ **v0.1.0 RELEASED (2026-06-07, user-requested parallel workflow — 6 agents, every leg
+  adversarially verified):** https://github.com/ofcRS/kleoth/releases/tag/v0.1.0 — DMG +
+  `.sha256` assets live (curl 200; GitHub's server-side digest matches `6028cafb…`). The stale
+  local v0.1.0 tag (was at 7df4d21) was re-created annotated at origin/main and pushed. README
+  now opens with a generated hero banner, release/downloads badges, and a direct-download link;
+  cask `sha256` filled with the real digest.
+- ✅ **Brand images generated headlessly** (`app/branding-src/readme-images/generate.swift` —
+  AppKit offscreen render @2x → sips downscale): `docs/assets/hero.png` (1600×420, wired into
+  README) + `docs/assets/social-preview.png` (1280×640). ⚠️ Gotcha: the iconset PNG has NO
+  alpha — white-baked corner gaps + ~2.64% white padding on the 1024 canvas — so the script
+  clips the icon to an inset rounded tile (inset 2.84%, radius 26% — measured by pixel probe)
+  and draws the shadow from an opaque rounded base first (a shadow set inside the clip gets
+  clipped away with the corners). First render had a white halo; fixed + visually re-verified.
+- ✅ **Demo meetings staged for screenshots:** `~/Kleoth/meeting-2026-06-07-{091200,103000,
+  130000,154500}` — invented EN business content, mixed Cloud/On-device tiers, durations via
+  `cost.audio_duration_secs`, deliberately NO `.m4a` (detail view gates its player on audio
+  presence, so nothing breaks; list duration falls back to the stored value). All four pass
+  `kleoth render`. Remove after screenshots: ⌘-select all four in History → Move to Trash.
+- ✅ **README screenshots (2 of 3, 2026-06-08):** user captured the popover + History-detail
+  windows (on the staged demo data — the detail shot also confirms the selected-row Cloud badge
+  fix renders white, live). Framed both on the hero gradient via
+  `app/branding-src/readme-images/frame-shot.swift` (transparent-surround window shots →
+  `docs/assets/screenshot-{detail,popover}.png`) and wired into the Screenshots section. Minor:
+  the popover capture has faint terminal bleed-through in its translucent header (macOS vibrancy;
+  acceptable — recapture against a clean desktop only if it bugs anyone).
+- ⏳ **Publish leftovers:** (1) onboarding screenshot still TODO (Settings → Show Welcome Window);
+  (2) upload `docs/assets/social-preview.png` manually: GitHub repo Settings → Social preview
+  (no API/CLI exists for it); (3) demo meetings still in `~/Kleoth` — delete the four
+  `meeting-2026-06-07-*` folders when done shooting; (4) stale `BUILD-APP.md` (references
+  `KleothApp` binary; now `Kleoth`) — update or fold into docs/RELEASING.md; (5) Developer
+  Program → notarized tier + Homebrew tap (cask draft ready at packaging/homebrew/kleoth.rb).
+- ✅ Both packages build; **100 core tests green** (was 97); release app reinstalled; DMG rebuilt.
+- ⚠️ Not runtime-verified: the new History interactions visually (multi-select, inline-rename
+  focus/commit behavior, badge treatment on selection) — all compile-checked + research-backed.
+
+## Current status (2026-06-05 — background processing pass)
+- ✅ **All prior work merged to `main`** (fast-forward from `fix/scribe-attribution-and-summary-language`
+  at `22fe200`); development now happens on `main`.
+- ✅ **Stop is non-blocking** (user: "when recording is over, i want it to be moved into the list
+  below, and start recording button to be unlocked immediately"). `stop()` frees the capture slot
+  up front (recorder/dir/startedAt captured into locals, controller state cleared), marks the
+  folder as processing, and returns after queueing — the record button is gated ONLY on consent
+  now, so a new recording can start while the previous one transcribes.
+- ✅ **Serial pipeline queue:** `enqueuePipelineJob` chains jobs on `pipelineQueueTail` (strict
+  FIFO). Rationale: every `LocalTranscriber.transcribe` builds its own ~600 MB WhisperKit, so
+  concurrent runs would double memory + fight over the ANE. `stop()`, `transcribeSaved`,
+  `transcribeExistingFile` (now pre-creates its meeting dir via `makeSessionDirectory`), and
+  `fullyTranscribe` (split into guard+enqueue and `runFullTranscription` worker) all queue;
+  multiple meetings can be queued back-to-back and run one at a time.
+- ✅ **In-flight meetings live in the list:** `processingDir: URL?` → `@Published
+  processingPaths: Set<String>` (standardized paths; `markProcessing`/`unmarkProcessing` reload the
+  list; `isProcessing` is now derived + `private(set)`). `loadRecentMeetings` no longer hides the
+  mid-pipeline folder — it lists it (`RecentMeeting.isTranscribing`) with a spinner +
+  "Transcribing…" in the popover row, History sidebar row, and a dedicated detail-view state;
+  only the *active recording* folder stays hidden (files still being written; that branch never
+  probes duration, so listing during the off-main combine is safe). Failure paths unmark → row
+  resurfaces as "Untranscribed". `processingPaths` is in-memory only: quit mid-run → folder shows
+  as "Untranscribed" on relaunch (self-healing).
+- ✅ **Per-meeting gating instead of global:** detail's "Fully transcribe" + progress banner key on
+  `isProcessingMeeting(dir)`, so other meetings processing in the background don't block/banner
+  this one. Double-queueing the same dir is guarded everywhere. Popover header subtitle shows
+  "Transcribing in the background"; the top status line is reserved for transient messages
+  ("Finalizing recording…", "Saved …", errors) and hides at "Idle" — pipeline progress lives on
+  the row spinner. Quit while processing now asks (confirmationDialog) — audio survives either way.
+- ✅ `stop()` returns a `String` outcome (`@discardableResult`) — "Recording saved — transcribing
+  in the background." — used by `StopRecordingIntent`'s dialog (statusMessage may already be
+  reset/overwritten by then).
+- ✅ Both packages build; 97 core tests green; release app installed; DMG rebuilt (7.8M, SHA-256
+  `681e4aba…`). ⚠️ Not runtime-verified: a live stop→record-again overlap and the queue under
+  real long meetings (logic compile-checked only; WhisperKit serialization is by construction).
+
+## Current status (2026-06-04 — onboarding/raycast/polish pass)
+- ✅ **First-run onboarding** (user: "it should be experience… ready? start recording"). Researched
+  via a 4-agent workflow (Transcribe-Anything-style name question; menu-bar-app welcome-window
+  norms; permission priming; the openWindow/TabView(.page)/TCC traps), then implemented:
+  `Views/OnboardingView.swift` — fixed 560×600 five-step machine (Welcome → Name → Permissions →
+  Model+Language → "Ready? Start recording."), `Window(id: "kleoth-onboarding")` scene, launch
+  trigger = `.task` on the **MenuBarExtra label** (the only view mounted at launch with a live
+  SwiftUI env; `openWindow` is unusable from App.init/AppDelegate). Gating:
+  `needsOnboarding = onboarding_completed != "true" && !consentAcknowledged` (existing installs
+  never see it); closing the window mid-flow counts as done (idempotent `finalize()`).
+  The NAME step seeds `speaker_0` (default map becomes `{speaker_0: <name|You>, speaker_1: Them}`),
+  prefilled from `NSFullUserName()`. Permissions step primes consent + mic
+  (`AVCaptureDevice.requestAccess`) + system audio (`SystemAudioTap.primePermission()` — creates &
+  destroys a throwaway tap; macOS has NO query/request API for it). Replayable via Settings →
+  "Show Welcome Window".
+- ✅ **Welcome jingle + animation:** chime = **ElevenLabs sound-generation**, chosen BY EAR across
+  three batches (12 candidates): the first harp-glissando prompts came out cinematic-eerie ("so
+  scary"), notification-style timbres (marimba/music box/kalimba/celesta/felt piano) landed felt
+  piano, and a third batch added the user's requested extra note. Bundled
+  `Resources/WelcomeChime.m4a` = `chime3-feltpiano-3chords` (three warm felt-piano chords rising,
+  2.4s). All candidates + prompts + the offline Karplus-Strong fallback (`synth-chime.m4a`) + swap
+  instructions live in `app/branding-src/jingle/NOTES.md`. Played once on onboarding appear
+  (fail-silent if missing). Welcome step: spring-in lyre mark + staggered text reveals, gated on
+  Reduce Motion. **Prompt lesson:** for app chimes, ask the SFX model for notification language
+  ("soft felt piano… clean and dry", prompt_influence 0.6), never "glissando/reverb tail".
+  The key fix also unblocked `/v1/user/subscription` → Settings → Usage reports ElevenLabs live
+  (verified: payg tier, credits populate). `afplay` from the agent shell plays through the user's
+  speakers — useful for letting them audition candidates.
+- ✅ **Raycast extension** (`integrations/raycast-extension/` — TypeScript, @raycast/api): Toggle/
+  Start/Stop Recording (kleoth:// URLs), Search Meetings (reads ~/Kleoth, open/copy summary &
+  transcript + paths), Latest Summary (markdown Detail). Validated with `ray build`; registered in
+  Raycast via a one-shot `ray develop`. Re-import: `npm run dev` in that dir. Gotcha:
+  `@types/react` must be ^19 with current @raycast/api. The old script commands in
+  `integrations/raycast/` remain.
+- ✅ Smaller asks: Russian moved to the END of the Settings language list (+footer de-Russified;
+  user-facing copy mentions no language); the "Fully transcribe" price-confirmation dialog REMOVED
+  (button transcribes immediately; `MeetingFormat.usd` deleted — the Usage section is now the only
+  money surface anywhere); detail toolbar's copy button is now a menu: Copy for Slack / Copy
+  Transcript Path / Copy Summary Path.
+- ⚠️ Orchestration note: the implementation workflow's final review agent stalled (3-min
+  no-progress watchdog ×6) and the run was marked failed — but Create+Build phases had already
+  landed everything (both packages compiled, 97 tests green); the review was redone by hand.
+- ⚠️ Not runtime-verified: the onboarding window visually (it only auto-opens on a fresh install;
+  use Settings → Show Welcome Window or the from-scratch DMG test), the chime audibly, and the
+  Raycast commands end-to-end.
+
+## Current status (2026-06-04 — summary/wording/usage pass)
+- ✅ **Rename now reaches the summary.** `SpeakerMapper.apply(_:toSummary:previousTranscript:)`
+  rewrites action-item owners + highlight speaker names on rename (exact-match on the previous
+  display name or bare id; free prose untouched). Wired in `RecordingController.rename` AND the
+  CLI `kleoth rename`; the rewritten summary.json + `contentRevision` bump means the open detail
+  view updates immediately. (Bug: rename only rewrote the transcript; summary kept old names
+  forever.) Unit-tested incl. consecutive renames.
+- ✅ **Summary restructured** (see "Summary shape" above) — user: "too many slop categories".
+- ✅ **Money de-emphasized:** removed the popover Session-cost line, per-row $ in popover/History,
+  the detail cost tiles, and $ amounts in status messages. `RecentMeeting.costUSD` +
+  `currentCostUSD` deleted. Costs still land in meta.json. The ONE remaining $ surface besides
+  Settings → Usage is the "Fully transcribe" **spend-confirmation** dialog (~$0.22/hr estimate) —
+  deliberate: it's a payment consent gate.
+- ✅ **Settings → Usage section** (the only money/quota surface): live provider-reported numbers via
+  new `Sources/KleothCore/Usage/ProviderUsage.swift` — `ElevenLabsUsageClient`
+  (`GET /v1/user/subscription`, `xi-api-key`; credits used/limit + cycle reset) and
+  `OpenRouterUsageClient` (`GET /api/v1/credits`, Bearer; lifetime purchased/used → remaining).
+  Fail-soft per provider, refresh button, keys only ever in headers. 5 unit tests on MockTransport.
+- ✅ **Wording:** tier badges now "On-device" / "Cloud" everywhere user-facing.
+- ✅ **Keychain prompts (5–6 per launch) fixed structurally:** `Keychain` now stores ALL values in
+  ONE consolidated item (service `dev.kleoth`, account `settings`, JSON dict) read once per launch
+  into an in-memory cache → at most ONE permission prompt ever (the app used to read 6 separate
+  items at startup → 6 prompts on any ACL/signature mismatch, recurring if the user clicked
+  "Allow" instead of "Always Allow"). Legacy per-value items migrate on first load and are deleted
+  only after a successful read — a denied prompt never destroys a key, and a denied *blob* read
+  throws rather than falling into migration (which would re-burst) or clobbering on a later write.
+  Call sites unchanged (same `Keychain.get/set` API). Tell the user: click **Always Allow**.
+- ⚠️ **ElevenLabs usage needs a key scope:** the account's current API key is STT-scoped;
+  `GET /v1/user/subscription` returns **401** (verified live) → the Usage row shows an actionable
+  hint ("needs the “User” read permission"). OpenRouter `GET /api/v1/credits` verified live
+  (`total_credits` 25, decodes into `OpenRouterCredits`).
+- ✅ 97 core tests green; both packages build clean; release installed + running.
+- ⚠️ Not runtime-verified: the Usage section against the live APIs, and a live rename round-trip in
+  the app UI (the remap itself is unit-tested; controller flow compile-checked).
+- Note: old names inside free prose (tldr/overview text) survive a rename by design — only the
+  structured name fields are rewritten; a re-summarize regenerates prose with new names.
+
+## Current status (2026-06-03 — 7-fix UX pass)
+- ✅ Both packages build clean; **86 core tests green**; release app installed + running.
+- ✅ **Seven fixes shipped (multi-agent reviewed, then triaged):**
+  1. **Popover header icon** → the lyre. First pass used a full-color `AppMark.png` chip; the user
+     found it too heavy ("minimalistic was better"), so it's now (2026-06-04) the **menu-bar
+     template glyph** (`KleothAssets.menuBarGlyph()`) accent-tinted on a quiet accent-washed tile
+     (SF Symbol fallback). `appMark()` + `AppMark.png` were removed as dead. Popover bottom padding
+     bumped to `spacingXL` (24) — the window's corner radius curved into the footer at uniform 16.
+  2. **Mic-vs-system loudness** → `ChannelAudio.normalizeLoudness` (per-channel RMS via vDSP) applied
+     before the Scribe mono-mix (`mixToMono`) and the playback combine (`Recorder.combine`). ffmpeg
+     is NOT installed → native AVFoundation/Accelerate instead. Attribution is unaffected (it reads
+     raw per-channel envelopes, not the normalized mix).
+  3. **Empty-state art** regenerated via OpenRouter (`jobs-empty3.json`, image-to-image off `icon-a`)
+     — polished full-bleed lyre tiles, no squiggle/vignette. In `Resources/Empty*.png` (600px).
+  4. **Local RU→EN bug** fixed (see WhisperKit specifics) + Settings **Language** picker.
+  5. **History as a ⌘-Tab window** → `AppActivation` flips `.accessory`↔`.regular` while a titled
+     window (History/Settings) is open; down-transition recomputed from the live window list
+     (self-healing, handles concurrent windows). Wired from History + Settings `onAppear/onDisappear`.
+  6. **SOTA progress bar** → `ScribeOptions.onUploadProgress` → `HTTPTransport.upload(…progress:)`
+     (URLSession per-task delegate) → `RecordingController.transcriptionProgress` (@Published) →
+     determinate bar (upload) + indeterminate (server-side) in popover + detail.
+  7. **30s freeze on stop** fixed → `recorder.stop()` **and** the 2-channel combine now run off the
+     main actor (`Task.detached`, `nonisolated(unsafe)` capture; `Recorder.combineChannels` static).
+     Dir-watcher reloads debounced (`scheduleReload`, 0.3s); durations cached (`durationCache`);
+     in-progress folder excluded via `activeRecordingDir`/`processingDir` (no flash / no partial-file
+     duration probe).
+- ✅ **Verified live:** local WhisperKit RU meeting → `language_code: ru`, Cyrillic transcript, correct
+  You/Them (ran `localtranscribe` on a /tmp copy; originals untouched).
+- ⚠️ **Not runtime-verified this pass:** the freeze timing under a real long record→stop, the SOTA
+  upload progress against the live API, and the ⌘-Tab behavior visually (no Screen-Recording perm to
+  screenshot). All build clean and the app launches/runs stable.
+
+## Current status (2026-06-01)
+- ✅ Both packages build clean; **68 tests green** (was 51).
+- ✅ **Four fixes shipped + verified live** (re-summarized a copy of `meeting-2026-05-31-234904`,
+  gemini-3-flash-preview, structured JSON-schema): (1) wall-clock duration from the file (showed
+  764.8s, not the stored 2× 1529.7s); (2) generated title; (3) `speakers.json` applied on load
+  (You/Them); (4) native SwiftUI summary/detail UI (no more raw-markdown blob).
+- ✅ **Scribe mono-attribution path** A/B-validated live: mono mixdown = −50% cost + correct
+  duration, channel-energy attribution keeps reliable You/Them. Used by the app's "Fully
+  transcribe" and `localtranscribe … scribe`.
+- ⚠️ **Still not runtime-verified:** the WhisperKit **local** record→transcribe path; the native UI
+  visually; and the integrated `ChannelAttributedScribeTranscriber` against the live API (its
+  `mixToMono` matches the A/B-validated mixer and compiles; the raw mono Scribe call was validated
+  manually). Verify local via `localtranscribe <dir>` (no `scribe`) or record→stop in the app.
+
+## Known issues / open threads
+- ✅ **FIXED (2026-06-01) — speaker map applied on load.** `MeetingStore.loadTranscript` now applies
+  `speakers.json` at the single chokepoint, so You/Them survive re-summarize / redisplay / render /
+  Slack and seed the rename sheet. (Was: names only applied in `MeetingPipeline.run` / rename.)
+- ✅ **FIXED (2026-06-01) — per-engine transcription cost.** CLI `summarizeExistingMeeting` bills $0
+  for local (and unknown/`nil`) tiers, $0.22/hr only for `sota-scribe`, with duration probed from
+  the audio file via `AudioProbe`.
+- **Minor leftovers (low):** the new `ChannelAudio` DSP (`mixToMono`/`envelope`) has no pure unit
+  test (lives in the app package, which has no test target; `ChannelAttribution` IS tested and the
+  mix was A/B-validated); and `RecordingController.runPipeline(useMultiChannel:)` (ex-`process`)
+  still carries a vestigial unused param.
+- App Intents don't auto-surface in Shortcuts/Spotlight: SwiftPM build doesn't run
+  `appintentsmetadataprocessor` (needs Swift const-extraction Xcode does). URL scheme + hotkey +
+  Raycast work without it. Documented in `KleothIntents.swift`.
+- First-run model download UX is just the popover progress line; consider a clearer affordance.
+- ✅ **DONE (2026-06-03) — transcription-language setting** (Auto + pin `ru`/`en`/… ) in Settings.
+- Still not built: model-size picker; a default-engine Settings toggle (local vs Scribe). The
+  `localtranscribe` tool builds `LocalTranscriber` with no language pin (auto path) — fine now.
+- SOTA progress is upload-only (Scribe is one POST with no server-side progress) → determinate during
+  upload, then indeterminate while it transcribes. Local (WhisperKit) has a `TranscriptionCallback`
+  if a local progress bar is ever wanted (not wired).
+
+## Follow-ups from research
+- **Distribution (DMG pipeline DONE 2026-06-04 — `app/make-dmg.sh`):** builds, signs, and packages
+  `Kleoth-<version>.dmg` (staging with /Applications symlink + Read Me + volume icon; UDRW→UDZO;
+  DMG itself signed; `hdiutil verify` + SHA-256 printed). Two tiers: default self-signed (installs
+  on this Mac; elsewhere right-click → Open), and a wired-but-unused public tier —
+  `KLEOTH_SIGN_IDENTITY` (Developer ID → hardened runtime + timestamp re-sign) +
+  `KLEOTH_NOTARY_PROFILE` (notarytool submit --wait + staple). **Still needed for the
+  Gatekeeper-clean tier:** Apple Developer Program membership ($99/yr) for the Developer ID cert
+  + notarization; Sparkle auto-update later. (LICENSE/README/CHANGELOG/RELEASING done 2026-06-06/07;
+  repo public at github.com/ofcRS/kleoth.) PKG rejected (enterprise/MDM only).
+- **Branding:** macOS 26 layered `.icon` via Icon Composer → compile with `actool` inside
+  `make-app.sh` (no Xcode project) → set `CFBundleIconName` (Tahoe) + `CFBundleIconFile`
+  (legacy). AI for concept, finalize as vector. Theme: Greek *kleos* "that which is heard".
+
+## Conventions / gotchas
+- **snake_case round-trip:** `MeetingStore` encodes/decodes with `convert{To,From}SnakeCase`.
+  All-caps acronym suffixes do NOT round-trip (`transcriptionUSD` → `transcription_usd` →
+  decodes to `transcriptionUsd` ✗). `CostBreakdown` uses explicit CodingKeys
+  (`transcription_cost`/`summary_cost`). **Any new stored key must be acronym-free** (e.g.
+  `transcript_tier`).
+- **`Transcriber: Sendable`:** a type's conformance must be declared in the same file as the
+  type (so `ScribeClient: Transcriber` lives in `ScribeClient.swift`, not a separate extension).
+- **`vDSP_measqv` = MEAN of squares** (not sum) → `sqrt(measqv)` IS the correct RMS in
+  `ChannelAudio.normalizeLoudness`/`envelope`. (`vDSP_svesq` is the sum-of-squares one.) A reviewer
+  flagged this as a "divide-by-N missing" bug — it's a false positive; do not "fix" it.
+- **Off-main capture audio work:** decode/re-encode (`Recorder.combine`, `ChannelAudio.mixToMono`)
+  is seconds of CPU for a long meeting — never run it on `@MainActor`. `Recorder.combineChannels`
+  is a pure static over `Sendable` URLs for exactly this; `stop()`+combine run in `Task.detached`.
+- **SwiftPM exe quirk:** `swift build --target <exe>` compiles the module but does NOT link a
+  runnable binary; use `swift build --product <exe>` to get `app/.build/debug/<exe>`.
+- **Availability:** `Recorder`/`SystemAudioTap` are `@available(macOS 14.4, *)`; WhisperKit runs
+  on 14.4+. `RecordingController` is unconditionally available and boxes `Recorder` as `AnyObject`.
+- **Recovery surfacing:** `loadRecentMeetings` lists audio-only folders (no `meta.json`) as
+  `isProcessed=false` ("Untranscribed"), excluding the in-progress recording dir. `~/Kleoth/dictations/`
+  never shows as a meeting (no audio inside).
+- **Dictation keys/paths (2026-09-03):** Keychain `dictation_enabled` / `dictation_model` / (2026-09-09)
+  `input_device` — the app-wide microphone pick, a CoreAudio device UID, empty = Automatic (NOT in
+  `Keychain.legacyAccounts`); `~/Kleoth/dictations/<day>.json`; `~/.config/kleoth/dictionary.json`;
+  UserDefaults `dev.kleoth.dictation.pillPlacement`; `$TMPDIR/kleoth-dictation/`. Every stored
+  property is acronym-free (`appBundleId`, `displayId`) — the snake_case rule above applies.
+- **Un-sandboxed is load-bearing:** `TextInserter` posts `CGEvent`s to `.cgSessionEventTap`, which
+  the App Sandbox blocks outright. Never add `com.apple.security.app-sandbox` to
+  `app/bundle/Kleoth.entitlements`. Accessibility trust is bound to the code signature → always
+  sign with the stable "Kleoth Self-Signed" identity (`app/setup-signing.sh`).
+- **One `AVAudioEngine` per capture SESSION, never per object:** a stopped engine whose `inputNode` was
+  touched keeps the input device open (Bluetooth headset stuck in HFP) until the engine is deallocated.
+  Create it in `start()`, release it on every exit — see `DictationCapture.quiesce()`.
+- **`import AVKit` does not link AVKit under SwiftPM (crash 2026-09-07):** the executable got only the
+  SwiftUI overlay `_AVKit_SwiftUI` (which provides `VideoPlayer`) in its load commands, so at runtime
+  `getSuperclassMetadata` aborted with "failed to demangle superclass of VideoPlayerView from mangled
+  name 'So12AVPlayerViewC'" the moment the Recordings viewer mounted a player. `app/Package.swift` now
+  carries `linkerSettings: [.linkedFramework("AVKit")]` on `KleothApp`; verify with
+  `otool -L /Applications/Kleoth.app/Contents/MacOS/Kleoth | grep AVKit` (two lines). Any other
+  system framework whose only use is through a SwiftUI overlay needs the same explicit link.
+- **`AppDelegate` ↔ `@MainActor` controllers:** delegate callbacks run on the main thread; use
+  `MainActor.assumeIsolated { … }`, never `Task { @MainActor in … }` — in `applicationWillTerminate`
+  the process can exit before the hop runs.
+- **`NSEvent.keyCode` / `characters` / `charactersIgnoringModifiers` / `isARepeat` are key-event-only:** on a mouse
+  event they raise `NSInternalInconsistencyException` ("Invalid message sent to event"), and AppKit's run loop swallows
+  the exception WITH the event — the symptom is a dead click, not a crash or a logged error of ours (the pill menu's
+  local monitor, 2026-09-10). Check `event.type` first in any monitor that matches mouse AND key events. Evidence
+  recipe: `/usr/bin/log show --last 30m --predicate 'process == "Kleoth" AND eventMessage CONTAINS "Invalid message"'`
+  prints the backtrace.
+- **An `NSHostingView` must never be a floating panel's `contentView`:** as a window's content view it owns a
+  `windowSizeBridge` (in the SwiftUI `App` lifecycle at least) that resizes the WINDOW to the root view's min/max on every
+  layout pass, whatever `sizingOptions` says — against a controller that sets the panel's frame itself that is a layout
+  loop AppKit aborts (2026-09-10, the pill). Wrap it in a plain container (`DictationPillController.container(for:size:)`)
+  and write panel frames inside `withTransaction(disablesAnimations)`. `pillsandbox` (AppKit lifecycle) never gets the
+  bridge, so it cannot catch this class of bug — the opt-in `KleothPillTrace` log can.
+
+## Security (hard rules)
+- **API keys NEVER printed to stdout or committed.** `.env` (ELEVEN_API_KEY, OPENROUTER_API_KEY)
+  and `config.json` are gitignored. Keys live in `~/.config/kleoth/config.json` (chmod 600) and
+  repo `.env`. When inspecting `.env`, show variable NAMES only (`cut -d= -f1`).
+- Live API probing is fine but read the key into a shell var and only ever put it in a curl
+  header — never echo it; OpenRouter/ElevenLabs response bodies don't contain the key.
+- Keychain items are bound to the app's code signature (service `dev.kleoth`); re-signing can
+  trigger a one-time re-auth prompt. Stable self-signed cert = "Kleoth Self-Signed".
+- Skills (`transcribe-meeting`, `summarize-meeting`) state: never read or echo `.env` or any keys.
