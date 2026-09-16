@@ -115,6 +115,50 @@ import Foundation
         #expect(await counter.value == 2)
     }
 
+    /// `Probes.standard`'s local-server probe must not inherit the shared
+    /// `URLSessionTransport`'s `waitsForConnectivity = true` (tuned for long
+    /// Scribe uploads) — that silently ignores a short request timeout and
+    /// can hang for days on a refused connection. Port 1 is always closed, so
+    /// this must fail fast with `.failure`, well under the 10 s ceiling every
+    /// other probe uses and far under a hang.
+    @Test func localProbeFailsFastWhenNothingListens() async throws {
+        let probes = ProviderDetector.Probes.standard(
+            locator: ToolLocator(searchDirectories: []),
+            runner: MockProcessRunner(stdout: ""),
+            transport: URLSessionTransport())
+        let started = Date()
+        let result = await probes.localServer(URL(string: "http://127.0.0.1:1/v1")!, nil)
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(elapsed < 3)
+        guard case .failure = result else {
+            Issue.record("expected .failure, got \(result)")
+            return
+        }
+    }
+
+    /// `codex login status` prints "Logged in using ChatGPT" to stderr, not
+    /// stdout (verified live) — the probe must still read it as signed in.
+    @Test func codexProbeReadsLoggedInFromStderr() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kleoth-codex-probe-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let exe = root.appendingPathComponent("codex")
+        try Data("#!/bin/sh\n".utf8).write(to: exe)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+
+        let runner = MockProcessRunner(results: [
+            .success(ProcessResult(stdout: Data("codex-cli 0.153.4".utf8), stderr: Data(), status: 0)),
+            .success(ProcessResult(stdout: Data(), stderr: Data("Logged in using ChatGPT\n".utf8), status: 0)),
+        ])
+        let probes = ProviderDetector.Probes.standard(
+            locator: ToolLocator(searchDirectories: [root]),
+            runner: runner,
+            transport: URLSessionTransport())
+        let result = await probes.codex()
+        #expect(result == .available(detail: "Codex 0.153.4 · signed in"))
+    }
+
     actor Counter {
         var value = 0
         func bump() { value += 1 }

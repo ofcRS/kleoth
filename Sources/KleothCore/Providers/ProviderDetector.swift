@@ -30,15 +30,34 @@ public actor ProviderDetector {
 
         /// The real probes: HTTP for the server, `claude auth status` and
         /// `codex login status` for the CLIs (10 s ceiling each).
+        ///
+        /// `transport` is accepted for API stability (existing callers pass the
+        /// app's shared `URLSessionTransport`) but the local-server probe below
+        /// does NOT use it: that shared session is tuned for long Scribe
+        /// uploads (`URLSessionTransport.defaultSession` sets
+        /// `waitsForConnectivity = true`), which silently ignores a request's
+        /// own short `timeoutInterval` and can hang for
+        /// `timeoutIntervalForResource` (days, on the default config) when a
+        /// connection is refused or DNS fails — exactly what "is anything
+        /// listening on the local server URL?" hits whenever nothing is. The
+        /// local probe instead builds its own short-lived, fast-failing
+        /// session, scoped to this one check.
         public static func standard(
             locator: ToolLocator,
             runner: any ProcessRunner,
             transport: HTTPTransport,
             apple: @escaping @Sendable () async -> ProviderAvailability = { .unavailable(reason: "Needs macOS 26") }
         ) -> Probes {
-            Probes(
+            let localProbeTransport = URLSessionTransport(session: {
+                let config = URLSessionConfiguration.ephemeral
+                config.waitsForConnectivity = false
+                config.timeoutIntervalForRequest = 2
+                config.timeoutIntervalForResource = 3
+                return URLSession(configuration: config)
+            }())
+            return Probes(
                 localServer: { url, apiKey in
-                    do { return .success(try await LocalModelList.fetch(baseURL: url, apiKey: apiKey, transport: transport)) }
+                    do { return .success(try await LocalModelList.fetch(baseURL: url, apiKey: apiKey, transport: localProbeTransport)) }
                     catch { return .failure(error) }
                 },
                 claudeCode: {
@@ -71,7 +90,11 @@ public actor ProviderDetector {
                     } catch {
                         return .unavailable(reason: "Did not answer")
                     }
-                    guard status.stdoutText.contains("Logged in") else {
+                    // `codex login status` prints "Logged in using ChatGPT" to
+                    // STDERR, not stdout (verified live, codex-cli 0.153.4/
+                    // 0.154.0) — checking stdout alone always read "Not signed
+                    // in" even for a signed-in account.
+                    guard status.stdoutText.contains("Logged in") || status.stderrText.contains("Logged in") else {
                         return .unavailable(reason: "Not signed in")
                     }
                     return .available(detail: "Codex \(version) · signed in")
