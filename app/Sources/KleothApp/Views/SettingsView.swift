@@ -24,6 +24,17 @@ struct SettingsView: View {
     @State private var outputDirPath: String = ""
     @State private var selectedModel: String = ""
 
+    /// The AI provider pick ("auto" or an `AIProvider` raw value), the local
+    /// server's API root and its optional bearer token.
+    @State private var aiProvider: String = "auto"
+    @State private var localServerURL: String = ""
+    @State private var localServerKey: String = ""
+    /// The model each task uses on a NON-OpenRouter provider (OpenRouter keeps
+    /// `selectedModel` / `dictationModel` and its catalog picker). Re-seeded by
+    /// `syncProviderModels()` whenever the resolved provider changes.
+    @State private var summaryProviderModel: String = ""
+    @State private var dictationProviderModel: String = ""
+
     /// The dictation polish model, and the personal dictionary as editor text.
     /// Both live here (rather than inside `SettingsDictationSection`) so
     /// `commitAll()` can flush unsubmitted edits when the window goes away, and
@@ -172,6 +183,39 @@ struct SettingsView: View {
         .navigationTitle(page.title)
         .id(page)
         .navigationSplitViewColumnWidth(min: 540, ideal: 600)
+        // Switching provider (or Automatic landing somewhere else) changes what
+        // the model controls below are editing — re-seed them from the stored
+        // settings so they never show the previous provider's slug.
+        .onChange(of: controller.providerStatus) { _, _ in syncProviderModels() }
+    }
+
+    /// The provider each task resolves to (nil until the first status lands).
+    private func resolvedProvider(_ task: AIProvider.Task) -> AIProvider? {
+        guard let status = controller.providerStatus else { return nil }
+        let result = task == .summary ? status.summary : status.dictation
+        if case let .success(selection) = result { return selection.provider }
+        return nil
+    }
+
+    /// The model ids the local server currently lists.
+    private var serverModels: [String] {
+        if case let .available(_, models)? = controller.providerStatus?.snapshot[.localServer] { return models }
+        return []
+    }
+
+    /// Re-reads both non-OpenRouter model fields from the STORED provider
+    /// settings. Deliberately never `effectiveProviderSettings`: that one seeds
+    /// OpenRouter's models from the legacy `default_model` / `dictation_model`
+    /// keys, and persisting those into `ai_models` would pin a legacy slug on a
+    /// provider that never had one.
+    private func syncProviderModels() {
+        let settings = controller.settings.providerSettings
+        if let provider = resolvedProvider(.summary), provider != .openRouter {
+            summaryProviderModel = settings.model(for: .summary, on: provider)
+        }
+        if let provider = resolvedProvider(.dictation), provider != .openRouter {
+            dictationProviderModel = settings.model(for: .dictation, on: provider)
+        }
     }
 
     @ViewBuilder
@@ -186,7 +230,10 @@ struct SettingsView: View {
             SettingsDictationSection(
                 dictationModel: $dictationModel,
                 dictionaryText: $dictionaryText,
-                availableModels: availableModels
+                availableModels: availableModels,
+                provider: resolvedProvider(.dictation) ?? .openRouter,
+                providerModel: $dictationProviderModel,
+                serverModels: serverModels
             )
             historySection("Open Dictations", target: .dictations)
         case .screenRecording:
@@ -195,6 +242,11 @@ struct SettingsView: View {
         case .microphone:
             microphoneSection
         case .accounts:
+            SettingsAIProviderSection(
+                aiProvider: $aiProvider,
+                localServerURL: $localServerURL,
+                localServerKey: $localServerKey
+            )
             credentialsSection
             usageSection
         case .general:
@@ -259,7 +311,7 @@ struct SettingsView: View {
         } header: {
             Text("Credentials")
         } footer: {
-            captionFooter("Stored in your macOS Keychain and never logged. ElevenLabs powers cloud transcription; OpenRouter powers summaries.")
+            captionFooter("Stored in your macOS Keychain and never logged. ElevenLabs powers cloud transcription; OpenRouter is one of the AI providers above.")
         }
     }
 
@@ -360,13 +412,21 @@ struct SettingsView: View {
 
     private var summarizationSection: some View {
         Section {
-            Picker("Default model", selection: $selectedModel) {
-                ForEach(availableModels, id: \.self) { model in
-                    Text(modelLabel(model)).tag(model)
+            // OpenRouter is the only provider with a catalog to pick from; every
+            // other one gets the control its `modelChoice` asks for.
+            let provider = resolvedProvider(.summary) ?? .openRouter
+            if provider == .openRouter {
+                Picker("Default model", selection: $selectedModel) {
+                    ForEach(availableModels, id: \.self) { model in
+                        Text(modelLabel(model)).tag(model)
+                    }
                 }
-            }
-            .onChange(of: selectedModel) { _, newValue in
-                controller.updateDefaultModel(newValue)
+                .onChange(of: selectedModel) { _, newValue in
+                    controller.updateDefaultModel(newValue)
+                }
+            } else {
+                ProviderModelField(title: "Model", provider: provider, task: .summary,
+                                   model: $summaryProviderModel, serverModels: serverModels)
             }
         } header: {
             HStack(spacing: KleothMetrics.spacingS) {
@@ -736,6 +796,10 @@ struct SettingsView: View {
         loadedDictionaryText = dictionaryText
         inputDevices = InputDevices.list()
         inputDeviceId = dictation.inputDeviceId ?? ""
+        aiProvider = controller.settings.providerSettings.pick?.rawValue ?? "auto"
+        localServerURL = controller.settings.providerSettings.localServerURL.absoluteString
+        localServerKey = controller.settings.providerSettings.localServerKey ?? ""
+        syncProviderModels()
 
         // Migrate a stored model whose provider 404s under this account's
         // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") or that has
@@ -782,6 +846,10 @@ struct SettingsView: View {
         controller.updateOpenRouterKey(openRouterKey)
         controller.updateOutputDir(outputDirPath)
         controller.updateDefaultModel(selectedModel)
+        // The provider picker and the model fields commit on change; these two
+        // are free text, so an unsubmitted edit only lands here.
+        controller.updateLocalServerURL(localServerURL)
+        controller.updateLocalServerKey(localServerKey)
         dictation.setDictationModel(dictationModel)
         // Flushes whatever the dictionary editor's 0.5 s debounce hasn't written —
         // but only if the user actually edited it (see `loadedDictionaryText`).

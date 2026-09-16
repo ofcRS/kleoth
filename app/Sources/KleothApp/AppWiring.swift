@@ -86,6 +86,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 DictationController.shared?.refreshTrust()
                 ScreenRecordingController.shared?.refreshPermission()
+                // Same idea for the AI providers: a sign-in or a server started
+                // while Kleoth was in the background should show up on return.
+                // Reads what the detector last found (its own cache decides
+                // whether to re-probe); Settings' Refresh button is the "look
+                // again right now" path.
+                if let controller = RecordingController.shared {
+                    Task { await controller.refreshProviderStatus() }
+                }
             }
         }
     }

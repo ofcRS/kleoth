@@ -24,6 +24,12 @@ struct SettingsDictationSection: View {
     /// summary default and `dictationModel`, so neither can vanish.
     let availableModels: [String]
 
+    /// The provider dictation polish resolves to; `.openRouter` renders the
+    /// catalog picker below, anything else a `ProviderModelField`.
+    let provider: AIProvider
+    @Binding var providerModel: String
+    let serverModels: [String]
+
     /// Debounce for the dictionary editor — writing the file on every keystroke
     /// would rewrite `~/.config/kleoth/dictionary.json` a hundred times a line.
     @State private var dictionarySaveTask: Task<Void, Never>?
@@ -59,17 +65,22 @@ struct SettingsDictationSection: View {
                 globeKeyHint
             }
 
-            Picker("Polish model", selection: $dictationModel) {
-                ForEach(pickerModels, id: \.self) { model in
-                    Text(modelLabel(model)).tag(model)
+            if provider == .openRouter {
+                Picker("Polish model", selection: $dictationModel) {
+                    ForEach(pickerModels, id: \.self) { model in
+                        Text(modelLabel(model)).tag(model)
+                    }
                 }
-            }
-            .onChange(of: dictationModel) { _, newValue in
-                dictation.setDictationModel(newValue)
+                .onChange(of: dictationModel) { _, newValue in
+                    dictation.setDictationModel(newValue)
+                }
+            } else {
+                ProviderModelField(title: "Polish model", provider: provider, task: .dictation,
+                                   model: $providerModel, serverModels: serverModels)
             }
 
             Toggle("Also clean up short dictations and chat messages", isOn: polishAlwaysBinding)
-                .help("Off: anything under \(DictationDefaults.minimumWordsToPolish) words, and every dictation into a messenger, is pasted exactly as transcribed — faster, and no OpenRouter call. Longer dictations into editors, AI chats, notes, mail and browsers are still cleaned up and structured.")
+                .help("Off: anything under \(DictationDefaults.minimumWordsToPolish) words, and every dictation into a messenger, is pasted exactly as transcribed — faster, and no AI call. Longer dictations into editors, AI chats, notes, mail and browsers are still cleaned up and structured.")
 
             dictionaryEditor
 

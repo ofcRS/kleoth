@@ -216,6 +216,10 @@ public final class RecordingController: ObservableObject {
     /// when the app becomes active.
     @Published public private(set) var providerStatus: ProviderStatus?
 
+    /// The one in-flight provider re-detection, so a burst of setting writes
+    /// (`SettingsView.commitAll()`) collapses into a single pass.
+    private var providerRefreshTask: Task<Void, Never>?
+
     public func refreshProviderStatus() async {
         providerStatus = await AppConfig.providerStatus()
     }
@@ -515,10 +519,20 @@ public final class RecordingController: ObservableObject {
 
     /// Drops the detector's cache and re-resolves both tasks — every provider
     /// setting change goes through here.
+    ///
+    /// Debounced by cancelling the previous pass: `SettingsView.commitAll()`
+    /// writes four keys in a row on close, and four concurrent probe passes
+    /// would race to publish. A cancelled pass reports false negatives (the
+    /// process runner kills its child, the transport throws `.cancelled`), so
+    /// its result is dropped before it can be shown — `ProviderDetector`
+    /// likewise refuses to cache a snapshot taken under cancellation.
     private func providerSettingsChanged() {
-        Task {
+        providerRefreshTask?.cancel()
+        providerRefreshTask = Task {
             await AppConfig.detector.refresh()
-            await refreshProviderStatus()
+            let status = await AppConfig.providerStatus()
+            guard !Task.isCancelled else { return }
+            providerStatus = status
         }
     }
 
