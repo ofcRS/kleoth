@@ -64,6 +64,25 @@ import Foundation
         #expect(transport.callCount == 1)
     }
 
+    /// The `ollama pull` rewrite is local-server-only. OpenRouter answers 404
+    /// for its own reasons (a data-policy guardrail, a ZDR violation) and those
+    /// bodies can contain the same words, so an OpenRouter 404 must still fall
+    /// into the relaxed retry instead of aborting with a pull hint.
+    @Test func openRouter404KeepsTheRelaxedRetryInsteadOfAPullHint() async throws {
+        let transport = MockTransport(outcomes: [
+            .success(Data(#"{"error":{"message":"No endpoints found — model not found, try pull"}}"#.utf8),
+                     MockTransport.httpResponse(url: URL(string: "http://x")!, statusCode: 404)),
+            .success(Data(Self.okEnvelope.utf8),
+                     MockTransport.httpResponse(url: URL(string: "http://x")!, statusCode: 200)),
+        ])
+        let client = OpenRouterClient(apiKey: "test-key", transport: transport)
+        let completion = try await client.complete(
+            messages: [ChatMessage(role: "user", content: "x")], model: "some/model",
+            responseFormat: .jsonSchema(name: "s", schemaJSON: #"{"type":"object"}"#), maxTokens: 10)
+        #expect(completion.content == "hi")
+        #expect(transport.callCount == 2)
+    }
+
     @Test func schemaRejectionStillRetriesAsJSONObject() async throws {
         let transport = MockTransport(outcomes: [
             .success(Data(#"{"error":"unsupported response_format"}"#.utf8),

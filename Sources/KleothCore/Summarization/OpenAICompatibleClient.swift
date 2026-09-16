@@ -160,7 +160,12 @@ public struct OpenAICompatibleClient: ChatCompleting {
 
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard (200...299).contains(statusCode) else {
-            if statusCode == 404, let hint = Self.pullHint(model: model, body: data) {
+            // Local servers only: OpenRouter's own 404s ("no endpoints matching
+            // your data policy", a ZDR violation) must stay `OpenRouterError` so
+            // the relaxed retry above still fires — rewriting them to
+            // `modelMissing` would abort the call with an `ollama pull` hint.
+            if statusCode == 404, !sendsOpenRouterProviderKey,
+               let hint = Self.pullHint(model: model, body: data) {
                 throw ProviderError.modelMissing(model: model, hint: hint)
             }
             throw OpenRouterError.httpError(status: statusCode, bodySnippet: Self.snippet(data))

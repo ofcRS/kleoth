@@ -107,6 +107,7 @@ struct LocalTranscribeMain {
             // transcription — it just leaves `summarizer` nil.
             var summarizer: Summarizer?
             var summaryModel: String?
+            var summaryProvider: String?
             let pick = providerArg.flatMap(AIProvider.parse)
             let bootstrap = await ProviderBootstrap.select(
                 task: .summary, pick: pick, settings: Settings.load(), credentials: creds)
@@ -115,6 +116,7 @@ struct LocalTranscribeMain {
                 do {
                     summarizer = try made.factory.summarizer(for: made.selection)
                     summaryModel = made.selection.model
+                    summaryProvider = made.selection.provider.rawValue
                 } catch {
                     print("Summary skipped: \(error.localizedDescription)")
                 }
@@ -144,7 +146,8 @@ struct LocalTranscribeMain {
                 participants: [],
                 consentAcknowledged: true,
                 model: summaryModel,
-                transcriptTier: tier
+                transcriptTier: tier,
+                summaryProvider: summaryProvider
             )
 
             let result = try await pipeline.run(

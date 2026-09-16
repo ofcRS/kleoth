@@ -152,7 +152,8 @@ public actor ProviderDetector {
         snap[.openRouter] = key.hasOpenRouterKey ? .available(detail: "API key set") : .unavailable(reason: "No API key")
         switch await local {
         case let .success(models):
-            snap[.localServer] = .available(detail: "\(Self.hostLabel(settings.localServerURL)) · \(models.count) models", models: models)
+            let count = "\(models.count) model\(models.count == 1 ? "" : "s")"
+            snap[.localServer] = .available(detail: "\(Self.hostLabel(settings.localServerURL)) · \(count)", models: models)
         case .failure:
             snap[.localServer] = .unavailable(reason: "No server at \(Self.originLabel(settings.localServerURL))")
         }

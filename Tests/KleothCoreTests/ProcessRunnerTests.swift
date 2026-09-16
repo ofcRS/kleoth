@@ -13,7 +13,10 @@ private func cpuTimeSeconds() -> Double {
     return user + system
 }
 
-@Suite struct ProcessRunnerTests {
+/// Serialized: `cpuTimeSeconds()` measures the WHOLE process, so a suite running
+/// in parallel with this one would charge its own work to the busy-spin
+/// assertion below.
+@Suite(.serialized) struct ProcessRunnerTests {
     let runner = FoundationProcessRunner()
 
     @Test func capturesStdoutAndStatus() async throws {

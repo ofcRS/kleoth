@@ -208,3 +208,34 @@ Needs a human with Ollama: the local path end to end (unit-tested against the re
 
 Gemini CLI (not installed here; one adapter file later), per-app provider overrides, streaming,
 transcription via any of these (WhisperKit/Scribe unchanged), a provider-specific system prompt.
+
+## 9. Deviations (2026-09-16)
+
+What shipped differs from the design above in these ways — all deliberate, none re-litigated:
+
+1. **Detector cache TTL is 600 s, not 60.** §3 said one minute; a probe pass shells out to two
+   CLIs and hits the local server, which is far too expensive on a dictation hot path. Every
+   provider-setting write calls `refresh()`, so the user never looks at a stale cache after an edit.
+2. **`ProviderDetector.availability(of:)` was not implemented.** Only `snapshot(settings:openRouterKey:)`
+   exists; every caller wants all five providers at once (Settings footer, popover, both factories),
+   and a per-provider entry point would have been a second, separately-cached path.
+3. **§5's MenuView resting hint is not wired.** The popover does not carry a "no AI provider" line at
+   rest; the status line shows the reason after an attempt instead (and, since this wave, an explicit
+   pick that cannot be built pins "Summary skipped: …" to the meeting — see 7).
+4. **`ProviderResolver.Resolution` is an enum with an `unavailable` case**, not an optional
+   selection: an explicitly picked provider that is down must produce its OWN typed error
+   (`unreachable(url:)`, `notSignedIn(tool:)`), which a `nil` cannot carry.
+5. **`ProviderAvailability.available` carries the local server's model ids** (`available(detail:models:)`).
+   The detector already has the `/v1/models` list, and `ProviderFactory.select` needs it to default a
+   local server with no stored model to its first one.
+6. **`Settings.effectiveProviderSettings` seeds OpenRouter's models from the legacy keys**
+   (`default_model` → summary, `dictation_model` → dictation), so an upgrading user keeps the exact
+   slugs they had without a migration write.
+7. **One-time `ai_provider = openrouter` seed for existing OpenRouter installs.** With no stored pick
+   the Automatic order puts local/Claude Code/Codex ahead of OpenRouter, so a user who already had a
+   working key would silently upgrade onto a different backend. `AppConfig.mergeSettingsFromKeychain`
+   seeds the pick once when there is a non-empty OpenRouter key AND onboarding is completed; fresh
+   installs stay Automatic.
+8. **Claude Code dictation polish measured ~8–10 s per cleanup on this Mac** (vs ~1 s on
+   `google/gemini-3.5-flash-lite` through OpenRouter). It works and is listed for dictation, but the
+   README calls it slow and it is why 7 exists.

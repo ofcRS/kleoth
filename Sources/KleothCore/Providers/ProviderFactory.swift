@@ -59,13 +59,31 @@ public struct ProviderFactory: Sendable {
 
     // MARK: - Clients
 
+    /// The session the local server talks over. The app's default transport is
+    /// tuned for ElevenLabs uploads — `waitsForConnectivity = true` and a
+    /// 20-minute request timeout — which is exactly wrong for `localhost`: with
+    /// no server listening the call would sit there until the app quits instead
+    /// of failing in a second. A long summary on a big local model can still
+    /// legitimately run for minutes, hence 120 s between bytes and a 10-minute
+    /// ceiling for the whole request. OpenRouter keeps the injected transport.
+    public static let localServerTransport = URLSessionTransport(session: {
+        let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
+        return URLSession(configuration: config)
+    }())
+
     public func client(for provider: AIProvider) throws -> any ChatCompleting {
         switch provider {
         case .openRouter:
             guard let key = openRouterKey, !key.isEmpty else { throw ProviderError.noProvider }
             return OpenRouterClient(apiKey: key, transport: transport)
         case .localServer:
-            return OpenAICompatibleClient(baseURL: settings.localServerURL, apiKey: settings.localServerKey, transport: transport)
+            // Deliberately NOT the injected transport — see `localServerTransport`.
+            return OpenAICompatibleClient(
+                baseURL: settings.localServerURL, apiKey: settings.localServerKey,
+                transport: Self.localServerTransport)
         case .claudeCode:
             guard let exe = locator.find("claude") else { throw ProviderError.notInstalled(tool: ClaudeCodeClient.toolName) }
             return ClaudeCodeClient(executable: exe, runner: runner, environment: locator.environment())

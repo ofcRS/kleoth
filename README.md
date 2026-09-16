@@ -194,7 +194,10 @@ variables (`ELEVEN_API_KEY`, `OPENROUTER_API_KEY`), a local `.env`, or
 ## Data & privacy
 
 By default, **nothing leaves your machine.** Transcription is on-device; summaries and cloud
-transcription only run when you opt in with your own keys.
+transcription only run when you opt in. Summaries and dictation cleanup need no API key at all when
+you point them at Claude Code, Codex, a local server (Ollama, LM Studio) or Apple's on-device model
+(see [Bring your own AI](#bring-your-own-ai)) — nothing is ever sent anywhere you did not sign up
+for yourself.
 
 Each meeting is one self-contained folder, `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`:
 

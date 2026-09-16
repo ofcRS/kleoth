@@ -66,6 +66,21 @@ enum AppConfig {
         if let device = Keychain.get(Keychain.Account.inputDevice) {
             merged.inputDeviceId = device.isEmpty ? nil : device
         }
+        // One-time migration for installs that predate the provider pick — the
+        // `retiredPolishModels` idiom, except this one DOES persist (a user who
+        // already paid for and configured OpenRouter must never be moved off it
+        // silently). With no `ai_provider` key the pick reads as Automatic,
+        // whose order puts a local server / Claude Code / Codex ahead of
+        // OpenRouter, so an existing user would upgrade straight into a
+        // different (and much slower) backend for summaries AND dictation.
+        // Seeded only when there is a working OpenRouter key AND the install has
+        // been through onboarding; a fresh install stays Automatic.
+        if Keychain.get(Keychain.Account.aiProvider) == nil,
+           let openRouterKey = Keychain.get(Keychain.Account.openRouterKey), !openRouterKey.isEmpty,
+           Keychain.get(Keychain.Account.onboardingCompleted) == "true" {
+            Keychain.set(AIProvider.openRouter.rawValue, Keychain.Account.aiProvider)
+            merged.providerSettings.pick = .openRouter
+        }
         // AI provider: an EMPTY stored pick is the user's explicit Automatic
         // and overrides any `config.json` pick (the `input_device` idiom).
         if let pick = Keychain.get(Keychain.Account.aiProvider) {

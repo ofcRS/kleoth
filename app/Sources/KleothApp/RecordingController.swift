@@ -226,6 +226,11 @@ public final class RecordingController: ObservableObject {
     /// label, the popover, History) five times a minute for an identical value.
     public func refreshProviderStatus() async {
         let status = await AppConfig.providerStatus()
+        // The Settings `.task` poll is cancelled on a page switch or when the
+        // window closes — possibly mid-probe, and a cancelled probe reports
+        // false negatives (a CLI that never got to answer reads as missing).
+        // Never publish a snapshot gathered under cancellation.
+        guard !Task.isCancelled else { return }
         guard status != providerStatus else { return }
         providerStatus = status
     }
@@ -963,6 +968,18 @@ public final class RecordingController: ObservableObject {
         if let dir { meetingErrors[dir.standardizedFileURL.path] = message }
     }
 
+    /// A summarizer that could not be BUILT (no provider configured, the CLI is
+    /// gone, the local server is unreachable) leaves a transcript with no
+    /// summary. On Automatic with nothing configured that is the documented
+    /// behavior — transcribe only, stay quiet. An EXPLICIT provider pick is a
+    /// promise, so the reason is surfaced on the meeting itself (error card +
+    /// row badge) rather than only in the unified log.
+    private func reportSummarizerUnavailable(_ error: Error, in dir: URL?) {
+        log.notice("no summarizer: \(error.localizedDescription, privacy: .public)")
+        guard settings.providerSettings.pick != nil else { return }
+        reportMeetingError("Summary skipped: \(error.localizedDescription)", in: dir)
+    }
+
     /// Marks a folder as queued/processing and refreshes the list so its row
     /// appears (with a spinner) immediately. Idempotent. A fresh attempt also
     /// clears the folder's previous failure — the error card describes the
@@ -1034,7 +1051,7 @@ public final class RecordingController: ObservableObject {
             summarizer = made.0
             summarySelection = made.1
         } catch {
-            log.notice("no summarizer: \(error.localizedDescription, privacy: .public)")
+            reportSummarizerUnavailable(error, in: meetingDir)
         }
         let canSummarize = (summarizer != nil)
 
@@ -1163,7 +1180,7 @@ public final class RecordingController: ObservableObject {
             summarizer = made.0
             summarySelection = made.1
         } catch {
-            log.notice("no summarizer: \(error.localizedDescription, privacy: .public)")
+            reportSummarizerUnavailable(error, in: dir)
         }
         let canSummarize = (summarizer != nil)
 
@@ -1388,7 +1405,7 @@ public final class RecordingController: ObservableObject {
             summarizer = made.0
             summarySelection = made.1
         } catch {
-            log.notice("no summarizer: \(error.localizedDescription, privacy: .public)")
+            reportSummarizerUnavailable(error, in: dir)
         }
         let canSummarize = (summarizer != nil)
         if canSummarize {

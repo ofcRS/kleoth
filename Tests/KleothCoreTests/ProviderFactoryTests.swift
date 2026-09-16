@@ -65,6 +65,22 @@ import Foundation
         #expect(throws: ProviderError.noProvider) { _ = try noKey.client(for: .openRouter) }
     }
 
+    /// The local server must fail fast when nothing is listening, so it gets
+    /// its own bounded session instead of the caller's upload-tuned transport
+    /// (20 min between bytes, `waitsForConnectivity`). OpenRouter keeps the
+    /// injected one.
+    @Test func localServerGetsItsOwnBoundedSession() throws {
+        let factory = Self.factory(key: "test-key")
+        let local = try #require(try factory.client(for: .localServer) as? OpenAICompatibleClient)
+        #expect(!(local.transport is MockTransport))
+        let session = try #require((local.transport as? URLSessionTransport)?.session)
+        #expect(session.configuration.waitsForConnectivity == false)
+        #expect(session.configuration.timeoutIntervalForRequest == 120)
+        #expect(session.configuration.timeoutIntervalForResource == 600)
+        let router = try #require(try factory.client(for: .openRouter) as? OpenRouterClient)
+        #expect(router.transport is MockTransport)
+    }
+
     @Test func polisherFallbackModelOnlyOnOpenRouter() throws {
         let factory = Self.factory(key: "test-key")
         let router = try factory.polisher(for: .init(provider: .openRouter, model: "m", fellThroughFrom: nil))
