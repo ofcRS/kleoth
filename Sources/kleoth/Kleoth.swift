@@ -174,6 +174,9 @@ struct Summarize: AsyncParsableCommand {
     @Option(name: .long, help: "Summarization model (defaults to settings).")
     var model: String?
 
+    @Option(name: .long, help: "AI provider: openrouter, local, claude-code or codex. Defaults to settings / auto-detection.")
+    var provider: String?
+
     @Option(name: .long, help: "Output directory for the meeting (defaults to settings).")
     var out: String?
 
@@ -182,18 +185,29 @@ struct Summarize: AsyncParsableCommand {
 
     func run() async throws {
         let credentials = Credentials.resolve(projectDir: currentDirectoryURL())
-        guard let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty else {
-            printError("Error: missing OpenRouter API key. Set OPENROUTER_API_KEY in the environment, a .env file, or ~/.config/kleoth/config.json.")
+        let settings = Settings.load()
+        var pick: AIProvider?
+        if let provider {
+            guard let parsed = AIProvider.parse(provider), parsed != .appleOnDevice else {
+                throw fail("Unknown provider '\(provider)'. Use openrouter, local, claude-code or codex.")
+            }
+            pick = parsed
+        }
+        let bootstrap = await ProviderBootstrap.select(task: .summary, pick: pick, settings: settings, credentials: credentials)
+        let factory: ProviderFactory
+        let selection: ProviderFactory.Selection
+        switch bootstrap {
+        case let .success(made):
+            (factory, selection) = (made.factory, made.selection)
+        case let .failure(error):
+            printError("Error: \(error.localizedDescription)")
             throw ExitCode.failure
         }
-
-        let settings = Settings.load()
-        let resolvedModel = model ?? settings.defaultModel
+        let resolvedModel = model ?? selection.model
         let baseDir = resolveOutputDir(out)
         let store = MeetingStore(baseDir: baseDir)
-
-        let openRouter = OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport())
-        let summarizer = Summarizer(client: openRouter, model: resolvedModel)
+        let summarizer = try factory.summarizer(for: .init(provider: selection.provider, model: resolvedModel, fellThroughFrom: nil))
+        printError("Using \(selection.provider.displayName) · \(resolvedModel.isEmpty ? "default model" : resolvedModel)")
 
         let inputURL = URL(fileURLWithPath: input)
 
@@ -202,7 +216,8 @@ struct Summarize: AsyncParsableCommand {
             try await summarizeExistingMeeting(
                 dir: inputURL,
                 summarizer: summarizer,
-                model: resolvedModel
+                model: resolvedModel,
+                provider: selection.provider
             )
             return
         }
@@ -219,7 +234,8 @@ struct Summarize: AsyncParsableCommand {
         let scribe = ScribeClient(apiKey: elevenLabsKey, transport: URLSessionTransport())
         let pipeline = MeetingPipeline(transcriber: scribe, summarizer: summarizer, store: store)
 
-        let metadata = metadataForAudio(inputURL, model: resolvedModel, languageCode: nil)
+        var metadata = metadataForAudio(inputURL, model: resolvedModel, languageCode: nil)
+        metadata.summaryProvider = selection.provider.rawValue
         let options = ScribeOptions()
 
         let result = try await pipeline.run(
@@ -246,12 +262,14 @@ struct Summarize: AsyncParsableCommand {
     private func summarizeExistingMeeting(
         dir: URL,
         summarizer: Summarizer,
-        model: String
+        model: String,
+        provider: AIProvider
     ) async throws {
         let transcript = try store(forBase: dir).loadTranscript(in: dir)
 
         var metadata = try loadMetadata(in: dir)
         metadata.model = model
+        metadata.summaryProvider = provider.rawValue
 
         let (summary, summaryUSD) = try await summarizer.summarize(
             transcript: transcript,

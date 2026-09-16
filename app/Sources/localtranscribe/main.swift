@@ -6,17 +6,22 @@ import KleothCapture
 /// so the app then shows it as processed. Defaults to the on-device WhisperKit
 /// engine; pass `scribe` to use ElevenLabs Scribe (cloud, paid, diarized).
 ///
-///     localtranscribe <meeting-dir> [scribe]
+///     localtranscribe <meeting-dir> [scribe] [--provider <id>]
 @main
 struct LocalTranscribeMain {
     static func main() async {
         let args = CommandLine.arguments
         guard args.count >= 2 else {
-            FileHandle.standardError.write(Data("usage: localtranscribe <meeting-dir> [scribe]\n".utf8))
+            FileHandle.standardError.write(Data("usage: localtranscribe <meeting-dir> [scribe] [--provider <id>]\n".utf8))
             exit(2)
         }
         let dir = URL(fileURLWithPath: args[1], isDirectory: true)
-        let useScribe = args.dropFirst(2).contains { $0 == "scribe" || $0 == "--scribe" }
+        let rest = Array(args.dropFirst(2))
+        let useScribe = rest.contains { $0 == "scribe" || $0 == "--scribe" }
+        var providerArg: String?
+        if let idx = rest.firstIndex(of: "--provider"), idx + 1 < rest.count {
+            providerArg = rest[idx + 1]
+        }
         let fm = FileManager.default
 
         let mic = dir.appendingPathComponent("mic.m4a")
@@ -97,14 +102,24 @@ struct LocalTranscribeMain {
 
             let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
 
-            // Summarize too, if an OpenRouter key is configured — forcing a model
-            // that works under a strict data policy (Haiku via Bedrock).
+            // Summarize too, if a provider is available (settings / auto-detection
+            // / an explicit `--provider`). A summary failure never blocks the
+            // transcription — it just leaves `summarizer` nil.
             var summarizer: Summarizer?
-            if let openRouterKey = creds.openRouterKey, !openRouterKey.isEmpty {
-                summarizer = Summarizer(
-                    client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
-                    model: Settings.load().defaultModel
-                )
+            var summaryModel: String?
+            let pick = providerArg.flatMap(AIProvider.parse)
+            let bootstrap = await ProviderBootstrap.select(
+                task: .summary, pick: pick, settings: Settings.load(), credentials: creds)
+            switch bootstrap {
+            case let .success(made):
+                do {
+                    summarizer = try made.factory.summarizer(for: made.selection)
+                    summaryModel = made.selection.model
+                } catch {
+                    print("Summary skipped: \(error.localizedDescription)")
+                }
+            case let .failure(error):
+                print("Summary skipped: \(error.localizedDescription)")
             }
             let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
 
@@ -128,7 +143,7 @@ struct LocalTranscribeMain {
                 startedAt: Self.iso(started),
                 participants: [],
                 consentAcknowledged: true,
-                model: summarizer != nil ? Settings.load().defaultModel : nil,
+                model: summaryModel,
                 transcriptTier: tier
             )
 
