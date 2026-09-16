@@ -19,13 +19,15 @@ public struct ProcessResult: Sendable, Equatable {
 /// The seam the CLI adapters spawn through. `FoundationProcessRunner` in the
 /// app and probes; a recording mock in tests.
 public protocol ProcessRunner: Sendable {
-    /// Runs `executable` to completion. `stdin` is written then closed.
-    /// Throws `ProviderError.timedOut` after `timeout` seconds (the process
-    /// is terminated), and `CancellationError` when the calling task is
-    /// cancelled (likewise terminated). A non-zero exit is NOT an error here —
-    /// the adapter decides what the output means. `run` always returns (or
-    /// throws) — it never blocks forever, even if a grandchild the caller
-    /// spawned inherits the pipes and never lets them see EOF.
+    /// Runs `executable` to completion. `stdin` is written (off the caller's
+    /// thread — a large payload to a child that never reads it must not
+    /// block past the deadline) then closed. Throws `ProviderError.timedOut`
+    /// after `timeout` seconds (the process is terminated), and
+    /// `CancellationError` when the calling task is cancelled (likewise
+    /// terminated). A non-zero exit is NOT an error here — the adapter
+    /// decides what the output means. `run` always returns (or throws) — it
+    /// never blocks forever, even if a grandchild the caller spawned
+    /// inherits the pipes and never lets them see EOF.
     func run(
         executable: URL,
         arguments: [String],
@@ -59,6 +61,10 @@ public struct FoundationProcessRunner: ProcessRunner {
     ) async throws -> ProcessResult {
         let box = ProcessBox(executable: executable, arguments: arguments, environment: environment)
         try box.start(stdin: stdin)
+        // Covers every exit below — success, `ProviderError.timedOut`, and a
+        // cancellation throw alike — so a pending EOF that `collect` never
+        // gets called to consume can't leave an armed dispatch source behind.
+        defer { box.finish() }
 
         let status: Int32 = try await withTaskCancellationHandler {
             try await withThrowingTaskGroup(of: Int32.self) { group in
@@ -92,8 +98,11 @@ public struct FoundationProcessRunner: ProcessRunner {
 /// and thereafter only driven through Foundation's own thread-safe `Process`
 /// API (`run`, `terminate`, `terminationHandler`, `isRunning`); the mutable
 /// exit-resume flag is behind `exitLock`, and each `PipeCollector` guards its
-/// own buffer with its own lock. `start(stdin:)` must be called exactly once,
-/// before any other method — it is the only place that spawns the process.
+/// own buffer (and its own handler-teardown state) with its own lock.
+/// `start(stdin:)` must be called exactly once, before any other method — it
+/// is the only place that spawns the process — and `finish()` must be called
+/// on every exit path of the caller that started it, even one that never
+/// reads output, so the pipe readers are always torn down deterministically.
 private final class ProcessBox: @unchecked Sendable {
     private let process = Process()
     private let stdoutPipe = Pipe()
@@ -128,15 +137,27 @@ private final class ProcessBox: @unchecked Sendable {
         // the write end instead, so a failed write throws EPIPE like a normal
         // error.
         _ = fcntl(inHandle.fileDescriptor, F_SETNOSIGPIPE, 1)
-        if let stdin, !stdin.isEmpty {
-            do {
-                try inHandle.write(contentsOf: stdin)
-            } catch {
-                // Expected when the child already exited or stopped reading —
-                // not a failure of `run` itself.
-            }
+        guard let stdin, !stdin.isEmpty else {
+            try? inHandle.close()
+            return
         }
-        try? inHandle.close()
+        // Off the caller's (cooperative-pool) thread, and not awaited: a
+        // payload bigger than the pipe's buffer (64 KiB) to a child that
+        // never reads stdin would otherwise block here past the deadline —
+        // the timeout task below only starts once `start` returns. Once
+        // `terminate()` kills the child, the read end closes and this write
+        // unblocks with EPIPE (SIGPIPE already disabled above), so the GCD
+        // thread is released rather than leaked.
+        let payload = stdin
+        DispatchQueue.global().async {
+            do {
+                try inHandle.write(contentsOf: payload)
+            } catch {
+                // Expected when the child already exited, stopped reading, or
+                // was terminated mid-write — not a failure of `run` itself.
+            }
+            try? inHandle.close()
+        }
     }
 
     func waitForExit() async -> Int32 {
@@ -180,6 +201,15 @@ private final class ProcessBox: @unchecked Sendable {
 
     func stdout(within grace: TimeInterval) async -> Data { await stdoutCollector.collect(within: grace) }
     func stderr(within grace: TimeInterval) async -> Data { await stderrCollector.collect(within: grace) }
+
+    /// Deterministically disarms both pipe readers, whether or not `collect`
+    /// was ever called on them (e.g. a timed-out or cancelled `run` never
+    /// calls `stdout`/`stderr`). Idempotent — safe to call after `collect`
+    /// already finished a collector, and safe to call more than once.
+    func finish() {
+        stdoutCollector.finish()
+        stderrCollector.finish()
+    }
 }
 
 /// Drains one pipe's read end via `readabilityHandler` — a callback on
@@ -188,28 +218,56 @@ private final class ProcessBox: @unchecked Sendable {
 /// is seen or a grace period elapses, whichever comes first: a grandchild
 /// holding the write end open past the grace period just means collection
 /// stops waiting, it never blocks the caller indefinitely.
+///
+/// Handler teardown is deterministic, not merely "eventually true": a
+/// dispatch read source re-arms after every callback, so a pending EOF that
+/// is never drained and disarmed fires the handler in a tight, CPU-spinning
+/// loop. `finish()` is therefore reachable from three independent places —
+/// EOF itself, `ProcessBox.finish()` (covering exits that never call
+/// `collect` at all), and `deinit` — and the handler closure itself clears
+/// and drains even when its `weak self` has already gone (the collector can
+/// be released before EOF lands: the whole `ProcessBox` is torn down by a
+/// `defer` on every exit path of `FoundationProcessRunner.run`).
 private final class PipeCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
     private var isFinished = false
     private var eofWaiters: [() -> Void] = []
+    private weak var handle: FileHandle?
 
     func start(handle: FileHandle) {
+        self.handle = handle
         handle.readabilityHandler = { [weak self] fileHandle in
-            guard let self else { return }
+            // Drain unconditionally, before touching `self` — a `nil` self
+            // must not skip clearing the handler, or this dispatch source
+            // re-arms and fires again immediately with nothing to consume it.
             let chunk = fileHandle.availableData
-            if chunk.isEmpty {
-                let waiters: [() -> Void] = self.lock.withLock {
-                    self.isFinished = true
-                    let pending = self.eofWaiters
-                    self.eofWaiters.removeAll()
-                    return pending
-                }
+            guard let self else {
                 fileHandle.readabilityHandler = nil
-                waiters.forEach { $0() }
+                return
+            }
+            if chunk.isEmpty {
+                self.finish()
             } else {
                 self.lock.withLock { self.buffer.append(chunk) }
             }
+        }
+    }
+
+    /// Clears the handler and marks the collector finished. Idempotent and
+    /// safe from any thread/queue; the first caller wins and wakes anyone
+    /// waiting in `collect`.
+    func finish() {
+        let (wasAlreadyFinished, waiters): (Bool, [() -> Void]) = lock.withLock {
+            let already = isFinished
+            isFinished = true
+            let pending = already ? [] : eofWaiters
+            eofWaiters.removeAll()
+            return (already, pending)
+        }
+        handle?.readabilityHandler = nil
+        if !wasAlreadyFinished {
+            waiters.forEach { $0() }
         }
     }
 
@@ -222,9 +280,18 @@ private final class PipeCollector: @unchecked Sendable {
                 return
             }
             lock.withLock { eofWaiters.append { resumeOnce.fire() } }
-            DispatchQueue.global().asyncAfter(deadline: .now() + grace) { resumeOnce.fire() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + grace) { [weak self] in
+                // The grace period is up: stop waiting AND disarm — a
+                // grandchild may hold the pipe open for a long time still.
+                self?.finish()
+                resumeOnce.fire()
+            }
         }
         return lock.withLock { buffer }
+    }
+
+    deinit {
+        handle?.readabilityHandler = nil
     }
 }
 
