@@ -50,6 +50,22 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Apple's on-device model (Foundation Models, macOS 26) as a
+        // `ChatCompleting` backend for dictation polish. Its own target so the
+        // framework is weak-linked in one place and nothing else in the app
+        // imports it: the app's floor is 14.4, where the framework does not exist.
+        .target(
+            name: "KleothOnDevice",
+            dependencies: [
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"])
+            ]
+        ),
         // Pill sandbox: a control window that drives the real pill through its
         // phases / edges / mic levels, and a headless `--film` mode that renders
         // a transition to PNG frames + a contact sheet (no screen-recording
@@ -70,6 +86,7 @@ let package = Package(
             dependencies: [
                 "KleothCapture",
                 "KleothPillUI",
+                "KleothOnDevice",
                 .product(name: "KleothCore", package: "kleoth-app"),
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
@@ -118,6 +135,7 @@ let package = Package(
             name: "dictate",
             dependencies: [
                 "KleothCapture",
+                "KleothOnDevice",
                 .product(name: "KleothCore", package: "kleoth-app"),
             ],
             swiftSettings: [

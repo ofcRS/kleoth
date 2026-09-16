@@ -211,6 +211,30 @@ public final class RecordingController: ObservableObject {
     public private(set) var settings: KleothCore.Settings
     public private(set) var credentials: Credentials
 
+    /// What the AI providers resolve to right now (Settings footer, popover,
+    /// onboarding). Refreshed on init, after every provider setting change and
+    /// when the app becomes active.
+    @Published public private(set) var providerStatus: ProviderStatus?
+
+    /// The one in-flight provider re-detection, so a burst of setting writes
+    /// (`SettingsView.commitAll()`) collapses into a single pass.
+    private var providerRefreshTask: Task<Void, Never>?
+
+    /// Re-resolves both tasks and publishes the result — but only when it
+    /// differs. Settings polls this every 5 s while it is open, and an
+    /// unconditional assignment would invalidate every observer (the menu-bar
+    /// label, the popover, History) five times a minute for an identical value.
+    public func refreshProviderStatus() async {
+        let status = await AppConfig.providerStatus()
+        // The Settings `.task` poll is cancelled on a page switch or when the
+        // window closes — possibly mid-probe, and a cancelled probe reports
+        // false negatives (a CLI that never got to answer reads as missing).
+        // Never publish a snapshot gathered under cancellation.
+        guard !Task.isCancelled else { return }
+        guard status != providerStatus else { return }
+        providerStatus = status
+    }
+
     // MARK: - Init
 
     public init() {
@@ -229,6 +253,7 @@ public final class RecordingController: ObservableObject {
             Keychain.get(Keychain.Account.onboardingCompleted) != "true" && !consentAcknowledged
         loadRecentMeetings()
         startWatchingOutputDir()
+        Task { await refreshProviderStatus() }
         self.calendarAuthorized = (EKEventStore.authorizationStatus(for: .event) == .fullAccess)
         Self.shared = self
         // Fetch the on-device transcription model in the background so a meeting
@@ -317,25 +342,32 @@ public final class RecordingController: ObservableObject {
             statusMessage = "No meeting to summarize yet."
             return
         }
-        guard let key = credentials.openRouterKey, !key.isEmpty else {
-            statusMessage = "Add an OpenRouter key in Settings to summarize."
-            return
-        }
-
         let dir = latest.directory
         guard !isProcessingMeeting(dir) else { return }  // already queued or running
+
+        let summarizer: Summarizer
+        let selection: ProviderFactory.Selection
+        do {
+            (summarizer, selection) = try await AppConfig.makeSummarizer()
+        } catch {
+            statusMessage = error.localizedDescription
+            return
+        }
+        // Resolving the provider suspended, so the guard above is stale: re-check
+        // before claiming the folder or two rapid triggers (`kleoth://summarize-latest`
+        // twice, a Shortcut fired twice) would both summarize and both rewrite it.
+        // This guard and `markProcessing` run in one main-actor turn, so nothing
+        // can slip between them.
+        guard !isProcessingMeeting(dir) else { return }
         markProcessing(dir)
         statusMessage = "Summarizing latest meeting…"
         let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
         do {
             let transcript = try store.loadTranscript(in: dir)
             var meta = loadMetadata(in: dir)
-            meta.model = settings.defaultModel
+            meta.model = selection.model
+            meta.summaryProvider = selection.provider.rawValue
 
-            let summarizer = Summarizer(
-                client: OpenRouterClient(apiKey: key, transport: URLSessionTransport()),
-                model: settings.defaultModel
-            )
             let (summary, summaryUSD) = try await summarizer.summarize(transcript: transcript, metadata: meta)
 
             // Adopt the model-generated title for auto-named meetings only (keep
@@ -455,6 +487,7 @@ public final class RecordingController: ObservableObject {
     public func updateOpenRouterKey(_ key: String) {
         Keychain.set(key, Keychain.Account.openRouterKey)
         credentials.openRouterKey = key.isEmpty ? nil : key
+        providerSettingsChanged()
     }
 
     /// Persists the default model and updates the in-memory settings.
@@ -462,6 +495,63 @@ public final class RecordingController: ObservableObject {
         guard !model.isEmpty else { return }
         Keychain.set(model, Keychain.Account.defaultModel)
         settings.defaultModel = model
+    }
+
+    /// Persists the AI provider pick ("auto" or an `AIProvider` raw value).
+    ///
+    /// Automatic is stored as the non-empty sentinel `"auto"` — NOT as an empty
+    /// string, which `Keychain.set` treats as "clear this secret" and deletes.
+    /// A deleted key is indistinguishable from never having been set, so the
+    /// one-time OpenRouter seed in `AppConfig.mergeSettingsFromKeychain` would
+    /// re-fire on the next settings read and flip the picker back off Automatic
+    /// forever. `AIProvider.parse` already maps `"auto"` → nil on the way in.
+    public func updateAIProvider(_ raw: String) {
+        let pick = AIProvider.parse(raw)
+        Keychain.set(pick?.rawValue ?? "auto", Keychain.Account.aiProvider)
+        settings.providerSettings.pick = pick
+        providerSettingsChanged()
+    }
+
+    /// Persists the local OpenAI-compatible server's API root (empty or
+    /// unparseable falls back to `ProviderSettings.defaultLocalServerURL`).
+    public func updateLocalServerURL(_ raw: String) {
+        let url = ProviderSettings.normalizeServerURL(raw) ?? ProviderSettings.defaultLocalServerURL
+        Keychain.set(url.absoluteString, Keychain.Account.localServerURL)
+        settings.providerSettings.localServerURL = url
+        providerSettingsChanged()
+    }
+
+    /// Persists the local server's optional bearer token.
+    public func updateLocalServerKey(_ key: String) {
+        Keychain.set(key, Keychain.Account.localServerKey)
+        settings.providerSettings.localServerKey = key.isEmpty ? nil : key
+        providerSettingsChanged()
+    }
+
+    /// Persists the model for `task` on `provider` (empty = the provider's default).
+    public func updateProviderModel(_ model: String, for task: AIProvider.Task, on provider: AIProvider) {
+        settings.providerSettings = settings.providerSettings.settingModel(model, for: task, on: provider)
+        Keychain.set(settings.providerSettings.modelsJSON, Keychain.Account.aiModels)
+        providerSettingsChanged()
+    }
+
+    /// Drops the detector's cache and re-resolves both tasks — every provider
+    /// setting change goes through here.
+    ///
+    /// Debounced by cancelling the previous pass: `SettingsView.commitAll()`
+    /// writes four keys in a row on close, and four concurrent probe passes
+    /// would race to publish. A cancelled pass reports false negatives (the
+    /// process runner kills its child, the transport throws `.cancelled`), so
+    /// its result is dropped before it can be shown — `ProviderDetector`
+    /// likewise refuses to cache a snapshot taken under cancellation.
+    private func providerSettingsChanged() {
+        providerRefreshTask?.cancel()
+        providerRefreshTask = Task {
+            await AppConfig.detector.refresh()
+            let status = await AppConfig.providerStatus()
+            guard !Task.isCancelled, status != providerStatus else { return }
+            providerStatus = status
+        }
     }
 
     /// Persists the preferred on-device transcription language and updates the
@@ -885,6 +975,18 @@ public final class RecordingController: ObservableObject {
         if let dir { meetingErrors[dir.standardizedFileURL.path] = message }
     }
 
+    /// A summarizer that could not be BUILT (no provider configured, the CLI is
+    /// gone, the local server is unreachable) leaves a transcript with no
+    /// summary. On Automatic with nothing configured that is the documented
+    /// behavior — transcribe only, stay quiet. An EXPLICIT provider pick is a
+    /// promise, so the reason is surfaced on the meeting itself (error card +
+    /// row badge) rather than only in the unified log.
+    private func reportSummarizerUnavailable(_ error: Error, in dir: URL?) {
+        log.notice("no summarizer: \(error.localizedDescription, privacy: .public)")
+        guard settings.providerSettings.pick != nil else { return }
+        reportMeetingError("Summary skipped: \(error.localizedDescription)", in: dir)
+    }
+
     /// Marks a folder as queued/processing and refreshes the list so its row
     /// appears (with a spinner) immediately. Idempotent. A fresh attempt also
     /// clears the folder's previous failure — the error card describes the
@@ -920,8 +1022,6 @@ public final class RecordingController: ObservableObject {
     ) async {
         if let meetingDir { markProcessing(meetingDir) }  // idempotent re-mark
 
-        let transport = URLSessionTransport()
-
         // Default engine: free, on-device, private (WhisperKit / Whisper on Apple
         // Silicon). Works for every language — including Russian — with automatic
         // language detection, no API key, and no network after the one-time model
@@ -950,13 +1050,15 @@ public final class RecordingController: ObservableObject {
             )
         }
 
-        // Summarize only when an OpenRouter key is configured.
+        // Summarize only when a provider can be resolved for the summary task.
         var summarizer: Summarizer?
-        if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
-            summarizer = Summarizer(
-                client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
-                model: settings.defaultModel
-            )
+        var summarySelection: ProviderFactory.Selection?
+        do {
+            let made = try await AppConfig.makeSummarizer()
+            summarizer = made.0
+            summarySelection = made.1
+        } catch {
+            reportSummarizerUnavailable(error, in: meetingDir)
         }
         let canSummarize = (summarizer != nil)
 
@@ -969,8 +1071,9 @@ public final class RecordingController: ObservableObject {
             startedAt: Self.isoDateTime(startedAt),
             participants: participants,
             consentAcknowledged: consentAcknowledged,
-            model: canSummarize ? settings.defaultModel : nil,
-            transcriptTier: tier
+            model: summarySelection?.model,
+            transcriptTier: tier,
+            summaryProvider: summarySelection?.provider.rawValue
         )
 
         // Folder-backed runs surface progress on their in-list spinner row, so
@@ -1078,11 +1181,13 @@ public final class RecordingController: ObservableObject {
         }
 
         var summarizer: Summarizer?
-        if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
-            summarizer = Summarizer(
-                client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
-                model: settings.defaultModel
-            )
+        var summarySelection: ProviderFactory.Selection?
+        do {
+            let made = try await AppConfig.makeSummarizer()
+            summarizer = made.0
+            summarySelection = made.1
+        } catch {
+            reportSummarizerUnavailable(error, in: dir)
         }
         let canSummarize = (summarizer != nil)
 
@@ -1131,7 +1236,10 @@ public final class RecordingController: ObservableObject {
         }
 
         metadata.transcriptTier = TranscriptTier.sotaScribe
-        if canSummarize { metadata.model = settings.defaultModel }
+        if canSummarize {
+            metadata.model = summarySelection?.model
+            metadata.summaryProvider = summarySelection?.provider.rawValue
+        }
 
         // The attributed transcriber handles channels internally and the plain
         // fallback uses single-channel diarization, so multi-channel is never set.
@@ -1298,14 +1406,19 @@ public final class RecordingController: ObservableObject {
         }
 
         var summarizer: Summarizer?
-        if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
-            summarizer = Summarizer(
-                client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
-                model: settings.defaultModel
-            )
+        var summarySelection: ProviderFactory.Selection?
+        do {
+            let made = try await AppConfig.makeSummarizer()
+            summarizer = made.0
+            summarySelection = made.1
+        } catch {
+            reportSummarizerUnavailable(error, in: dir)
         }
         let canSummarize = (summarizer != nil)
-        if canSummarize { metadata.model = settings.defaultModel }
+        if canSummarize {
+            metadata.model = summarySelection?.model
+            metadata.summaryProvider = summarySelection?.provider.rawValue
+        }
 
         let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
 

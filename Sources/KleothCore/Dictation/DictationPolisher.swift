@@ -93,13 +93,13 @@ public enum DictationPolishResult: Sendable, Equatable {
     }
 }
 
-/// One OpenRouter call that turns a raw dictation transcript into the text the
+/// One chat completion that turns a raw dictation transcript into the text the
 /// user meant to type.
 ///
-/// `Sendable` because `OpenRouterClient` is `Sendable` — do not add
+/// `Sendable` because `ChatCompleting` refines `Sendable` — do not add
 /// `@unchecked`; if this stops compiling, that conformance went missing.
 public struct DictationPolisher: Sendable {
-    public let client: OpenRouterClient
+    public let client: any ChatCompleting
     public var model: String
     public var timeout: TimeInterval
     /// Explicit `reasoning` cap for this polisher; nil → the per-model
@@ -113,7 +113,7 @@ public struct DictationPolisher: Sendable {
     public var fallbackModel: String?
 
     public init(
-        client: OpenRouterClient,
+        client: any ChatCompleting,
         model: String = DictationDefaults.polishModel,
         timeout: TimeInterval = DictationDefaults.polishTimeout,
         reasoningOverride: OpenRouterReasoning? = nil,

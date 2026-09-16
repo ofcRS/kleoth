@@ -86,6 +86,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 DictationController.shared?.refreshTrust()
                 ScreenRecordingController.shared?.refreshPermission()
+                // Same idea for the AI providers: a CLI sign-in or a server
+                // started while Kleoth was in the background should show up on
+                // return. The detector's cache has to go first — at a 600 s TTL
+                // a re-read alone would keep reporting the old verdict for ten
+                // minutes (`ProviderDetector.refresh()` names didBecomeActive
+                // as one of its three drop triggers).
+                if let controller = RecordingController.shared {
+                    Task {
+                        await AppConfig.detector.refresh()
+                        await controller.refreshProviderStatus()
+                    }
+                }
             }
         }
     }

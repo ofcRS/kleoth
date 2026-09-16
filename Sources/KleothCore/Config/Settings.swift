@@ -29,6 +29,8 @@ public struct Settings: Sendable {
     /// recordings alike. A pick that is not connected falls back to the
     /// system input at capture time (the capture layer decides, not this).
     public var inputDeviceId: String?
+    /// Which language-model backend runs summaries and dictation polish (design doc 2026-09-15).
+    public var providerSettings: ProviderSettings
 
     public init(
         outputDir: URL,
@@ -38,7 +40,8 @@ public struct Settings: Sendable {
         dictationEnabled: Bool = false,
         dictationModel: String = DictationDefaults.polishModel,
         dictationPolishAlways: Bool = false,
-        inputDeviceId: String? = nil
+        inputDeviceId: String? = nil,
+        providerSettings: ProviderSettings = ProviderSettings()
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
@@ -48,6 +51,28 @@ public struct Settings: Sendable {
         self.dictationModel = dictationModel
         self.dictationPolishAlways = dictationPolishAlways
         self.inputDeviceId = inputDeviceId
+        self.providerSettings = providerSettings
+    }
+
+    /// `providerSettings` with OpenRouter's two models filled from the
+    /// legacy `defaultModel` / `dictationModel` settings when no `ai_models`
+    /// override names them — those keys stay the OpenRouter picks.
+    ///
+    /// Without this, an existing user's `default_model` / `dictation_model`
+    /// would be silently ignored the moment the provider layer took over:
+    /// `ProviderFactory` resolves OpenRouter's model through
+    /// `AIProvider.defaultModel(for:)`, which knows only the shipped constants.
+    /// The seeded values are NOT written back to `ai_models` — the legacy keys
+    /// remain the single source of truth for OpenRouter.
+    public var effectiveProviderSettings: ProviderSettings {
+        var effective = providerSettings
+        if effective.models[.openRouter]?[.summary] == nil {
+            effective = effective.settingModel(defaultModel, for: .summary, on: .openRouter)
+        }
+        if effective.models[.openRouter]?[.dictation] == nil {
+            effective = effective.settingModel(dictationModel, for: .dictation, on: .openRouter)
+        }
+        return effective
     }
 
     /// Loads settings, applying defaults:
@@ -99,6 +124,8 @@ public struct Settings: Sendable {
             inputDeviceId = device
         }
 
+        let providerSettings = ProviderSettings.load(config: config)
+
         return Settings(
             outputDir: outputDir,
             defaultModel: defaultModel,
@@ -107,7 +134,8 @@ public struct Settings: Sendable {
             dictationEnabled: dictationEnabled,
             dictationModel: dictationModel,
             dictationPolishAlways: dictationPolishAlways,
-            inputDeviceId: inputDeviceId
+            inputDeviceId: inputDeviceId,
+            providerSettings: providerSettings
         )
     }
 

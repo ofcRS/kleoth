@@ -112,6 +112,9 @@ final class DictationController: ObservableObject {
     /// Set by `handleEscape()` when it cut a polish short — the result is then
     /// logged as skipped (no warning, no `polish_model`), not as a fallback.
     private var polishCancelledByUser = false
+    /// The provider + model the polish call in this run resolved to, so the log
+    /// row records what actually ran. nil when no polisher could be built.
+    private var polishSelection: ProviderFactory.Selection?
     /// 20 Hz `capture.currentLevel` → `PillGeometry` → `pill.setLevel`.
     private var levelTask: Task<Void, Never>?
     /// Restores the pill's pipeline phase after the 1 s "Finishing the previous
@@ -280,6 +283,13 @@ final class DictationController: ObservableObject {
     // MARK: - Settings surface
 
     /// Keychain + (un)install; prompts for Accessibility when turning on untrusted.
+    /// Asks for the History window on the Dictations scope. `KleothMenuBarLabel`
+    /// opens the window and `HistoryView` flips its scope — both observe the
+    /// counter; this is the one place it is bumped (pill menu, Settings).
+    func requestDictationHistory() {
+        dictationsHistoryRequest += 1
+    }
+
     func setEnabled(_ on: Bool) {
         Keychain.set(on ? "true" : "false", Keychain.Account.dictationEnabled)
         isEnabled = on
@@ -688,6 +698,7 @@ final class DictationController: ObservableObject {
     /// success, early return, `.failed`, cancellation — tears down the same way.
     private func run(clip: DictationCaptureResult, target: DictationTarget?) async {
         inFlightClips = [clip.fileURL]
+        polishSelection = nil
         defer {
             discardInFlightClips()
             refusalTask?.cancel()
@@ -725,7 +736,21 @@ final class DictationController: ObservableObject {
             return
         }
 
-        // 6. Transcribe through the `Transcriber` seam.
+        // 6. Transcribe through the `Transcriber` seam. Resolving the polisher
+        //    can cost the provider probes (CLI `auth status`, the local server)
+        //    whenever the detector's cache is cold, so it runs ALONGSIDE the
+        //    upload instead of after it — by the time step 7 awaits the task,
+        //    the answer is almost always already there.
+        //
+        //    It is deliberately NOT cancelled on the early exits below (Esc, an
+        //    STT failure, an empty transcript, a PolishGate skip). Cancelling it
+        //    would terminate the probes mid-flight, and each one reports a
+        //    killed child / cancelled request as a negative verdict — so the
+        //    orphan is left to finish and warm the detector's cache for the next
+        //    dictation. It costs nothing user-visible: the probes bound
+        //    themselves at 10 s each and the task touches no session state.
+        let polisherTask = Task { try await AppConfig.makePolisher() }
+
         let terms = Keyterms.sanitize(dictionary.load())
         let options = ScribeOptions.dictation(keyterms: terms)
         let transcriber: any Transcriber = injectedTranscriber ?? makeTranscriber(elevenLabsKey: key)
@@ -784,31 +809,36 @@ final class DictationController: ObservableObject {
         if case let .skip(reason) = gate {
             log.debug("polish skipped: \(reason, privacy: .public)")
             polish = .skipped(text: rawText, reason: reason)
-        } else if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
-            phase = .polishing
-            pill.show(.polishing)
-            let polisher = DictationPolisher(
-                client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
-                model: settings.dictationModel
-            )
-            // Runs as its own task so Esc can cancel the model call alone
-            // (`handleEscape`); `cancelPipeline()` cancels both together.
-            polishCancelledByUser = false
-            let started = ContinuousClock.now
-            let task = Task { await polisher.polish(rawText: rawText, context: context) }
-            polishTask = task
-            let attempted = await task.value
-            polishTask = nil
-            let elapsed = started.duration(to: .now)
-            polishSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-            if polishCancelledByUser {
-                polish = .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
-            } else {
-                polish = attempted
-            }
-            log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
         } else {
-            polish = .raw(text: rawText, reason: "No OpenRouter key — pasted the raw transcript.")
+            do {
+                // Resolved alongside the upload (step 6), so this normally
+                // returns at once; only a cold detector cache makes it wait.
+                let (polisher, selection) = try await polisherTask.value
+                polishSelection = selection
+                phase = .polishing
+                pill.show(.polishing)
+                // Runs as its own task so Esc can cancel the model call alone
+                // (`handleEscape`); `cancelPipeline()` cancels both together.
+                polishCancelledByUser = false
+                let started = ContinuousClock.now
+                let task = Task { await polisher.polish(rawText: rawText, context: context) }
+                polishTask = task
+                let attempted = await task.value
+                polishTask = nil
+                let elapsed = started.duration(to: .now)
+                polishSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+                if polishCancelledByUser {
+                    polish = .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
+                } else {
+                    polish = attempted
+                }
+                log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
+            } catch {
+                // No backend could be built. `ProviderError`'s copy is a full
+                // sentence, so drop its final period before the suffix turns
+                // the whole line into one.
+                polish = .raw(text: rawText, reason: "\(Self.asClause(error.localizedDescription)) — pasted the raw transcript.")
+            }
         }
         // Esc during the polish call: the polisher swallows cancellation into a
         // `.raw` result, so check here before anything reaches the pasteboard.
@@ -849,7 +879,8 @@ final class DictationController: ObservableObject {
             usedRawFallback: polish.usedRawFallback,
             fallbackReason: polish.fallbackReason,
             transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
-            polishModel: polish.ranModel ? settings.dictationModel : nil,
+            polishModel: polish.ranModel ? polishSelection?.model : nil,
+            polishProvider: polish.ranModel ? polishSelection?.provider.rawValue : nil,
             durationSeconds: clip.durationSeconds,
             insertMethod: method,
             transcriptionCost: transcriber.usdPerHour * clip.durationSeconds / 3600 * surcharge,
@@ -865,6 +896,13 @@ final class DictationController: ObservableObject {
 
         // 10. Settle.
         pill.show(warning.map { .warning($0) } ?? .done)
+    }
+
+    /// A finished sentence turned into a clause, so appending
+    /// " — pasted the raw transcript." does not leave a stray period mid-line.
+    private static func asClause(_ sentence: String) -> String {
+        let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasSuffix(".") ? String(trimmed.dropLast()) : trimmed
     }
 
     /// Deletes every temp file the current run registered. Idempotent
@@ -1052,7 +1090,7 @@ final class DictationController: ObservableObject {
         case .pasteLastDictation:
             pasteLastDictation()
         case .openDictationHistory:
-            dictationsHistoryRequest += 1
+            requestDictationHistory()
         case .hideForAnHour:
             hidePill()
         }

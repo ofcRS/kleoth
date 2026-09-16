@@ -42,6 +42,12 @@ No extra props beyond the named objects. One isolated illustration, never a shee
 | Menu bar | 18 pt template | `Resources/MenuBarGlyph.png` | derived from the lyre vector, never generated |
 | README hero / social preview | 1600×420 / 1280×640 | `docs/assets/` via `readme-images/generate.swift` | composed from the icon; regenerate after an icon change |
 
+**Not a surface: the Settings window, or any form.** A banner per Settings page (150 pt object art on a
+charcoal gradient card under a serif title, six pieces generated in one batch) was built and rejected on
+sight on 2026-09-10 — "3D art looks like generic AI/SaaS stock… trying to look premium instead of trying
+to look precise". Settings is a plain grouped form in system type; the object family belongs to empty
+states, the icon and the README only.
+
 ## App icon (chosen 2026-09-08)
 
 `branding-src/icon-v2/icon-a-charcoal.png` — the satin-silver lyre with teal strings on a deep

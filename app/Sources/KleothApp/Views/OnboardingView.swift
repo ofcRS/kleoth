@@ -330,8 +330,23 @@ struct OnboardingView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Text(providerCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// What the summaries/dictation cleanup will run on, from the live
+    /// detection — so a fresh install knows it needs nothing, or what to add.
+    private var providerCaption: String {
+        guard let status = controller.providerStatus else { return "Checking installed AI tools…" }
+        let names = status.detectedNames
+        if names.isEmpty {
+            return "Summaries and dictation cleanup need an AI: add an OpenRouter key in Settings, or install Ollama or Claude Code."
+        }
+        return "Summaries and dictation cleanup will use: \(names.joined(separator: ", ")). Change it in Settings → Accounts."
     }
 
     /// The model's live download / ready / not-yet state, mirroring the Settings

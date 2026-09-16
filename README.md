@@ -140,6 +140,25 @@ Open **Settings** from the menu bar. Everything here is optional:
 
 Keys are stored in the macOS Keychain and are **never** printed or committed.
 
+## Bring your own AI
+
+Summaries and dictation cleanup need a language model. Kleoth uses whatever you already have,
+in this order, unless you pick one in Settings → Accounts:
+
+| Provider | What it needs | Summaries | Dictation |
+|---|---|---|---|
+| Local server (Ollama, LM Studio, any OpenAI-compatible URL) | the server running, default `http://localhost:11434/v1` | ✓ | ✓ |
+| Claude Code | the `claude` CLI installed and signed in | ✓ | ✓ (slow — several seconds per cleanup) |
+| Codex | the `codex` CLI installed and signed in | ✓ | — |
+| OpenRouter | an API key | ✓ | ✓ |
+| Apple on-device | macOS 26 with Apple Intelligence on | — | ✓ |
+
+Codex only summarizes (no dictation cleanup path); Apple's on-device model only cleans up
+dictation and needs macOS 26 with Apple Intelligence turned on in System Settings.
+
+Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
+with their own login; the local server and Apple's model never leave the machine.
+
 ## CLI
 
 The repo also ships a `kleoth` command-line tool for the same pipeline (audio file → transcript →
@@ -175,7 +194,10 @@ variables (`ELEVEN_API_KEY`, `OPENROUTER_API_KEY`), a local `.env`, or
 ## Data & privacy
 
 By default, **nothing leaves your machine.** Transcription is on-device; summaries and cloud
-transcription only run when you opt in with your own keys.
+transcription only run when you opt in. Summaries and dictation cleanup need no API key at all when
+you point them at Claude Code, Codex, a local server (Ollama, LM Studio) or Apple's on-device model
+(see [Bring your own AI](#bring-your-own-ai)) — nothing is ever sent anywhere you did not sign up
+for yourself.
 
 Each meeting is one self-contained folder, `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`:
 

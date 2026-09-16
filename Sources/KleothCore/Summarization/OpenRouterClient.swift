@@ -15,21 +15,6 @@ public struct ChatMessage: Codable, Sendable {
     }
 }
 
-/// Usage / cost metadata returned by OpenRouter.
-///
-/// `cost` is the USD cost already computed by OpenRouter.
-public struct OpenRouterUsage: Codable, Sendable {
-    public let promptTokens: Int?
-    public let completionTokens: Int?
-    public let cost: Double?
-
-    public init(promptTokens: Int? = nil, completionTokens: Int? = nil, cost: Double? = nil) {
-        self.promptTokens = promptTokens
-        self.completionTokens = completionTokens
-        self.cost = cost
-    }
-}
-
 /// Errors thrown by ``OpenRouterClient``.
 public enum OpenRouterError: Error, Sendable {
     /// The server returned a non-2xx status. Carries the status code and a
@@ -110,75 +95,31 @@ public struct OpenRouterReasoning: Sendable, Equatable {
     }
 }
 
-/// Client for the OpenRouter chat completions endpoint.
-///
-/// POST `https://openrouter.ai/api/v1/chat/completions`, authenticated with
-/// `Authorization: Bearer <key>`.
+/// OpenRouter = the OpenAI-compatible client pointed at openrouter.ai with the
+/// `provider.require_parameters` routing key and attribution headers.
 ///
 /// `Sendable` is explicit (a public struct gets no implicit conformance):
 /// every stored property is a value or a `Sendable` existential (`HTTPTransport`
 /// refines `Sendable`). Dictation needs it — `DictationPolisher: Sendable` and
 /// capturing a client inside `withTimeout`'s `@Sendable` closure both depend on
 /// it. Mirrors how `ScribeClient` is `Sendable` via `Transcriber`.
-public struct OpenRouterClient: Sendable {
+public struct OpenRouterClient: ChatCompleting {
     public let apiKey: String
     public let transport: HTTPTransport
+    private let inner: OpenAICompatibleClient
+
+    public static let baseURL = URL(string: "https://openrouter.ai/api/v1")!
 
     public init(apiKey: String, transport: HTTPTransport) {
         self.apiKey = apiKey
         self.transport = transport
-    }
-
-    private static let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-
-    // MARK: - Response body
-
-    private struct ResponseBody: Decodable {
-        struct Choice: Decodable {
-            struct Message: Decodable {
-                let role: String?
-                let content: String?
-            }
-            let message: Message?
-            /// Why generation stopped — `"stop"` (complete), `"length"`
-            /// (truncated: hit the output cap, often after a reasoning model
-            /// spent the budget thinking), `"content_filter"`, etc. Decoded so
-            /// the summarizer can distinguish a complete short answer from a
-            /// silently truncated one. (`convertFromSnakeCase` maps `finish_reason`.)
-            let finishReason: String?
-        }
-        let choices: [Choice]?
-        let usage: OpenRouterUsage?
+        self.inner = OpenAICompatibleClient(
+            baseURL: Self.baseURL, apiKey: apiKey, transport: transport, sendsOpenRouterProviderKey: true)
     }
 
     /// Requests a chat completion and returns the message content plus
-    /// optional usage metadata.
-    ///
-    /// - Parameter responseFormat: how the response shape is constrained
-    ///   (none / `json_object` / strict `json_schema`).
-    /// - Parameter temperature: sampling temperature. Omitted from the request
-    ///   body entirely when `nil` (the default), so callers that never set it —
-    ///   `Summarizer` — send a byte-identical body to before this parameter existed.
-    /// - Parameter reasoning: OpenRouter's `reasoning` object (see
-    ///   ``OpenRouterReasoning``). Omitted from the body when `nil` (the
-    ///   default) — again so `Summarizer`'s body is unchanged.
-    ///
-    /// **Fallback retry.** The body always carries `provider.require_parameters:
-    /// true`, so OpenRouter routes only to endpoints that declare support for
-    /// EVERY parameter sent — the strict `json_schema`, `temperature` and
-    /// `reasoning` alike. Under this account's data-policy guardrails that can
-    /// leave zero eligible endpoints and the request fails with HTTP 400 or 404
-    /// (no-train providers reject the strict schema; the ZDR guardrail 404s
-    /// `google/gemini-3.8-flash` only when `temperature` is present — measured
-    /// live 2026-09-03: schema + temperature → 404 `zdr-violation-by-account`,
-    /// the same body without `temperature` → 200; `reasoning` did the same on
-    /// `meta-llama/llama-3.3-70b-instruct`). On a 400/404 the call therefore
-    /// retries ONCE with everything that narrows routing removed: a `.jsonSchema`
-    /// format is downgraded to `.jsonObject`, and `temperature` / `reasoning`
-    /// are dropped. A single relaxed retry (rather than a ladder) keeps the
-    /// worst case at two round trips, which matters inside the 8 s dictation
-    /// budget. The retry is skipped when it would re-send an identical body
-    /// (already `.jsonObject`/`.none` with no temperature or reasoning).
+    /// optional usage metadata. See ``OpenAICompatibleClient/complete(messages:model:responseFormat:maxTokens:temperature:reasoning:)``
+    /// for the parameter contract, response decoding and the fallback-retry behavior.
     public func complete(
         messages: [ChatMessage],
         model: String,
@@ -186,145 +127,10 @@ public struct OpenRouterClient: Sendable {
         maxTokens: Int,
         temperature: Double? = nil,
         reasoning: OpenRouterReasoning? = nil
-    ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
-        do {
-            return try await send(
-                messages: messages,
-                model: model,
-                responseFormat: responseFormat,
-                maxTokens: maxTokens,
-                temperature: temperature,
-                reasoning: reasoning
-            )
-        } catch let OpenRouterError.httpError(status, _)
-            where (status == 400 || status == 404)
-                && Self.hasRoutingNarrowingParameters(responseFormat, temperature, reasoning) {
-            // No endpoint could honor every parameter under `require_parameters`;
-            // retry once with the routing-narrowing ones removed (strict schema →
-            // plain JSON object, no temperature, no reasoning).
-            return try await send(
-                messages: messages,
-                model: model,
-                responseFormat: responseFormat.isJSONSchema ? .jsonObject : responseFormat,
-                maxTokens: maxTokens,
-                temperature: nil,
-                reasoning: nil
-            )
-        }
-    }
-
-    /// Whether the relaxed retry would send a different body than the first
-    /// attempt — i.e. whether there is anything left to drop.
-    private static func hasRoutingNarrowingParameters(
-        _ responseFormat: OpenRouterResponseFormat,
-        _ temperature: Double?,
-        _ reasoning: OpenRouterReasoning?
-    ) -> Bool {
-        responseFormat.isJSONSchema || temperature != nil || reasoning != nil
-    }
-
-    /// Performs a single chat-completions request with the given response format.
-    private func send(
-        messages: [ChatMessage],
-        model: String,
-        responseFormat: OpenRouterResponseFormat,
-        maxTokens: Int,
-        temperature: Double?,
-        reasoning: OpenRouterReasoning?
-    ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
-        var request = URLRequest(url: Self.endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Optional attribution headers (no secrets).
-        request.setValue("https://kleoth.dev", forHTTPHeaderField: "HTTP-Referer")
-        request.setValue("Kleoth", forHTTPHeaderField: "X-Title")
-
-        request.httpBody = try Self.makeBody(
-            messages: messages,
-            model: model,
-            responseFormat: responseFormat,
-            maxTokens: maxTokens,
-            temperature: temperature,
-            reasoning: reasoning
+    ) async throws -> ChatCompletion {
+        try await inner.complete(
+            messages: messages, model: model, responseFormat: responseFormat,
+            maxTokens: maxTokens, temperature: temperature, reasoning: reasoning
         )
-
-        let (data, response) = try await transport.data(for: request)
-
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-        guard (200...299).contains(statusCode) else {
-            throw OpenRouterError.httpError(status: statusCode, bodySnippet: Self.snippet(data))
-        }
-
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let decoded = try decoder.decode(ResponseBody.self, from: data)
-
-        // A 2xx with no choices at all is a genuine empty response. But a choice
-        // whose content is empty/nil (e.g. a reasoning model that spent the whole
-        // output budget thinking → `finish_reason == "length"`) is NOT thrown
-        // here: it's returned with its finish reason so the summarizer can route
-        // it into the repair/retry path instead of failing outright.
-        guard let choice = decoded.choices?.first else {
-            throw OpenRouterError.noContent
-        }
-
-        return (choice.message?.content ?? "", decoded.usage, choice.finishReason)
-    }
-
-    /// Builds the JSON request body. Uses `JSONSerialization` (rather than a
-    /// `Codable` struct) so a raw JSON-schema document embeds verbatim under
-    /// `response_format.json_schema.schema`.
-    private static func makeBody(
-        messages: [ChatMessage],
-        model: String,
-        responseFormat: OpenRouterResponseFormat,
-        maxTokens: Int,
-        temperature: Double?,
-        reasoning: OpenRouterReasoning?
-    ) throws -> Data {
-        var body: [String: Any] = [
-            "model": model,
-            "messages": messages.map { ["role": $0.role, "content": $0.content] },
-            "max_tokens": maxTokens,
-            "provider": ["require_parameters": true],
-        ]
-
-        // Only written when the caller asked for one, so `Summarizer`'s body is
-        // unchanged from before the parameter existed.
-        if let temperature {
-            body["temperature"] = temperature
-        }
-        if let reasoning {
-            body["reasoning"] = reasoning.bodyValue
-        }
-
-        switch responseFormat {
-        case .none:
-            break
-        case .jsonObject:
-            body["response_format"] = ["type": "json_object"]
-        case let .jsonSchema(name, schemaJSON):
-            let schema = try JSONSerialization.jsonObject(
-                with: Data(schemaJSON.utf8)
-            )
-            body["response_format"] = [
-                "type": "json_schema",
-                "json_schema": [
-                    "name": name,
-                    "strict": true,
-                    "schema": schema,
-                ],
-            ]
-        }
-
-        return try JSONSerialization.data(withJSONObject: body)
-    }
-
-    /// Returns a bounded, UTF-8-decoded snippet of a response body for error messages.
-    private static func snippet(_ data: Data, limit: Int = 500) -> String {
-        let bounded = data.prefix(limit)
-        let text = String(decoding: bounded, as: UTF8.self)
-        return data.count > limit ? text + "…" : text
     }
 }

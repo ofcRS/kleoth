@@ -1,6 +1,7 @@
 import Foundation
 import KleothCapture
 import KleothCore
+import KleothOnDevice
 
 /// Headless dictation pipeline probe (design doc §5.10): record N seconds from
 /// the default microphone → `DictationCapture.prepareForUpload` → the
@@ -11,8 +12,8 @@ import KleothCore
 /// `~/.config/kleoth/config.json`); the polish model from `Settings.load()`
 /// unless `--model` overrides it. Key values are never printed.
 ///
-///     dictate [seconds] [--transcriber scribe] [--model <slug>] [--no-polish] [--device <uid>]
-///     dictate --text "<raw transcript>" [--language rus] [--runs N] [--model <slug>]   // polish-only benchmark
+///     dictate [seconds] [--transcriber scribe] [--model <slug>] [--provider <id>] [--no-polish] [--device <uid>]
+///     dictate --text "<raw transcript>" [--language rus] [--runs N] [--model <slug>] [--provider <id>]   // polish-only benchmark
 ///     dictate --list-devices                                                          // input device UIDs for --device
 ///
 /// A future `--transcriber realtime` slots in at `makeTranscriber` below first;
@@ -27,24 +28,36 @@ struct DictateMain {
         let arguments = parse(CommandLine.arguments.dropFirst())
         let credentials = Credentials.resolve()
         let settings = Settings.load()
-        let model = arguments.model ?? settings.dictationModel
 
         // Polish-only benchmark: skip capture + STT and time the real polisher.
         if let text = arguments.text {
-            guard let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty else {
-                fail("no OpenRouter key")
-            }
             let terms = Keyterms.sanitize(PersonalDictionaryStore().load())
             let context = DictationContext(
                 appBundleId: arguments.bundleId, appName: nil,
                 languageCode: arguments.language, dictionary: terms
             )
             let reasoning = arguments.reasoning.map { OpenRouterReasoning(effort: $0) }
-            let polisher = DictationPolisher(
-                client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
-                model: model,
-                reasoningOverride: reasoning
-            )
+            let pick = arguments.provider.flatMap(AIProvider.parse)
+            let appleAvailability = AppleOnDeviceClient.availability()
+            let apple: (any ChatCompleting)? = appleAvailability.isAvailable ? AppleOnDeviceClient() : nil
+            let bootstrap = await ProviderBootstrap.select(task: .dictation, pick: pick, settings: settings,
+                                                          credentials: credentials, appleClient: apple,
+                                                          appleAvailability: appleAvailability)
+            let factory: ProviderFactory
+            let selection: ProviderFactory.Selection
+            switch bootstrap {
+            case let .success(made): (factory, selection) = (made.factory, made.selection)
+            case let .failure(error): fail(error.localizedDescription)
+            }
+            let model = arguments.model ?? selection.model
+            var polisher: DictationPolisher
+            do {
+                polisher = try factory.polisher(for: .init(provider: selection.provider, model: model, fellThroughFrom: nil))
+            } catch {
+                fail(error.localizedDescription)
+            }
+            polisher.reasoningOverride = reasoning     // benchmark site only
+            print("provider  : \(selection.provider.displayName)")
             print("model     : \(model)  reasoning \(arguments.reasoning?.rawValue ?? "<allowlist>")  (\(arguments.runs) run(s), \(text.count) chars, language \(arguments.language ?? "<nil>"))")
             var times: [Double] = []
             for run in 1...arguments.runs {
@@ -167,10 +180,6 @@ struct DictateMain {
             print("polish    : skipped (--no-polish)")
             return
         }
-        guard let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty else {
-            print("polish    : skipped (no OpenRouter key) — the app would paste the raw transcript")
-            return
-        }
         let context = DictationContext(
             appBundleId: arguments.bundleId,
             appName: nil,
@@ -189,10 +198,26 @@ struct DictateMain {
         } else {
             print("gate      : the app would polish (\(PolishGate.wordCount(rawText)) words)")
         }
-        let polisher = DictationPolisher(
-            client: OpenRouterClient(apiKey: openRouterKey, transport: URLSessionTransport()),
-            model: model
-        )
+        let pick = arguments.provider.flatMap(AIProvider.parse)
+        let appleAvailability = AppleOnDeviceClient.availability()
+        let apple: (any ChatCompleting)? = appleAvailability.isAvailable ? AppleOnDeviceClient() : nil
+        let bootstrap = await ProviderBootstrap.select(task: .dictation, pick: pick, settings: settings,
+                                                      credentials: credentials, appleClient: apple,
+                                                      appleAvailability: appleAvailability)
+        let factory: ProviderFactory
+        let selection: ProviderFactory.Selection
+        switch bootstrap {
+        case let .success(made): (factory, selection) = (made.factory, made.selection)
+        case let .failure(error): fail(error.localizedDescription)
+        }
+        let model = arguments.model ?? selection.model
+        var polisher: DictationPolisher
+        do {
+            polisher = try factory.polisher(for: .init(provider: selection.provider, model: model, fellThroughFrom: nil))
+        } catch {
+            fail(error.localizedDescription)
+        }
+        print("provider  : \(selection.provider.displayName)")
         let polishStarted = Date()
         let result = await polisher.polish(rawText: rawText, context: context)
         let polishSeconds = Date().timeIntervalSince(polishStarted)
@@ -239,6 +264,7 @@ struct DictateMain {
         var seconds: Double = 4
         var transcriber = "scribe"
         var model: String?
+        var provider: String?
         var bundleId: String?
         var polish = true
         var text: String?
@@ -260,6 +286,9 @@ struct DictateMain {
             case "--model":
                 guard let value = iterator.next() else { usage() }
                 parsed.model = value
+            case "--provider":
+                guard let value = iterator.next() else { usage() }
+                parsed.provider = value
             case "--app":
                 guard let value = iterator.next() else { usage() }
                 parsed.bundleId = value
@@ -299,7 +328,7 @@ struct DictateMain {
 
     static func usage() -> Never {
         FileHandle.standardError.write(Data(
-            "usage: dictate [seconds] [--transcriber scribe] [--model <openrouter-slug>] [--app <bundle-id>] [--no-polish] [--device <uid>]\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n       dictate --list-devices\n".utf8
+            "usage: dictate [seconds] [--transcriber scribe] [--model <slug>] [--provider <id>] [--app <bundle-id>] [--no-polish] [--device <uid>]\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--provider <id>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n       dictate --list-devices\n".utf8
         ))
         exit(2)
     }

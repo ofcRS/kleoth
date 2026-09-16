@@ -8,6 +8,16 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Added
 
+- **Bring your own AI.** Summaries and dictation cleanup can now run on the Claude Code or
+  Codex CLI you already have signed in, on a local OpenAI-compatible server (Ollama, LM Studio),
+  or on Apple's on-device model (macOS 26, dictation only) — OpenRouter is one option among five.
+  A fresh install auto-detects what is available (Settings → Accounts → AI provider);
+  `kleoth summarize --provider <id>` picks one on the command line.
+- **Settings window redesigned.** A sidebar of six pages — Meetings, Dictation, Screen Recording,
+  Microphone, Accounts, General — each a plain grouped form under its own title, the way System
+  Settings does it: no banners, no illustrations, system type throughout. Every setting is where
+  it was, grouped by what it is for; each feature page ends in a row that opens its history, and
+  the Accounts page links to the providers' key pages. The window remembers the last page.
 - **Pill peek dock.** Hovering the resting pill now pulls out a dock of three captioned fields —
   Dictate, Record, More — in Liquid Glass on macOS 26 (a dark ink look elsewhere), with a quiet
   hover lift and a hand cursor. Dictate starts a hands-free dictation from a click (click the
