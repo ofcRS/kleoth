@@ -740,11 +740,16 @@ final class DictationController: ObservableObject {
         //    can cost the provider probes (CLI `auth status`, the local server)
         //    whenever the detector's cache is cold, so it runs ALONGSIDE the
         //    upload instead of after it — by the time step 7 awaits the task,
-        //    the answer is almost always already there. Every exit below leaves
-        //    through the `defer`, which cancels it; the detector's work is not
-        //    cancellation-sensitive, so cancelling simply drops the result.
+        //    the answer is almost always already there.
+        //
+        //    It is deliberately NOT cancelled on the early exits below (Esc, an
+        //    STT failure, an empty transcript, a PolishGate skip). Cancelling it
+        //    would terminate the probes mid-flight, and each one reports a
+        //    killed child / cancelled request as a negative verdict — so the
+        //    orphan is left to finish and warm the detector's cache for the next
+        //    dictation. It costs nothing user-visible: the probes bound
+        //    themselves at 10 s each and the task touches no session state.
         let polisherTask = Task { try await AppConfig.makePolisher() }
-        defer { polisherTask.cancel() }
 
         let terms = Keyterms.sanitize(dictionary.load())
         let options = ScribeOptions.dictation(keyterms: terms)

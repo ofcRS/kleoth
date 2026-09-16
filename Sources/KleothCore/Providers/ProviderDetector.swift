@@ -136,6 +136,13 @@ public actor ProviderDetector {
         snap[.claudeCode] = await claude
         snap[.codex] = await codex
         snap[.appleOnDevice] = await apple
+        // Under cancellation the probes are full of FALSE negatives: the
+        // process runner terminates the child and throws, the transport throws
+        // `URLError(.cancelled)`, and each probe turns that into "Did not
+        // answer" / "No server at …". Caching that would pin a wrong verdict
+        // for the whole TTL (and route the next dictation or summary wrongly),
+        // so the caller gets the snapshot but the cache does not.
+        guard !Task.isCancelled else { return snap }
         cached = (key, Date(), snap)
         return snap
     }

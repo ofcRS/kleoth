@@ -91,6 +91,30 @@ import Foundation
         #expect(transport.recordedRequests[0].url?.absoluteString == "http://localhost:11434/v1/models")
     }
 
+    /// A snapshot gathered while the calling task was cancelled is full of
+    /// false negatives — the process runner terminates the child and throws,
+    /// the transport throws `URLError(.cancelled)`, and each probe converts
+    /// that into "Did not answer" / "No server at …". Caching one would pin
+    /// those verdicts for the whole TTL, so `snapshot` returns it without
+    /// storing it.
+    @Test func cancelledSnapshotIsNotCached() async {
+        let counter = Counter()
+        let detector = ProviderDetector(probes: Self.probes(local: { _, _ in
+            await counter.bump()
+            try? await Task.sleep(for: .milliseconds(300))
+            return .success(["m"])
+        }))
+        let task = Task { await detector.snapshot(settings: ProviderSettings(), openRouterKey: nil) }
+        try? await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+        _ = await task.value
+        #expect(await counter.value == 1)
+        // Nothing was cached, so this must probe again rather than serve the
+        // cancelled result.
+        _ = await detector.snapshot(settings: ProviderSettings(), openRouterKey: nil)
+        #expect(await counter.value == 2)
+    }
+
     actor Counter {
         var value = 0
         func bump() { value += 1 }
