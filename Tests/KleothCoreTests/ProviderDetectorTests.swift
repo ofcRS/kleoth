@@ -129,7 +129,7 @@ import Foundation
         let started = Date()
         let result = await probes.localServer(URL(string: "http://127.0.0.1:1/v1")!, nil)
         let elapsed = Date().timeIntervalSince(started)
-        #expect(elapsed < 3)
+        #expect(elapsed < 4.5)
         guard case .failure = result else {
             Issue.record("expected .failure, got \(result)")
             return

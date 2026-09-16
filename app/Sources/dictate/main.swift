@@ -38,9 +38,11 @@ struct DictateMain {
             )
             let reasoning = arguments.reasoning.map { OpenRouterReasoning(effort: $0) }
             let pick = arguments.provider.flatMap(AIProvider.parse)
-            let apple: (any ChatCompleting)? = AppleOnDeviceClient.availability().isAvailable ? AppleOnDeviceClient() : nil
+            let appleAvailability = AppleOnDeviceClient.availability()
+            let apple: (any ChatCompleting)? = appleAvailability.isAvailable ? AppleOnDeviceClient() : nil
             let bootstrap = await ProviderBootstrap.select(task: .dictation, pick: pick, settings: settings,
-                                                          credentials: credentials, appleClient: apple)
+                                                          credentials: credentials, appleClient: apple,
+                                                          appleAvailability: appleAvailability)
             let factory: ProviderFactory
             let selection: ProviderFactory.Selection
             switch bootstrap {
@@ -197,9 +199,11 @@ struct DictateMain {
             print("gate      : the app would polish (\(PolishGate.wordCount(rawText)) words)")
         }
         let pick = arguments.provider.flatMap(AIProvider.parse)
-        let apple: (any ChatCompleting)? = AppleOnDeviceClient.availability().isAvailable ? AppleOnDeviceClient() : nil
+        let appleAvailability = AppleOnDeviceClient.availability()
+        let apple: (any ChatCompleting)? = appleAvailability.isAvailable ? AppleOnDeviceClient() : nil
         let bootstrap = await ProviderBootstrap.select(task: .dictation, pick: pick, settings: settings,
-                                                      credentials: credentials, appleClient: apple)
+                                                      credentials: credentials, appleClient: apple,
+                                                      appleAvailability: appleAvailability)
         let factory: ProviderFactory
         let selection: ProviderFactory.Selection
         switch bootstrap {
