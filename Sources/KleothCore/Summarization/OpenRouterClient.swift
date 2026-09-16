@@ -15,21 +15,6 @@ public struct ChatMessage: Codable, Sendable {
     }
 }
 
-/// Usage / cost metadata returned by OpenRouter.
-///
-/// `cost` is the USD cost already computed by OpenRouter.
-public struct OpenRouterUsage: Codable, Sendable {
-    public let promptTokens: Int?
-    public let completionTokens: Int?
-    public let cost: Double?
-
-    public init(promptTokens: Int? = nil, completionTokens: Int? = nil, cost: Double? = nil) {
-        self.promptTokens = promptTokens
-        self.completionTokens = completionTokens
-        self.cost = cost
-    }
-}
-
 /// Errors thrown by ``OpenRouterClient``.
 public enum OpenRouterError: Error, Sendable {
     /// The server returned a non-2xx status. Carries the status code and a
@@ -120,7 +105,7 @@ public struct OpenRouterReasoning: Sendable, Equatable {
 /// refines `Sendable`). Dictation needs it — `DictationPolisher: Sendable` and
 /// capturing a client inside `withTimeout`'s `@Sendable` closure both depend on
 /// it. Mirrors how `ScribeClient` is `Sendable` via `Transcriber`.
-public struct OpenRouterClient: Sendable {
+public struct OpenRouterClient: ChatCompleting {
     public let apiKey: String
     public let transport: HTTPTransport
 
@@ -186,7 +171,7 @@ public struct OpenRouterClient: Sendable {
         maxTokens: Int,
         temperature: Double? = nil,
         reasoning: OpenRouterReasoning? = nil
-    ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
+    ) async throws -> ChatCompletion {
         do {
             return try await send(
                 messages: messages,
@@ -231,7 +216,7 @@ public struct OpenRouterClient: Sendable {
         maxTokens: Int,
         temperature: Double?,
         reasoning: OpenRouterReasoning?
-    ) async throws -> (content: String, usage: OpenRouterUsage?, finishReason: String?) {
+    ) async throws -> ChatCompletion {
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -269,7 +254,7 @@ public struct OpenRouterClient: Sendable {
             throw OpenRouterError.noContent
         }
 
-        return (choice.message?.content ?? "", decoded.usage, choice.finishReason)
+        return ChatCompletion(content: choice.message?.content ?? "", usage: decoded.usage, finishReason: choice.finishReason)
     }
 
     /// Builds the JSON request body. Uses `JSONSerialization` (rather than a

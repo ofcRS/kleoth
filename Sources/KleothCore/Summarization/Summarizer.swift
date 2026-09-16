@@ -25,12 +25,12 @@ extension SummarizerError: LocalizedError {
 }
 
 /// Produces a structured `MeetingSummary` from a normalized transcript,
-/// using an `OpenRouterClient`.
+/// using any ``ChatCompleting`` backend.
 public struct Summarizer {
-    public let client: OpenRouterClient
+    public let client: any ChatCompleting
     public var model: String
 
-    public init(client: OpenRouterClient, model: String = ModelCatalog.defaultModel) {
+    public init(client: any ChatCompleting, model: String = ModelCatalog.defaultModel) {
         self.client = client
         self.model = model
     }
