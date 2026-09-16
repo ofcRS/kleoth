@@ -112,6 +112,9 @@ final class DictationController: ObservableObject {
     /// Set by `handleEscape()` when it cut a polish short — the result is then
     /// logged as skipped (no warning, no `polish_model`), not as a fallback.
     private var polishCancelledByUser = false
+    /// The provider + model the polish call in this run resolved to, so the log
+    /// row records what actually ran. nil when no polisher could be built.
+    private var polishSelection: ProviderFactory.Selection?
     /// 20 Hz `capture.currentLevel` → `PillGeometry` → `pill.setLevel`.
     private var levelTask: Task<Void, Never>?
     /// Restores the pill's pipeline phase after the 1 s "Finishing the previous
@@ -695,6 +698,7 @@ final class DictationController: ObservableObject {
     /// success, early return, `.failed`, cancellation — tears down the same way.
     private func run(clip: DictationCaptureResult, target: DictationTarget?) async {
         inFlightClips = [clip.fileURL]
+        polishSelection = nil
         defer {
             discardInFlightClips()
             refusalTask?.cancel()
@@ -791,13 +795,11 @@ final class DictationController: ObservableObject {
         if case let .skip(reason) = gate {
             log.debug("polish skipped: \(reason, privacy: .public)")
             polish = .skipped(text: rawText, reason: reason)
-        } else if let openRouterKey = credentials.openRouterKey, !openRouterKey.isEmpty {
+        } else if let made = try? await AppConfig.makePolisher() {
+            let (polisher, selection) = made
+            polishSelection = selection
             phase = .polishing
             pill.show(.polishing)
-            let polisher = DictationPolisher(
-                client: OpenRouterClient(apiKey: openRouterKey, transport: transport),
-                model: settings.dictationModel
-            )
             // Runs as its own task so Esc can cancel the model call alone
             // (`handleEscape`); `cancelPipeline()` cancels both together.
             polishCancelledByUser = false
@@ -815,7 +817,8 @@ final class DictationController: ObservableObject {
             }
             log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
         } else {
-            polish = .raw(text: rawText, reason: "No OpenRouter key — pasted the raw transcript.")
+            let reason = (await Self.polishUnavailableReason()) ?? ProviderError.noProvider.localizedDescription
+            polish = .raw(text: rawText, reason: "\(reason) — pasted the raw transcript.")
         }
         // Esc during the polish call: the polisher swallows cancellation into a
         // `.raw` result, so check here before anything reaches the pasteboard.
@@ -856,7 +859,8 @@ final class DictationController: ObservableObject {
             usedRawFallback: polish.usedRawFallback,
             fallbackReason: polish.fallbackReason,
             transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
-            polishModel: polish.ranModel ? settings.dictationModel : nil,
+            polishModel: polish.ranModel ? polishSelection?.model : nil,
+            polishProvider: polish.ranModel ? polishSelection?.provider.rawValue : nil,
             durationSeconds: clip.durationSeconds,
             insertMethod: method,
             transcriptionCost: transcriber.usdPerHour * clip.durationSeconds / 3600 * surcharge,
@@ -872,6 +876,11 @@ final class DictationController: ObservableObject {
 
         // 10. Settle.
         pill.show(warning.map { .warning($0) } ?? .done)
+    }
+
+    /// Why no polisher could be built, for the pill (`makePolisher` threw).
+    private static func polishUnavailableReason() async -> String? {
+        do { _ = try await AppConfig.makePolisher(); return nil } catch { return error.localizedDescription }
     }
 
     /// Deletes every temp file the current run registered. Idempotent

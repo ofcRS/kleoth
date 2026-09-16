@@ -1,5 +1,6 @@
 import Foundation
 import KleothCore
+import KleothOnDevice
 
 /// The app's merged configuration: `Settings.load()` / `Credentials.resolve()`
 /// (environment, `.env`, `~/.config/kleoth/config.json`) with the Keychain's
@@ -65,10 +66,81 @@ enum AppConfig {
         if let device = Keychain.get(Keychain.Account.inputDevice) {
             merged.inputDeviceId = device.isEmpty ? nil : device
         }
+        // AI provider: an EMPTY stored pick is the user's explicit Automatic
+        // and overrides any `config.json` pick (the `input_device` idiom).
+        if let pick = Keychain.get(Keychain.Account.aiProvider) {
+            merged.providerSettings.pick = AIProvider.parse(pick)
+        }
+        if let url = Keychain.get(Keychain.Account.localServerURL), let normalized = ProviderSettings.normalizeServerURL(url) {
+            merged.providerSettings.localServerURL = normalized
+        }
+        if let key = Keychain.get(Keychain.Account.localServerKey) {
+            merged.providerSettings.localServerKey = key.isEmpty ? nil : key
+        }
+        if let models = Keychain.get(Keychain.Account.aiModels), !models.isEmpty {
+            merged.providerSettings.models = ProviderSettings.parseModels(models)
+        }
         merged.defaultModel = ModelCatalog.migrating(merged.defaultModel)
         // Chains `ModelCatalog.migrating` and the retired polish defaults
         // (`DictationDefaults.retiredPolishModels`).
         merged.dictationModel = DictationDefaults.migratingPolishModel(merged.dictationModel)
         return merged
+    }
+
+    // MARK: - AI providers
+
+    /// One detector for the whole app: its 60 s cache is what keeps a
+    /// dictation from paying a server probe on every run.
+    static let detector = ProviderDetector(probes: .standard(
+        locator: .standard,
+        runner: FoundationProcessRunner(),
+        transport: URLSessionTransport(),
+        apple: { AppleOnDeviceClient.availability() }))
+
+    /// The factory for one resolution pass: every backend the user could be
+    /// routed to, wired with the app's transport, runner and Apple adapter.
+    static func factory(settings: KleothCore.Settings, credentials: Credentials) -> ProviderFactory {
+        ProviderFactory(
+            settings: settings.providerSettings,
+            openRouterKey: credentials.openRouterKey,
+            transport: URLSessionTransport(),
+            runner: FoundationProcessRunner(),
+            locator: .standard,
+            appleClient: AppleOnDeviceClient.availability().isAvailable ? AppleOnDeviceClient() : nil)
+    }
+
+    /// The summarizer for the current settings, or the `ProviderError` that
+    /// says why there is none.
+    static func makeSummarizer() async throws -> sending (Summarizer, ProviderFactory.Selection) {
+        let settings = settings()
+        let credentials = credentials()
+        let factory = factory(settings: settings, credentials: credentials)
+        let snapshot = await detector.snapshot(settings: settings.providerSettings, openRouterKey: credentials.openRouterKey)
+        let selection = try factory.select(task: .summary, snapshot: snapshot).get()
+        return (try factory.summarizer(for: selection), selection)
+    }
+
+    /// The dictation polisher for the current settings, or the `ProviderError`
+    /// that says why there is none.
+    static func makePolisher() async throws -> sending (DictationPolisher, ProviderFactory.Selection) {
+        let settings = settings()
+        let credentials = credentials()
+        let factory = factory(settings: settings, credentials: credentials)
+        let snapshot = await detector.snapshot(settings: settings.providerSettings, openRouterKey: credentials.openRouterKey)
+        let selection = try factory.select(task: .dictation, snapshot: snapshot).get()
+        return (try factory.polisher(for: selection), selection)
+    }
+
+    /// What both tasks resolve to right now — the Settings footer, the popover
+    /// and onboarding read this.
+    static func providerStatus() async -> ProviderStatus {
+        let settings = settings()
+        let credentials = credentials()
+        let factory = factory(settings: settings, credentials: credentials)
+        let snapshot = await detector.snapshot(settings: settings.providerSettings, openRouterKey: credentials.openRouterKey)
+        return ProviderStatus(
+            snapshot: snapshot,
+            summary: factory.select(task: .summary, snapshot: snapshot),
+            dictation: factory.select(task: .dictation, snapshot: snapshot))
     }
 }

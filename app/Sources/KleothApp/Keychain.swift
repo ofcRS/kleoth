@@ -65,6 +65,16 @@ public enum Keychain {
         /// by meeting recordings, dictation and screen recordings alike.
         /// New key: NOT in `legacyAccounts`.
         public static let inputDevice = "input_device"
+        /// The AI provider pick: an `AIProvider` raw value, or "" / "auto" for
+        /// Automatic (an explicit empty value overrides a `config.json` pick).
+        /// New key: NOT in `legacyAccounts`.
+        public static let aiProvider = "ai_provider"
+        /// API root of the local OpenAI-compatible server (Ollama / LM Studio).
+        public static let localServerURL = "local_server_url"
+        /// Optional bearer token for that server.
+        public static let localServerKey = "local_server_key"
+        /// JSON map of per-provider, per-task models (`ProviderSettings.modelsJSON`).
+        public static let aiModels = "ai_models"
     }
 
     /// Every legacy per-value account, for the one-time migration.
