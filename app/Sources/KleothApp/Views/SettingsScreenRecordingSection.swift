@@ -9,7 +9,7 @@ import KleothCore
 /// preference of its own — no `Settings` field, no Keychain key, no
 /// `AppConfig` line, no toggle — because every knob v1 could expose (frame
 /// rate, bitrate, region memory) is either derived (`CaptureGeometry`) or
-/// chosen per session at the picker. The Settings window is a fixed 460×600
+/// chosen per session at the picker. The Settings window is a fixed 780×560
 /// and this section has to earn its two rows.
 ///
 /// Reaches the controller through `@EnvironmentObject` only — never
@@ -47,7 +47,7 @@ struct SettingsScreenRecordingSection: View {
             }
             .help("Reveal ~/Kleoth/screen-recordings in Finder, creating it if this is the first time")
         } header: {
-            KleothSectionHeader("Screen Recording", systemImage: "record.circle")
+            Text("Screen Recording")
         } footer: {
             captionFooter("Records the screen with system audio and your microphone into ~/Kleoth/screen-recordings. macOS may ask you to re-allow screen recording about once a month. A Bluetooth headset's playback quality drops while its microphone is open.")
         }

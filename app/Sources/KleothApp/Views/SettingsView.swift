@@ -4,14 +4,12 @@ import KleothCore
 import KleothCapture
 import KeyboardShortcuts
 
-/// Settings screen: API keys (persisted to the Keychain), output directory,
-/// and the default summarization model.
-///
-/// Refined-native macOS 26 styling: a grouped `Form` whose sections open with a
-/// `KleothSectionHeader` (accent SF Symbol + headline) for a consistent rhythm,
-/// quiet captions as section footers, and the system accent throughout. All
-/// edits are committed to the controller (and Keychain) on submit / change, with
-/// a belt-and-suspenders commit when the window goes away.
+/// Settings window: a sidebar of six pages (`SettingsPage`), each a plain
+/// grouped `Form` of that page's sections under its own title — the System
+/// Settings idiom, no chrome of its own. Section headers are plain text and
+/// each section ends in a quiet caption. All edits are committed to the controller (and Keychain)
+/// on submit / change, with a belt-and-suspenders commit when the window goes
+/// away — the state for every page lives here so `commitAll()` sees it all.
 struct SettingsView: View {
     @EnvironmentObject private var controller: RecordingController
     /// Dictation state and settings. `@EnvironmentObject`, never
@@ -104,27 +102,22 @@ struct SettingsView: View {
         ("ru", "Russian"),
     ]
 
+    /// The selected sidebar page, remembered across openings.
+    @AppStorage("dev.kleoth.settings.page") private var pageId: String = SettingsPage.meetings.rawValue
+    @EnvironmentObject private var screenRecording: ScreenRecordingController
+
+    private var page: SettingsPage { SettingsPage(rawValue: pageId) ?? .meetings }
+    private var pageSelection: Binding<SettingsPage?> {
+        Binding(get: { page }, set: { pageId = ($0 ?? .meetings).rawValue })
+    }
+
     var body: some View {
-        Form {
-            credentialsSection
-            outputSection
-            localModelSection
-            summarizationSection
-            usageSection
-            shortcutsSection
-            microphoneSection
-            SettingsDictationSection(
-                dictationModel: $dictationModel,
-                dictionaryText: $dictionaryText,
-                availableModels: availableModels
-            )
-            SettingsScreenRecordingSection()
-            calendarSection
-            onboardingSection
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            detail(for: page)
         }
-        .formStyle(.grouped)
-        .frame(width: 460, height: 600)
-        .kleothSoftScrollEdge()
+        .frame(width: 780, height: 560)
         .onAppear {
             loadFromController()
             refreshModelStatus()
@@ -148,6 +141,103 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Sidebar + pages
+
+    private var sidebar: some View {
+        List(selection: pageSelection) {
+            Section("Features") {
+                ForEach(SettingsPage.features) { page in
+                    Label(page.title, systemImage: page.systemImage).tag(page)
+                }
+            }
+            Section("App") {
+                ForEach(SettingsPage.app) { page in
+                    Label(page.title, systemImage: page.systemImage).tag(page)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(180)
+    }
+
+    /// One page: the page's sections in a grouped form, titled by the
+    /// navigation bar. A banner-per-page cut with a serif title was rejected on
+    /// sight (2026-09-10) — this window stays undecorated.
+    private func detail(for page: SettingsPage) -> some View {
+        Form {
+            pageSections(page)
+        }
+        .formStyle(.grouped)
+        .kleothSoftScrollEdge()
+        .navigationTitle(page.title)
+        .id(page)
+        .navigationSplitViewColumnWidth(min: 540, ideal: 600)
+    }
+
+    @ViewBuilder
+    private func pageSections(_ page: SettingsPage) -> some View {
+        switch page {
+        case .meetings:
+            localModelSection
+            summarizationSection
+            calendarSection
+            historySection("Open Meetings", target: .meetings)
+        case .dictation:
+            SettingsDictationSection(
+                dictationModel: $dictationModel,
+                dictionaryText: $dictionaryText,
+                availableModels: availableModels
+            )
+            historySection("Open Dictations", target: .dictations)
+        case .screenRecording:
+            SettingsScreenRecordingSection()
+            screenRecordingActionsSection
+        case .microphone:
+            microphoneSection
+        case .accounts:
+            credentialsSection
+            usageSection
+        case .general:
+            outputSection
+            shortcutsSection
+            onboardingSection
+        }
+    }
+
+    /// The way from a feature's settings to its records: one ordinary row.
+    private func historySection(_ buttonTitle: String, target: HistoryTarget) -> some View {
+        Section {
+            LabeledContent("History") {
+                Button(buttonTitle) { openHistory(target) }
+            }
+        }
+    }
+
+    private var screenRecordingActionsSection: some View {
+        Section {
+            LabeledContent("Record") {
+                Button("Record Screen…") { screenRecording.start(from: .popover) }
+            }
+            LabeledContent("History") {
+                Button("Open Recordings") { openHistory(.recordings) }
+            }
+        }
+    }
+
+    private enum HistoryTarget { case meetings, dictations, recordings }
+
+    /// Opens the History window on a scope (the popover's idiom: bump the
+    /// scope's request counter, which `HistoryView` observes, then open).
+    private func openHistory(_ target: HistoryTarget) {
+        switch target {
+        case .meetings: controller.meetingsHistoryRequest += 1
+        case .dictations: dictation.requestDictationHistory()
+        case .recordings: screenRecording.recordingsHistoryRequest += 1
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        openWindow(id: "kleoth-history")
+    }
+
     // MARK: - Sections
 
     private var credentialsSection: some View {
@@ -156,8 +246,18 @@ struct SettingsView: View {
                 .onSubmit { controller.updateElevenLabsKey(elevenLabsKey) }
             SecureField("OpenRouter API key (optional)", text: $openRouterKey)
                 .onSubmit { controller.updateOpenRouterKey(openRouterKey) }
+            LabeledContent("Get a key") {
+                HStack(spacing: KleothMetrics.spacingM) {
+                    if let url = URL(string: "https://elevenlabs.io/app/settings/api-keys") {
+                        Link("ElevenLabs", destination: url)
+                    }
+                    if let url = URL(string: "https://openrouter.ai/settings/keys") {
+                        Link("OpenRouter", destination: url)
+                    }
+                }
+            }
         } header: {
-            KleothSectionHeader("Credentials", systemImage: "key.fill")
+            Text("Credentials")
         } footer: {
             captionFooter("Stored in your macOS Keychain and never logged. ElevenLabs powers cloud transcription; OpenRouter powers summaries.")
         }
@@ -172,7 +272,7 @@ struct SettingsView: View {
                 Button("Choose…") { chooseFolder() }
             }
         } header: {
-            KleothSectionHeader("Output", systemImage: "folder.fill")
+            Text("Output")
         } footer: {
             captionFooter(outputFooterText)
         }
@@ -232,7 +332,7 @@ struct SettingsView: View {
                     controller.updateAutoTranscribe(newValue)
                 }
         } header: {
-            KleothSectionHeader("On-device transcription", systemImage: "cpu")
+            Text("On-device transcription")
         } footer: {
             captionFooter("Kleoth transcribes locally on the Apple Neural Engine — free, private, offline, and multilingual. The model downloads once (~626 MB) and is cached on this Mac. Leave Language on Auto-detect, or pin one if detection ever guesses wrong. With automatic transcription off, finished recordings wait in the list as Untranscribed until you choose an engine.")
         }
@@ -270,7 +370,7 @@ struct SettingsView: View {
             }
         } header: {
             HStack(spacing: KleothMetrics.spacingS) {
-                KleothSectionHeader("Summarization", systemImage: "sparkles")
+                Text("Summarization")
                 if isRefreshingModels {
                     ProgressView()
                         .controlSize(.small)
@@ -325,7 +425,7 @@ struct SettingsView: View {
             }
         } header: {
             HStack(spacing: KleothMetrics.spacingS) {
-                KleothSectionHeader("Usage", systemImage: "chart.bar")
+                Text("Usage")
                 if isLoadingUsage {
                     ProgressView()
                         .controlSize(.small)
@@ -485,7 +585,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            KleothSectionHeader("Microphone", systemImage: "mic.fill")
+            Text("Microphone")
         } footer: {
             captionFooter("Used for meetings, dictation and screen recordings. Automatic follows the system input; a microphone that is not connected falls back to it.")
         }
@@ -495,7 +595,7 @@ struct SettingsView: View {
         Section {
             KeyboardShortcuts.Recorder("Start / stop recording:", name: .toggleRecording)
         } header: {
-            KleothSectionHeader("Shortcuts", systemImage: "command")
+            Text("Shortcuts")
         } footer: {
             captionFooter("Also available as Shortcuts / Spotlight actions and via kleoth:// URLs.")
         }
@@ -517,13 +617,13 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            KleothSectionHeader("Calendar", systemImage: "calendar")
+            Text("Calendar")
         } footer: {
             captionFooter("When enabled, a recording started during a calendar event takes that event's title.")
         }
     }
 
-    /// Re-runs the first-run welcome flow on demand (name, permissions, model,
+    /// Replays the first-run setup (welcome, name, permissions, model + language,
     /// and the start-recording finish). Opening it does not reset any state — it's
     /// purely a way back into the guided setup.
     private var onboardingSection: some View {
@@ -533,7 +633,7 @@ struct SettingsView: View {
                 openWindow(id: "kleoth-onboarding")
             }
         } header: {
-            KleothSectionHeader("Onboarding", systemImage: "sparkles.rectangle.stack")
+            Text("Onboarding")
         } footer: {
             captionFooter("Replay the first-run setup.")
         }

@@ -77,7 +77,7 @@ struct SettingsDictationSection: View {
                 resetPillPosition()
             }
         } header: {
-            KleothSectionHeader("Dictation", systemImage: "mic.and.signal.meter")
+            Text("Dictation")
         } footer: {
             captionFooter("Hold fn+shift anywhere and speak; release and Kleoth pastes polished text into the app you're in. Double-tap to keep it listening hands-free. Audio is uploaded to ElevenLabs to transcribe and the text to OpenRouter to clean up — the audio is deleted right after, and only the text is kept in ~/Kleoth/dictations.")
         }

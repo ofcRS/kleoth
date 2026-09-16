@@ -280,6 +280,13 @@ final class DictationController: ObservableObject {
     // MARK: - Settings surface
 
     /// Keychain + (un)install; prompts for Accessibility when turning on untrusted.
+    /// Asks for the History window on the Dictations scope. `KleothMenuBarLabel`
+    /// opens the window and `HistoryView` flips its scope — both observe the
+    /// counter; this is the one place it is bumped (pill menu, Settings).
+    func requestDictationHistory() {
+        dictationsHistoryRequest += 1
+    }
+
     func setEnabled(_ on: Bool) {
         Keychain.set(on ? "true" : "false", Keychain.Account.dictationEnabled)
         isEnabled = on
@@ -1052,7 +1059,7 @@ final class DictationController: ObservableObject {
         case .pasteLastDictation:
             pasteLastDictation()
         case .openDictationHistory:
-            dictationsHistoryRequest += 1
+            requestDictationHistory()
         case .hideForAnHour:
             hidePill()
         }
