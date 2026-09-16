@@ -60,7 +60,7 @@ import Foundation
         #expect(try topLevelKeys(url) == [
             "id", "timestamp", "app_bundle_id", "app_name", "language",
             "raw_text", "polished_text", "used_raw_fallback", "fallback_reason",
-            "transcription_model", "polish_model", "duration_seconds",
+            "transcription_model", "polish_model", "polish_provider", "duration_seconds",
             "insert_method", "transcription_cost", "polish_cost", "polish_seconds",
         ])
     }

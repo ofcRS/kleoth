@@ -34,6 +34,8 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
     public var fallbackReason: String?
     public var transcriptionModel: String?
     public var polishModel: String?
+    /// The ``AIProvider`` raw value that ran the polish; nil = OpenRouter or no polish.
+    public var polishProvider: String?
     public var durationSeconds: Double?
     public var insertMethod: DictationInsertMethod
     public var transcriptionCost: Double?
@@ -54,6 +56,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         fallbackReason: String? = nil,
         transcriptionModel: String? = nil,
         polishModel: String? = nil,
+        polishProvider: String? = nil,
         durationSeconds: Double? = nil,
         insertMethod: DictationInsertMethod = .paste,
         transcriptionCost: Double? = nil,
@@ -71,6 +74,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         self.fallbackReason = fallbackReason
         self.transcriptionModel = transcriptionModel
         self.polishModel = polishModel
+        self.polishProvider = polishProvider
         self.durationSeconds = durationSeconds
         self.insertMethod = insertMethod
         self.transcriptionCost = transcriptionCost
@@ -85,7 +89,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, appBundleId, appName, language
         case rawText, polishedText, usedRawFallback, fallbackReason
-        case transcriptionModel, polishModel, durationSeconds
+        case transcriptionModel, polishModel, polishProvider, durationSeconds
         case insertMethod, transcriptionCost, polishCost, polishSeconds
     }
 
@@ -110,6 +114,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         fallbackReason = try container.decodeIfPresent(String.self, forKey: .fallbackReason)
         transcriptionModel = try container.decodeIfPresent(String.self, forKey: .transcriptionModel)
         polishModel = try container.decodeIfPresent(String.self, forKey: .polishModel)
+        polishProvider = try container.decodeIfPresent(String.self, forKey: .polishProvider)
         durationSeconds = try container.decodeIfPresent(Double.self, forKey: .durationSeconds)
         let method = try container.decodeIfPresent(String.self, forKey: .insertMethod)
         insertMethod = method.flatMap(DictationInsertMethod.init(rawValue:)) ?? .paste
@@ -135,6 +140,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         try container.encode(fallbackReason, forKey: .fallbackReason)
         try container.encode(transcriptionModel, forKey: .transcriptionModel)
         try container.encode(polishModel, forKey: .polishModel)
+        try container.encode(polishProvider, forKey: .polishProvider)
         try container.encode(durationSeconds, forKey: .durationSeconds)
         try container.encode(insertMethod, forKey: .insertMethod)
         try container.encode(transcriptionCost, forKey: .transcriptionCost)

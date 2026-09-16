@@ -19,6 +19,10 @@ public struct MeetingMetadata: Codable, Sendable {
     /// legacy meetings — treat as local/unknown. Acronym-free, so it round-trips
     /// under MeetingStore's snake_case strategies as `transcript_tier`.
     public var transcriptTier: String?
+    /// Which ``AIProvider`` produced `summary.json` (its raw value, e.g.
+    /// `"claude-code"`). `nil` for meetings summarized before providers
+    /// existed — those were OpenRouter. Acronym-free → `summary_provider`.
+    public var summaryProvider: String?
 
     public init(
         title: String,
@@ -29,7 +33,8 @@ public struct MeetingMetadata: Codable, Sendable {
         model: String? = nil,
         languageCode: String? = nil,
         cost: CostBreakdown? = nil,
-        transcriptTier: String? = nil
+        transcriptTier: String? = nil,
+        summaryProvider: String? = nil
     ) {
         self.title = title
         self.date = date
@@ -40,6 +45,7 @@ public struct MeetingMetadata: Codable, Sendable {
         self.languageCode = languageCode
         self.cost = cost
         self.transcriptTier = transcriptTier
+        self.summaryProvider = summaryProvider
     }
 
     /// Whether `title` is an auto-generated placeholder rather than a meaningful,
