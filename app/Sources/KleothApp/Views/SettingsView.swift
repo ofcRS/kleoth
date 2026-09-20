@@ -123,11 +123,17 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        // A flat two-column layout — deliberately NOT a `NavigationSplitView`.
+        // On macOS 26 a split view inside the Settings scene renders its sidebar
+        // as a floating glass card under an empty toolbar band with a sidebar
+        // toggle nobody needs (rejected on sight, 2026-09-20). System Settings
+        // itself is a plain vibrant list beside a grouped form; so is this.
+        HStack(spacing: 0) {
             sidebar
-        } detail: {
+            Divider()
             detail(for: page)
         }
+        .navigationTitle(page.title)
         .frame(width: 780, height: 560)
         .onAppear {
             loadFromController()
@@ -168,7 +174,11 @@ struct SettingsView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(180)
+        .scrollContentBackground(.hidden)
+        .frame(width: 200)
+        // The source-list vibrancy a split view's sidebar column would have
+        // supplied; without it the list sits on the flat window grey.
+        .background(SidebarMaterial().ignoresSafeArea())
     }
 
     /// One page: the page's sections in a grouped form, titled by the
@@ -180,9 +190,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .kleothSoftScrollEdge()
-        .navigationTitle(page.title)
         .id(page)
-        .navigationSplitViewColumnWidth(min: 540, ideal: 600)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Switching provider (or Automatic landing somewhere else) changes what
         // the model controls below are editing — re-seed them from the stored
         // settings so they never show the previous provider's slug.
@@ -885,4 +894,19 @@ struct SettingsView: View {
             controller.updateOutputDir(url.path)
         }
     }
+}
+
+/// The sidebar's vibrant source-list backdrop (`NSVisualEffectView` with the
+/// `.sidebar` material, behind-window blending) — what AppKit draws under a
+/// split view's sidebar column, wrapped so a plain `HStack` gets the same look.
+private struct SidebarMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

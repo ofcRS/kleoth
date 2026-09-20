@@ -153,12 +153,14 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - The repo is public — anything on `main` is world-readable.
 
 ## State (update in place, keep to a few lines)
-- Uncommitted: none on this branch. `feat/ai-providers` (five backends, T1–T13 implementation + this
-  T14 docs pass, all committed) awaits the
-  user's visual check of Settings → Accounts and the human checklist: provider rows on this Mac, a
-  meeting via Automatic (`summary_provider` in `meta.json`), a dictation via Automatic and via Apple
-  on-device (`polish_provider` in the day file), signing out of Claude Code, a local Ollama server,
-  and `kleoth summarize <dir> --provider codex`.
-- Not human-verified yet: all of the above, plus pill menu actions end to end, screen-recording
-  manual checklist items 1–8 (design doc §8), recordings viewer checklist (design doc §7).
-- Open threads: `.scratch/video-recording-thread/`. `docs/CODE-REVIEW.md` stays local/uncommitted by request.
+- Uncommitted: none. v0.4.0 released 2026-09-20 (AI providers, six-page Settings, pill dock,
+  Microphone setting). Settings is a flat `HStack` sidebar + form, not a `NavigationSplitView`
+  (macOS 26 renders that as a floating glass card with a toolbar band — rejected on sight).
+- Not human-verified yet: the providers checklist (provider rows on this Mac, a meeting via
+  Automatic → `summary_provider` in `meta.json`, a dictation via Automatic and via Apple on-device →
+  `polish_provider` in the day file, signing out of Claude Code, a local Ollama server,
+  `kleoth summarize <dir> --provider codex`); pill menu actions end to end; screen-recording manual
+  checklist items 1–8 (design doc §8); recordings viewer checklist (design doc §7).
+- Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
+  stays local/uncommitted by request; its top two bugs (truncated summaries, onboarding Skip dead-end)
+  are the next coding candidates.

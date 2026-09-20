@@ -1,7 +1,7 @@
 ---
 title: video-recording-thread
-kind: thread
-summary: 'Loom-style screen recording (screen or region + mic + system audio, small H.264/AAC files) started/stopped from the dictation pill; workflow running 2026-09-06.'
+kind: done
+summary: 'Screen recording + recordings viewer SHIPPED as v0.3.0 (2026-09-07). Open depth checks only: quit/kill -9 mid-recording, fMP4 playback in Slack/Telegram, "02:14" vs "2:14", .scratch gitignore.'
 ---
 
 # video-recording-thread — video recording for Kleoth · handoff state

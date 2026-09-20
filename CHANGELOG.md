@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-20
+
 ### Added
 
 - **Bring your own AI.** Summaries and dictation cleanup can now run on the Claude Code or
@@ -17,7 +19,9 @@ All notable changes to Kleoth are documented here. The format is based on
   Microphone, Accounts, General — each a plain grouped form under its own title, the way System
   Settings does it: no banners, no illustrations, system type throughout. Every setting is where
   it was, grouped by what it is for; each feature page ends in a row that opens its history, and
-  the Accounts page links to the providers' key pages. The window remembers the last page.
+  the Accounts page links to the providers' key pages. The window remembers the last page. The
+  sidebar is a flat vibrant list beside the form, not the floating glass card with an empty
+  toolbar band that macOS 26 gives a split view.
 - **Pill peek dock.** Hovering the resting pill now pulls out a dock of three captioned fields —
   Dictate, Record, More — in Liquid Glass on macOS 26 (a dark ink look elsewhere), with a quiet
   hover lift and a hand cursor. Dictate starts a hands-free dictation from a click (click the
