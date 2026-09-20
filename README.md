@@ -69,8 +69,8 @@ and keeps the transcript and summary as files in `~/Kleoth`.
 
 ## Install
 
-**[⬇ Download Kleoth-0.3.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.3.0/Kleoth-0.3.0.dmg)**
-(12.2 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.3.0/Kleoth-0.3.0.dmg.sha256))
+**[⬇ Download Kleoth-0.4.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.4.0/Kleoth-0.4.0.dmg)**
+(13.7 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.4.0/Kleoth-0.4.0.dmg.sha256))
 — or browse all [Releases](../../releases).
 
 Open the DMG and drag **Kleoth.app** onto the **Applications** folder. Kleoth lives in the menu bar
