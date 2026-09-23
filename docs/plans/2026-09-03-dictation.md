@@ -1532,6 +1532,8 @@ Both new keys are readable from `~/.config/kleoth/config.json` too (`Settings.lo
 ]
 ```
 
+Since 2026-09-23 a row also carries `audio_file_name`, `transcription_error` and `transcription_seconds`, and a pending row (transcription failed or stopped; audio kept) has empty texts and `insert_method: "none"` — `2026-09-23-dictation-retry.md` §4.1.
+
 Required on decode: `id`, `timestamp`, `raw_text`, `polished_text`; everything else optional/defaulted. `insert_method` absent **or unknown** (e.g. a value written by a newer build) → `paste` — the lenient `init(from:)` decodes it as a `String` and maps through `DictationInsertMethod(rawValue:) ?? .paste`, because a plain `Codable` enum throws on an unknown string and would make the entire day file undecodable. `language` is always Scribe's `language_code` (ISO-639-3); the polisher's BCP-47 `language` is never written. Oldest-first within the day. The folder never appears as a meeting: `loadRecentMeetings` skips directories without audio.
 
 ### 6.4 `~/.config/kleoth/dictionary.json`
@@ -1544,11 +1546,15 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 
 ### 6.5 Temp files
 
-`$TMPDIR/kleoth-dictation/dictation-<uuid>.m4a` (raw) and `prep-<uuid>.m4a` (mono, normalized). Deleted on every pipeline exit; `sweepStaleClips(olderThan: 3600)` at launch for crash recovery. Dictation audio is never kept (scope). A quit mid-pipeline cannot wait for `run()`'s `defer` (`pipelineTask.cancel()` needs a main-actor hop the process never runs), so the controller tracks both paths in `inFlightClips` — the prep destination is named by `DictationCapture.preparedURL(for:)` and passed into `prepareForUpload(_:outputURL:)` before the detached prep starts — and `shutdown()` deletes them synchronously.
+`$TMPDIR/kleoth-dictation/dictation-<uuid>.m4a` (raw) and `prep-<uuid>.m4a` (mono, normalized). Deleted on every pipeline exit; `sweepStaleClips(olderThan: 3600)` at launch for crash recovery. Dictation audio is never kept (scope). **Superseded 2026-09-23:** a run that fails or is stopped before its transcript arrives moves its clip to `<output>/dictations/audio/<id>.m4a` and logs a pending row, until a retry transcribes it (`2026-09-23-dictation-retry.md` §3.2). A quit mid-pipeline cannot wait for `run()`'s `defer` (`pipelineTask.cancel()` needs a main-actor hop the process never runs), so the controller tracks both paths in `inFlightClips` — the prep destination is named by `DictationCapture.preparedURL(for:)` and passed into `prepareForUpload(_:outputURL:)` before the detached prep starts — and `shutdown()` deletes them synchronously.
 
 ---
 
 ## 7. Error handling matrix
+
+> **2026-09-23:** the Scribe HTTP-error, timeout, preparation-failure and Esc-while-transcribing
+> rows below are superseded by `2026-09-23-dictation-retry.md` §5 (a budget that grows with the
+> clip, one retry, and kept audio instead of a lost dictation).
 
 | Cause | Detected where | User-visible behavior | Log row |
 |---|---|---|---|

@@ -6,6 +6,29 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **A dictation is never lost to a failed transcription.** When Scribe can't transcribe a
+  dictation — it timed out twice, the network dropped, the key was rejected — the audio is kept
+  and the pill says so: "Timed out — saved to History", with a **Retry** button that sends the
+  same audio again and pastes the text into the app in front. Pressing Esc while a dictation
+  transcribes stops waiting without throwing it away either ("Stopped — saved to History").
+- **Untranscribed dictations in History.** They show as "Not transcribed" with an "Audio saved"
+  chip and the reason. The detail pane offers **Try again in cloud** and **Try again on device**
+  (the free on-device engine, when Scribe keeps failing) and copies the text to the clipboard when
+  it's ready; **Show Audio in Finder** reaches the clip. Deleting the row moves its audio to the
+  Trash. Once a dictation is transcribed its audio is deleted — dictations that paste keep none.
+
+### Fixed
+
+- **Long dictations timing out.** Scribe got a flat 25 s whatever the length of the clip, and
+  dictations of a minute or more ran out of time when the service was slow. The budget now grows
+  with the clip (25 s plus half its length, up to 2 minutes), and a timeout or network error gets
+  one automatic retry a second later. Each dictation records how long its transcription took.
+- **"Dictation history…" opening on Meetings.** History opened from the pill menu, Settings or
+  the popover's recording row now lands on the tab it was asked for, not only when the window was
+  already open.
+
 ## [0.4.0] — 2026-09-20
 
 ### Added
