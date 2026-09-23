@@ -62,6 +62,7 @@ import Foundation
             "raw_text", "polished_text", "used_raw_fallback", "fallback_reason",
             "transcription_model", "polish_model", "polish_provider", "duration_seconds",
             "insert_method", "transcription_cost", "polish_cost", "polish_seconds",
+            "audio_file_name", "transcription_error", "transcription_seconds",
         ])
     }
 
@@ -235,6 +236,134 @@ import Foundation
         #expect(removed == 1)
         #expect(!FileManager.default.fileExists(atPath: url.path))
         #expect(store.availableDays().isEmpty)
+    }
+
+    // MARK: - Pending rows (dictation-retry design §3.2, §4.1)
+
+    private func makePending(id: String = "PENDING-1", reason: String = "Scribe didn't answer within 46 s. Tried twice.") -> DictationLogEntry {
+        DictationLogEntry.pending(
+            id: id,
+            timestamp: "2026-09-22T11:42:51Z",
+            appBundleId: "com.mitchellh.ghostty",
+            appName: "Ghostty",
+            durationSeconds: 41.2,
+            audioFileName: "\(id).m4a",
+            transcriptionError: reason
+        )
+    }
+
+    @Test func pendingRowHasNoTextAndPointsAtItsAudio() {
+        let entry = makePending()
+        #expect(entry.isPending)
+        #expect(entry.rawText.isEmpty)
+        #expect(entry.polishedText.isEmpty)
+        #expect(entry.insertMethod == .notInserted)
+        #expect(entry.audioFileName == "PENDING-1.m4a")
+        #expect(entry.transcriptionError == "Scribe didn't answer within 46 s. Tried twice.")
+        #expect(entry.durationSeconds == 41.2)
+        #expect(entry.appName == "Ghostty")
+        #expect(!makeEntry().isPending)
+    }
+
+    @Test func pendingRowRoundTripsWithInsertMethodNone() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        let url = try await store.append(makePending(), on: Date())
+
+        #expect(try #require(store.loadAll().first) == makePending())
+        let data = try Data(contentsOf: url)
+        let array = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        #expect(array.first?["insert_method"] as? String == "none")
+        #expect(array.first?["audio_file_name"] as? String == "PENDING-1.m4a")
+    }
+
+    @Test func transcriptionSecondsRoundTrips() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        var entry = makeEntry(id: "TIMED")
+        entry.transcriptionSeconds = 7.25
+        try await store.append(entry, on: Date())
+        #expect(store.loadAll().first?.transcriptionSeconds == 7.25)
+    }
+
+    @Test func entryByIdFindsARowOnAnyDay() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        let older = Date(timeIntervalSince1970: 1_772_812_449)
+        try await store.append(makeEntry(id: "old"), on: older)
+        try await store.append(makeEntry(id: "new"), on: older.addingTimeInterval(86_400 * 2))
+
+        #expect(store.entry(id: "old")?.id == "old")
+        #expect(store.entry(id: "new")?.id == "new")
+        #expect(store.entry(id: "missing") == nil)
+    }
+
+    @Test func replaceRewritesTheRowInPlaceInItsOwnDayFile() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        let older = Date(timeIntervalSince1970: 1_772_812_449)
+        let newer = older.addingTimeInterval(86_400 * 2)
+        try await store.append(makeEntry(id: "a"), on: older)
+        try await store.append(makePending(id: "b"), on: older)
+        try await store.append(makeEntry(id: "c"), on: older)
+        try await store.append(makeEntry(id: "d"), on: newer)
+        let newerDay = String(DictationLogStore.dayFileName(for: newer).dropLast(".json".count))
+        let newerBefore = try Data(contentsOf: store.dayFileURL(named: newerDay))
+
+        var resolved = makePending(id: "b")
+        resolved.rawText = "heard"
+        resolved.polishedText = "Heard."
+        resolved.audioFileName = nil
+        resolved.transcriptionError = nil
+        resolved.insertMethod = .paste
+        #expect(try await store.replace(resolved) == true)
+
+        let olderDay = String(DictationLogStore.dayFileName(for: older).dropLast(".json".count))
+        let rows = store.loadDay(named: olderDay)
+        #expect(rows.map(\.id) == ["a", "b", "c"])
+        #expect(rows[1] == resolved)
+        #expect(!rows[1].isPending)
+        #expect(try Data(contentsOf: store.dayFileURL(named: newerDay)) == newerBefore)
+    }
+
+    @Test func replaceOfAnUnknownIdChangesNothing() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        try await store.append(makeEntry(id: "only"), on: Date())
+        #expect(try await store.replace(makeEntry(id: "stranger")) == false)
+        #expect(store.loadAll().map(\.id) == ["only"])
+    }
+
+    /// The launch sweep's reference check (dictation-retry design §3.5): a
+    /// kept clip counts as referenced when ANY json file here names it — so a
+    /// day file that no longer decodes, or a quarantined copy, still protects
+    /// its clips instead of reading as "no rows".
+    @Test func mentionedNamesIncludeFilesThatNoLongerDecode() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        try await store.append(makePending(id: "c"), on: Date())
+        try Data(#"[{"id": "a", "audio_file_name": "a.m4a", }"#.utf8)
+            .write(to: store.dayFileURL(named: "2026-09-22"))                  // trailing comma: broken
+        try Data(#"[{"id": "b", "audio_file_name": "b.m4a"}]"#.utf8)
+            .write(to: store.baseDir.appendingPathComponent("2026-09-21.corrupt-QUARANTINED.json"))
+
+        let mentioned = store.audioFileNamesMentioned(among: ["a.m4a", "b.m4a", "c.m4a", "d.m4a"])
+        #expect(mentioned == ["a.m4a", "b.m4a", "c.m4a"])
+    }
+
+    @Test func mentionedNamesFailClosedWhenAFileCannotBeRead() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        let url = try await store.append(makePending(id: "locked"), on: Date())
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+
+        #expect(store.audioFileNamesMentioned(among: ["locked.m4a", "other.m4a"]) == nil)
+    }
+
+    @Test func mentionedNamesOfAMissingFolderIsEmpty() throws {
+        let store = DictationLogStore(outputDir: try makeTempDir().appendingPathComponent("absent", isDirectory: true))
+        #expect(store.audioFileNamesMentioned(among: ["a.m4a"]) == [])
     }
 
     // MARK: - Naming

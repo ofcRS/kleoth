@@ -1562,7 +1562,7 @@ extension DictationPillState {
         case .polishing: return "sparkles"
         case .done: return "checkmark.circle.fill"
         case .warning: return "exclamationmark.triangle.fill"
-        case .failed: return "xmark.octagon.fill"
+        case .failed(let fault): return fault.symbolName
         case .recording: return "record.circle.fill"
         case .saving: return "waveform"
         case .saved: return "checkmark.circle.fill"

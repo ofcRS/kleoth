@@ -71,7 +71,32 @@ public enum DictationDefaults {
     public static let doubleTapWindow: TimeInterval = 0.40
     /// Clips shorter than this never reach Scribe (no spend, no log row).
     public static let minimumUtterance: TimeInterval = 0.5
-    public static let scribeTimeout: TimeInterval = 25
+    /// The Scribe budget is per ATTEMPT and grows with the clip: Scribe holds
+    /// the connection silent while it transcribes, and that takes longer the
+    /// longer the audio. A flat 25 s lost long dictations even on a healthy
+    /// day (three timeouts on 2026-09-22, on clips of roughly 40–80 s). See
+    /// `scribeBudget(forAudioSeconds:)` and `DictationTranscription`.
+    public static let scribeBaseBudget: TimeInterval = 25
+    public static let scribeBudgetPerAudioSecond: Double = 0.5
+    public static let scribeMaxBudget: TimeInterval = 120
+    /// A transient first failure (timeout, network, 408/429/5xx) gets exactly
+    /// one more try; anything else fails at once.
+    public static let scribeAttempts = 2
+    public static let scribeRetryDelay: TimeInterval = 1
+    /// `<output>/dictations/audio/` — a dictation's audio lives here only while
+    /// it waits to be transcribed (a failed or stopped run), never after.
+    public static let keptAudioDirectoryName = "audio"
+    /// Kept audio no row points at is moved to the Trash at launch once it is
+    /// this old — never sooner, so a keep in flight is never raced.
+    public static let orphanedAudioMaxAge: TimeInterval = 24 * 3600
+
+    /// Wall-clock budget for one Scribe attempt on a clip `seconds` long:
+    /// 25 s of fixed overhead plus half the clip, capped at 120 s
+    /// (10 s → 30 s, 78 s → 64 s, 190 s and longer → 120 s).
+    public static func scribeBudget(forAudioSeconds seconds: Double) -> TimeInterval {
+        min(scribeMaxBudget, scribeBaseBudget + scribeBudgetPerAudioSecond * max(0, seconds))
+    }
+
     /// Ceiling on the polish call — a safety net for a hung connection, NOT the expected wait.
     /// Was 8 s; that cut off a fifth of all polishes on an install stuck on the former default
     /// (see `retiredPolishModels`), and the user asked that a long dictation never lose its

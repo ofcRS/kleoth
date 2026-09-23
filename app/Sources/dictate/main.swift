@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import KleothCapture
 import KleothCore
@@ -13,6 +14,7 @@ import KleothOnDevice
 /// unless `--model` overrides it. Key values are never printed.
 ///
 ///     dictate [seconds] [--transcriber scribe] [--model <slug>] [--provider <id>] [--no-polish] [--device <uid>]
+///     dictate --file <audio> [--fail-first N] [--keep-on-failure] [--no-polish] …    // a clip on disk instead of the mic
 ///     dictate --text "<raw transcript>" [--language rus] [--runs N] [--model <slug>] [--provider <id>]   // polish-only benchmark
 ///     dictate --list-devices                                                          // input device UIDs for --device
 ///
@@ -83,15 +85,52 @@ struct DictateMain {
         guard let elevenLabsKey = credentials.elevenLabsKey, !elevenLabsKey.isEmpty else {
             fail("no ElevenLabs API key (set ELEVEN_API_KEY, a .env, or ~/.config/kleoth/config.json)")
         }
-        let transcriber: any Transcriber
+        var transcriber: any Transcriber
         do {
             transcriber = try makeTranscriber(named: arguments.transcriber, elevenLabsKey: elevenLabsKey)
         } catch {
             fail("\(error)")
         }
+        if arguments.failFirst > 0 {
+            transcriber = FlakyTranscriber(wrapping: transcriber, failures: arguments.failFirst)
+            print("injecting \(arguments.failFirst) transient failure(s) before the real engine answers")
+        }
 
-        // 1. Capture. `--device` is the app-wide microphone pick
-        // (`Settings.inputDeviceId`), applied the way every capture does.
+        // 1. Capture — or `--file`: a copy of a clip on disk stands in for the
+        // mic (the copy, never the original, is what the cleanup deletes).
+        let clip: DictationCaptureResult
+        if let file = arguments.file {
+            clip = clipFromFile(file)
+        } else {
+            clip = await record(arguments)
+        }
+        await transcribeAndPolish(clip: clip, transcriber: transcriber, arguments: arguments,
+                                  settings: settings, credentials: credentials)
+    }
+
+    /// `--file`: copies the clip into the dictation temp folder, as if the
+    /// mic had just written it.
+    static func clipFromFile(_ path: String) -> DictationCaptureResult {
+        let source = URL(fileURLWithPath: path)
+        guard let seconds = AudioProbe.durationSeconds(of: source) else {
+            fail("can't read audio from \(path)")
+        }
+        let directory = DictationCapture.tempDirectory()
+        let copy = directory.appendingPathComponent("dictation-\(UUID().uuidString).\(source.pathExtension.isEmpty ? "m4a" : source.pathExtension)")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: source, to: copy)
+        } catch {
+            fail("can't copy \(path): \(error.localizedDescription)")
+        }
+        print("clip \(source.lastPathComponent): \(format(seconds)) s")
+        return DictationCaptureResult(fileURL: copy, durationSeconds: seconds, sampleRate: 0)
+    }
+
+    /// Records `arguments.seconds` from the mic. `--device` is the app-wide
+    /// microphone pick (`Settings.inputDeviceId`), applied the way every
+    /// capture does.
+    static func record(_ arguments: Arguments) async -> DictationCaptureResult {
         let capture = DictationCapture()
         capture.inputDeviceId = arguments.device
         let rawURL: URL
@@ -126,6 +165,18 @@ struct DictateMain {
             fail("capture failed: \(error.localizedDescription)")
         }
         print("captured \(format(clip.durationSeconds)) s @ \(Int(clip.sampleRate)) Hz, peak meter level \(String(format: "%.2f", peakLevel))")
+        return clip
+    }
+
+    /// Steps 2–4 of the app's pipeline on one clip: prepare, transcribe under
+    /// the app's Scribe policy (`DictationTranscription`), polish.
+    static func transcribeAndPolish(
+        clip: DictationCaptureResult,
+        transcriber: any Transcriber,
+        arguments: Arguments,
+        settings: Settings,
+        credentials: Credentials
+    ) async {
 
         // 2. Prepare (mono downmix + loudness/peak normalize, 64 kbps).
         var prepared: URL?
@@ -146,21 +197,42 @@ struct DictateMain {
         let uploadBytes = (try? FileManager.default.attributesOfItem(atPath: uploadURL.path)[.size] as? Int) ?? 0
         print("prepared \(uploadURL.lastPathComponent) (\(uploadBytes / 1024) KB)")
 
-        // 3. Transcribe through the seam.
+        // 3. Transcribe through the seam, under the app's Scribe policy.
         let terms = Keyterms.sanitize(PersonalDictionaryStore().load())
-        print("transcribing via \(arguments.transcriber) (\(DictationDefaults.transcriptionModel), no_verbatim, \(terms.count) keyterms)…")
-        let started = Date()
+        let policy = DictationTranscription.Policy.scribe(audioSeconds: clip.durationSeconds)
+        print("transcribing via \(arguments.transcriber) (\(DictationDefaults.transcriptionModel), no_verbatim, \(terms.count) keyterms), budget \(format(policy.budget ?? 0)) s × \(policy.attempts) attempts…")
         let response: ScribeResponse
+        let sttSeconds: Double
         do {
-            response = try await withTimeout(seconds: DictationDefaults.scribeTimeout) {
-                try await transcriber.transcribe(fileURL: uploadURL, options: .dictation(keyterms: terms))
+            let result = try await DictationTranscription.run(
+                transcriber,
+                fileURL: uploadURL,
+                options: .dictation(keyterms: terms),
+                policy: policy,
+                onAttemptFailed: { attempt, error, seconds in
+                    print("attempt \(attempt) : failed after \(format(seconds)) s — \(error)")
+                }
+            )
+            response = result.response
+            sttSeconds = result.seconds
+            print("attempts  : \(result.attempts)")
+        } catch let failure as DictationTranscription.Failure {
+            let summary = DictationTranscription.summary(of: failure, attempts: failure.attempts)
+            print("pill      : \(summary.cause) — saved to History")
+            print("history   : \(summary.detail)")
+            if arguments.keepOnFailure {
+                await keepAsPending(uploadURL, durationSeconds: clip.durationSeconds, reason: summary.detail,
+                                    bundleId: arguments.bundleId, settings: settings)
             }
-        } catch let scribe as ScribeError {
-            fail("transcription failed: \(scribe.description)")
+            // `fail` exits without running the `defer` above.
+            DictationCapture.discard(clip.fileURL)
+            DictationCapture.discard(uploadURL)
+            fail("transcription failed: \(failure)")
         } catch {
-            fail("transcription failed: \(error.localizedDescription)")
+            DictationCapture.discard(clip.fileURL)
+            DictationCapture.discard(uploadURL)
+            fail("transcription cancelled: \(error)")
         }
-        let sttSeconds = Date().timeIntervalSince(started)
         let rawText = (response.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let surcharge = terms.isEmpty ? 1 : DictationDefaults.keytermSurchargeMultiplier
         let transcriptionCost = transcriber.usdPerHour * clip.durationSeconds / 3600 * surcharge
@@ -235,6 +307,37 @@ struct DictateMain {
         }
     }
 
+    /// `--keep-on-failure`: what the app does with a clip Scribe could not
+    /// transcribe — move it into `<output>/dictations/audio/` and log a pending
+    /// row in the REAL history (`Settings.outputDir`), so History → Dictations
+    /// has a "Not transcribed" row to try again. Dev tool only: this process
+    /// writes the day file outside the app's store actor, so a dictation the
+    /// app logs at the same instant could lose one of the two rows.
+    static func keepAsPending(
+        _ audio: URL, durationSeconds: Double, reason: String, bundleId: String?, settings: Settings
+    ) async {
+        let store = DictationLogStore(outputDir: settings.outputDir)
+        let kept = DictationAudioStore(dictationsDirectory: store.baseDir)
+        let id = UUID().uuidString
+        do {
+            let name = try kept.keep(audio, id: id)
+            let appName = bundleId.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+                .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+            try await store.append(.pending(
+                id: id,
+                timestamp: DictationLogEntry.isoTimestamp(Date()),
+                appBundleId: bundleId,
+                appName: appName,
+                durationSeconds: durationSeconds,
+                audioFileName: name,
+                transcriptionError: reason
+            ))
+            print("kept      : \(kept.directory.path)/\(name) — pending row \(id)")
+        } catch {
+            print("kept      : FAILED — \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Engines
 
     /// The one place an engine is named. `scribe` today; `realtime` later.
@@ -273,6 +376,14 @@ struct DictateMain {
         var reasoning: OpenRouterReasoning.Effort?
         /// A CoreAudio device UID (see `--list-devices`); nil = the system input.
         var device: String?
+        /// `--file`: transcribe this clip instead of recording.
+        var file: String?
+        /// `--fail-first N`: the first N engine calls fail with a transient
+        /// network error, so the retry runs against the real API.
+        var failFirst = 0
+        /// `--keep-on-failure`: a final failure keeps the clip and logs a
+        /// pending row in the real dictation history, as the app does.
+        var keepOnFailure = false
     }
 
     static func parse(_ args: ArraySlice<String>) -> Arguments {
@@ -309,6 +420,14 @@ struct DictateMain {
             case "--device":
                 guard let value = iterator.next() else { usage() }
                 parsed.device = value
+            case "--file":
+                guard let value = iterator.next() else { usage() }
+                parsed.file = value
+            case "--fail-first":
+                guard let value = iterator.next(), let count = Int(value), count >= 0 else { usage() }
+                parsed.failFirst = count
+            case "--keep-on-failure":
+                parsed.keepOnFailure = true
             case "--list-devices":
                 let fallback = InputDevices.defaultInputName() ?? "none"
                 for device in InputDevices.list() {
@@ -328,7 +447,7 @@ struct DictateMain {
 
     static func usage() -> Never {
         FileHandle.standardError.write(Data(
-            "usage: dictate [seconds] [--transcriber scribe] [--model <slug>] [--provider <id>] [--app <bundle-id>] [--no-polish] [--device <uid>]\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--provider <id>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n       dictate --list-devices\n".utf8
+            "usage: dictate [seconds] [--transcriber scribe] [--model <slug>] [--provider <id>] [--app <bundle-id>] [--no-polish] [--device <uid>]\n       dictate --file <audio> [--fail-first N] [--keep-on-failure] [--app <bundle-id>] [--no-polish] …   (a clip on disk; N injected transient failures; keep it as a pending History row)\n       dictate --text <raw transcript> [--language rus] [--runs N] [--model <slug>] [--provider <id>] [--reasoning minimal|low|medium|high]   (polish-only benchmark)\n       dictate --list-devices\n".utf8
         ))
         exit(2)
     }
@@ -340,5 +459,40 @@ struct DictateMain {
 
     static func format(_ seconds: Double) -> String {
         String(format: "%.2f", seconds)
+    }
+}
+
+/// `--fail-first N`: the first N calls fail with a transient network error,
+/// then the wrapped engine answers — the app's retry path against the live
+/// API without waiting out a real timeout.
+final class FlakyTranscriber: Transcriber, @unchecked Sendable {
+    private let wrapped: any Transcriber
+    private let lock = NSLock()
+    private var remainingFailures: Int
+
+    init(wrapping wrapped: any Transcriber, failures: Int) {
+        self.wrapped = wrapped
+        self.remainingFailures = failures
+    }
+
+    var usdPerHour: Double { wrapped.usdPerHour }
+
+    func modelIdentifier(for options: ScribeOptions) -> String {
+        wrapped.modelIdentifier(for: options)
+    }
+
+    func transcribe(fileURL: URL, options: ScribeOptions) async throws -> ScribeResponse {
+        if takeFailure() {
+            throw URLError(.networkConnectionLost)
+        }
+        return try await wrapped.transcribe(fileURL: fileURL, options: options)
+    }
+
+    private func takeFailure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard remainingFailures > 0 else { return false }
+        remainingFailures -= 1
+        return true
     }
 }

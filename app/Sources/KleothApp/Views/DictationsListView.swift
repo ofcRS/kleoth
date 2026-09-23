@@ -49,7 +49,7 @@ struct DictationsListView: View {
             Button("Delete", role: .destructive) { confirmDeletion() }
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
         } message: {
-            Text("Dictations aren't moved to the Trash — this rewrites the day file and can't be undone.")
+            Text(deletionMessage)
         }
         .alert(
             "Couldn't delete",
@@ -71,7 +71,7 @@ struct DictationsListView: View {
             ForEach(groups, id: \.label) { group in
                 Section(group.label) {
                     ForEach(group.entries) { entry in
-                        DictationSidebarRow(entry: entry)
+                        DictationSidebarRow(entry: entry, isBusy: dictation.busyPendingIds.contains(entry.id))
                             .tag(entry.id)
                             .listRowInsets(EdgeInsets(
                                 top: KleothMetrics.spacingXS,
@@ -98,7 +98,7 @@ struct DictationsListView: View {
                 ContentUnavailableCompat(
                     title: "No dictations yet",
                     systemImage: "mic",
-                    message: "Hold \(DictationDefaults.hotkeyDescription) anywhere and speak. What you dictate lands here — text only, never audio."
+                    message: "Hold \(DictationDefaults.hotkeyDescription) anywhere and speak. What you dictate lands here as text. Audio is kept only when a transcription fails, until you try again."
                 )
             } else if filtered.isEmpty {
                 ContentUnavailableCompat(
@@ -115,8 +115,15 @@ struct DictationsListView: View {
     private func contextMenuItems(for ids: Set<DictationLogEntry.ID>) -> some View {
         if !ids.isEmpty {
             if ids.count == 1, let id = ids.first, let entry = entry(for: id) {
-                Button("Copy Polished") { copy(entry.displayText) }
-                Button("Copy Raw") { copy(entry.rawText) }
+                if entry.isPending {
+                    // No text yet — the kept audio is the one thing to reach.
+                    if let audio = dictation.keptAudioURL(for: entry) {
+                        Button("Show Audio in Finder") { NSWorkspace.shared.activateFileViewerSelecting([audio]) }
+                    }
+                } else {
+                    Button("Copy Polished") { copy(entry.displayText) }
+                    Button("Copy Raw") { copy(entry.rawText) }
+                }
             }
             Button("Show Day File in Finder") { revealDayFiles(for: ids) }
             Divider()
@@ -128,6 +135,7 @@ struct DictationsListView: View {
                     systemImage: "trash"
                 )
             }
+            .disabled(!ids.isDisjoint(with: dictation.busyPendingIds))
         }
     }
 
@@ -166,6 +174,7 @@ struct DictationsListView: View {
             } label: {
                 Label("Delete \(selected.count) Dictations", systemImage: "trash")
             }
+            .disabled(selected.contains { dictation.busyPendingIds.contains($0.id) })
             .padding(.top, KleothMetrics.spacingS)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -235,14 +244,29 @@ struct DictationsListView: View {
 
     // MARK: - Deletion
 
+    /// A row being transcribed right now (from here or the pill's Retry)
+    /// can't be deleted until the run ends — its audio is in use.
     private func requestDeletion(of ids: Set<DictationLogEntry.ID>) {
         guard !ids.isEmpty else { return }
+        guard ids.isDisjoint(with: dictation.busyPendingIds) else {
+            NSSound.beep()
+            return
+        }
         pendingDeletion = ids
     }
 
     private var deletionPrompt: String {
         let count = pendingDeletion?.count ?? 0
         return count > 1 ? "Delete \(count) dictations?" : "Delete this dictation?"
+    }
+
+    /// The row itself is rewritten out of a JSON file (no undo); a pending
+    /// row's kept audio goes to the Trash with it.
+    private var deletionMessage: String {
+        let base = "Dictations aren't moved to the Trash — this rewrites the day file and can't be undone."
+        let ids = pendingDeletion ?? []
+        let withAudio = entries.contains { ids.contains($0.id) && $0.isPending }
+        return withAudio ? base + " Saved audio goes to the Trash." : base
     }
 
     private var deletionDialogBinding: Binding<Bool> {
@@ -276,15 +300,25 @@ struct DictationsListView: View {
 
 /// One dictation in the sidebar: the first lines of what was pasted, then when /
 /// where / how long, then the quality chips (language, raw fallback, clipboard).
+/// A pending dictation has no text yet: "Not transcribed", and an "Audio saved"
+/// chip whose tooltip says why (or a "Transcribing…" chip while it runs).
 private struct DictationSidebarRow: View {
     let entry: DictationLogEntry
+    let isBusy: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(entry.previewText)
-                .font(.body.weight(.medium))
-                .lineLimit(2)
-                .truncationMode(.tail)
+            if entry.isPending {
+                Text("Not transcribed")
+                    .font(.body.weight(.medium))
+                    .italic()
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(entry.previewText)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
 
             if let metadata = DictationFormat.timeAppDuration(entry) {
                 Text(metadata)
@@ -294,6 +328,14 @@ private struct DictationSidebarRow: View {
             }
 
             HStack(spacing: KleothMetrics.spacingXS) {
+                if entry.isPending {
+                    if isBusy {
+                        KleothPill("Transcribing…", systemImage: "waveform")
+                    } else {
+                        KleothPill("Audio saved", systemImage: "exclamationmark.arrow.circlepath", tint: KleothPalette.pendingTint)
+                            .help(entry.transcriptionError ?? "The transcription didn't finish. The audio is kept until it is transcribed.")
+                    }
+                }
                 if let language = DictationFormat.languageLabel(entry.language) {
                     KleothPill(language)
                 }
@@ -374,6 +416,14 @@ enum DictationFormat {
         let total = Int(seconds.rounded())
         guard total >= 60 else { return "\(total)s" }
         return "\(total / 60)m \(String(format: "%02d", total % 60))s"
+    }
+
+    /// The engine a row was transcribed with, in product voice: "On-device"
+    /// for WhisperKit (a History retry on this Mac), "Cloud" for Scribe.
+    static func transcriptionLabel(_ model: String) -> (title: String, systemImage: String) {
+        model.hasPrefix("whisperkit")
+            ? ("On-device transcription", "desktopcomputer")
+            : ("Cloud transcription", "waveform")
     }
 
     /// Scribe's ISO-639-3 code (`"rus"`) as a human name, falling back to the

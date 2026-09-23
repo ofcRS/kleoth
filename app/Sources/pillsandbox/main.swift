@@ -21,7 +21,7 @@ import KleothPillUI
 ///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--backdrop hidden|idle|recording]
 ///         [--levels off|speech|steady] [--sequence idle,listening,transcribing,done,idle]
 ///         (sequence items: idle armed listening handsfree transcribing polishing done warning
-///          failed recording saving saved hidden, plus peek / unpeek = pointer enters / leaves
+///          failed kept recording saving saved hidden, plus peek / unpeek = pointer enters / leaves
 ///          the resting pill)
 ///         `--levels` feeds synthetic mic + system RMS into the REAL
 ///         `setRecordingLevels`, so the recording toolbar's meters move in the
@@ -164,6 +164,7 @@ func pillState(named name: String) -> DictationPillState? {
     case "done": return .done
     case "warning": return .warning("Pasted the raw transcript — the clean-up model timed out.")
     case "failed": return .failed(.missingElevenLabsKey)
+    case "kept": return .failed(.transcriptionKept("Timed out — saved to History", dictationId: "SANDBOX"))
     case "hidden": return .hidden
     case "recording": return .recording(since: SandboxClock.filmStart)
     case "saving": return .saving
@@ -336,6 +337,9 @@ final class SandboxDriver: ObservableObject {
             }
         case .openSettings:
             log("Open Settings")
+        case .retryTranscription:
+            log("Retry the kept dictation")
+            controller.show(.transcribing)
         case .openAccessibilitySettings, .openScreenRecordingSettings:
             log("Open System Settings")
         }
@@ -455,7 +459,7 @@ struct ControlPanel: View {
                     }
                 }
                 HStack {
-                    ForEach(["polishing", "done", "warning", "failed", "hidden"], id: \.self) { name in
+                    ForEach(["polishing", "done", "warning", "failed", "kept", "hidden"], id: \.self) { name in
                         Button(name) { driver.show(pillState(named: name)!) }
                     }
                 }
