@@ -36,9 +36,11 @@ and keeps the transcript and summary as files in `~/Kleoth`.
   JSON in `~/Kleoth`. Grep it, sync it, delete it. There is no database and no lock-in.
 - **Dictation anywhere (opt-in)** — hold **fn+shift**, speak, release: Kleoth transcribes the
   utterance (ElevenLabs Scribe, your key), cleans it up with one short LLM pass (fillers gone, never
-  translated), and pastes it into whatever app has focus. Double-tap for hands-free. Text-only
-  history in `~/Kleoth/dictations/`; a personal dictionary biases recognition toward your names
-  and jargon. Audio is never kept.
+  translated), and pastes it into whatever app has focus. Double-tap for hands-free. History in
+  `~/Kleoth/dictations/`; a personal dictionary biases recognition toward your names and jargon.
+  A dictation that pastes keeps no audio. One that can't be transcribed (Scribe timed out twice,
+  no network) is never lost: its audio waits in History, and the pill's **Retry** — or History's
+  "Try again", in the cloud or on this Mac — transcribes it later.
 - **Screen recording, Loom-style** — hover the pill (or pick "Record screen…" in the popover),
   drag a region or take the whole display, and Kleoth records it with system audio **and** your
   microphone as one small H.264 MP4 (about 22 MB per minute) in `~/Kleoth/screen-recordings/`. A
@@ -209,10 +211,11 @@ speakers.json                         # speaker_0 / speaker_1 → display names 
 meta.json                             # metadata: duration, tier, timestamps, consent
 ```
 
-Dictations are text-only: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished
-text, the target app, language, and models per utterance; the audio clip is deleted as soon as it
-has been transcribed (it only ever lives in `$TMPDIR/kleoth-dictation/`). The personal dictionary
-is a plain JSON array at `~/.config/kleoth/dictionary.json`.
+Dictations are text: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished text, the
+target app, language, and models per utterance; the audio clip is deleted as soon as it has been
+transcribed. Only a dictation whose transcription failed or was stopped keeps its clip, in
+`~/Kleoth/dictations/audio/`, until it is transcribed or deleted. The personal dictionary is a
+plain JSON array at `~/.config/kleoth/dictionary.json`.
 
 Screen recordings are plain files in `~/Kleoth/screen-recordings/`: `screen-<timestamp>.mp4` plus a
 `screen-<timestamp>.json` sidecar holding the title and the word-timed transcript. Editing a word in

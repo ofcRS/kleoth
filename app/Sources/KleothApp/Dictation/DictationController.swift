@@ -51,6 +51,9 @@ final class DictationController: ObservableObject {
     /// `RecordingController.meetingsHistoryRequest` idiom, because the pill is
     /// driven from a controller with no SwiftUI environment to open a window from.
     @Published private(set) var dictationsHistoryRequest: Int = 0
+    /// Pending rows being transcribed right now — by the pill's Retry or from
+    /// History. One run per row at a time; the History pane shows a spinner.
+    @Published private(set) var busyPendingIds: Set<String> = []
 
     /// Rebound whenever Settings moves the output folder (`syncLogStore()`),
     /// so dictations never keep landing in — or being listed from — the old
@@ -68,11 +71,16 @@ final class DictationController: ObservableObject {
     /// Injected by the `dictate` probe / tests.
     private let injectedTranscriber: (any Transcriber)?
 
-    /// Short-timeout session: `URLSessionTransport.defaultSession` waits 1200 s between bytes.
+    /// Bounded session: `URLSessionTransport.defaultSession` waits 1200 s
+    /// between bytes. Scribe sends no byte while it transcribes, so both
+    /// limits sit ABOVE the longest per-attempt budget
+    /// (`DictationDefaults.scribeMaxBudget`) — that budget, not URLSession, is
+    /// the timeout that fires. (At 30 s / 60 s these would have cut off the
+    /// longer budgets before they ran out.)
     private let transport = URLSessionTransport(session: {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60
+        configuration.timeoutIntervalForRequest = DictationDefaults.scribeMaxBudget + 10
+        configuration.timeoutIntervalForResource = DictationDefaults.scribeMaxBudget + 30
         return URLSession(configuration: configuration)
     }())
 
@@ -112,9 +120,12 @@ final class DictationController: ObservableObject {
     /// Set by `handleEscape()` when it cut a polish short — the result is then
     /// logged as skipped (no warning, no `polish_model`), not as a fallback.
     private var polishCancelledByUser = false
-    /// The provider + model the polish call in this run resolved to, so the log
-    /// row records what actually ran. nil when no polisher could be built.
-    private var polishSelection: ProviderFactory.Selection?
+    /// Set by Esc while `.transcribing`: the run's cancellation path keeps
+    /// the clip AND says so on the pill ("Stopped — saved to History").
+    private var stopRequestedByEscape = false
+    /// Set by `shutdown()`: a run cancelled on the way out keeps nothing — the
+    /// process exits before an async keep could finish.
+    private var isShuttingDown = false
     /// 20 Hz `capture.currentLevel` → `PillGeometry` → `pill.setLevel`.
     private var levelTask: Task<Void, Never>?
     /// Restores the pill's pipeline phase after the 1 s "Finishing the previous
@@ -206,6 +217,7 @@ final class DictationController: ObservableObject {
     /// AppDelegate.applicationDidFinishLaunching (via MainActor.assumeIsolated).
     func startIfEnabled() {
         DictationCapture.sweepStaleClips()
+        sweepOrphanedAudio()
         ensureEventLoop()
         refreshTrust()
         guard isEnabled else { return }
@@ -215,8 +227,10 @@ final class DictationController: ObservableObject {
     /// applicationWillTerminate: cancel(); monitor.stop(); eventTask?.cancel().
     /// Synchronous on purpose — the process may exit before any hop runs, which
     /// is also why the in-flight clips are deleted here rather than left to
-    /// `run()`'s `defer` (dictation audio is never kept).
+    /// `run()`'s `defer`. A clip is kept only when a run fails or is stopped
+    /// while the app keeps running; quitting mid-transcription discards it.
     func shutdown() {
+        isShuttingDown = true
         cancel()
         pillSnoozeTask?.cancel()
         discardInFlightClips()
@@ -287,6 +301,7 @@ final class DictationController: ObservableObject {
     /// opens the window and `HistoryView` flips its scope — both observe the
     /// counter; this is the one place it is bumped (pill menu, Settings).
     func requestDictationHistory() {
+        HistoryRouting.requestedScope = .dictations
         dictationsHistoryRequest += 1
     }
 
@@ -394,10 +409,29 @@ final class DictationController: ObservableObject {
     /// Hops to the store actor; bumps logRevision — even on failure, since
     /// `delete` walks day files one at a time and a throw partway leaves
     /// earlier days already rewritten (the list must reload to what is on disk).
+    ///
+    /// A pending row's kept clip follows it to the Trash (read before the rows
+    /// go, in one pass over the day files, off the main actor). A clip the
+    /// Trash refuses stays put for the launch sweep — never erased outright,
+    /// since the confirmation promised the Trash. A row being transcribed
+    /// right now is left alone (History disables Delete for it; this is the
+    /// backstop for a pill Retry that started meanwhile).
     func deleteDictations(ids: Set<String>) async throws {
         syncLogStore()
         defer { logRevision += 1 }
+        let ids = ids.subtracting(busyPendingIds)
+        guard !ids.isEmpty else { return }
+        let store = logStore
+        let keptFiles = await Task.detached(priority: .userInitiated) {
+            store.loadAll(limit: Int.max)
+                .filter { ids.contains($0.id) }
+                .compactMap(\.audioFileName)
+        }.value
         _ = try await logStore.delete(ids: ids)
+        let audio = audioStore
+        for name in keptFiles {
+            audio.trash(fileNamed: name)
+        }
     }
 
     /// Rebinds `logStore` if Settings moved the output folder since the last
@@ -618,7 +652,14 @@ final class DictationController: ObservableObject {
             // stays up and ends in `.done`.
             polishCancelledByUser = true
             polishTask?.cancel()
-        case .transcribing, .inserting:
+        case .transcribing:
+            // "Stop waiting" — the words were already spoken. The run's
+            // cancellation path keeps the clip and says where it went
+            // ("Stopped — saved to History"), so the pill is left for it to
+            // settle (at most the preparation step's second or two later).
+            stopRequestedByEscape = true
+            cancelPipeline()
+        case .inserting:
             cancelPipeline()
             pill.dismiss()
         case .idle, .armed:
@@ -691,20 +732,46 @@ final class DictationController: ObservableObject {
 
     // MARK: - Pipeline (steps 5–10)
 
-    /// Prepare → transcribe → polish → insert → log → settle. Temp files are
+    /// What steps 6–10 run on: a fresh clip, or a kept one the pill's Retry
+    /// sends again (dictation-retry design §3.3).
+    private struct SessionJob {
+        /// The file to transcribe: the prepared clip, or — when preparing it
+        /// failed — the raw one (Scribe takes it as it is).
+        var audio: URL
+        var durationSeconds: Double
+        /// A device switch cut the capture short (fresh clips only).
+        var interrupted: Bool
+        /// The pending row this run retries; nil for a fresh clip.
+        var pending: DictationLogEntry?
+        /// The app the dictation was made in, for the polish prompt and the
+        /// log row. The paste goes to whoever is frontmost at paste time.
+        var target: DictationTarget?
+        /// When the clip was committed — a pending row is stamped with this,
+        /// not with the moment two long attempts later that it was kept.
+        var startedAt = Date()
+    }
+
+    /// A polish result and what it took: the seconds (when a model ran) and
+    /// the provider + model it resolved to, so the log row records what
+    /// actually ran.
+    private struct PolishOutcome {
+        var result: DictationPolishResult
+        var seconds: Double? = nil
+        var selection: ProviderFactory.Selection? = nil
+    }
+
+    /// Step 5 (prepare), then steps 6–10 in `runSession`. Temp files are
     /// registered in `inFlightClips` as they are named, so the single `defer`
-    /// (and a synchronous `shutdown()`) can delete every one of them; that
-    /// `defer` also owns every flag reset (`endSession()`), so every exit —
-    /// success, early return, `.failed`, cancellation — tears down the same way.
+    /// (and a synchronous `shutdown()`) can delete every one of them — except
+    /// a clip `keep(_:reason:)` moved into the kept-audio folder, which it
+    /// takes off the list first. The `defer` also owns every flag reset
+    /// (`finishPipeline()` → `endSession()`), so every exit — success, early
+    /// return, `.failed`, cancellation — tears down the same way.
     private func run(clip: DictationCaptureResult, target: DictationTarget?) async {
         inFlightClips = [clip.fileURL]
-        polishSelection = nil
         defer {
             discardInFlightClips()
-            refusalTask?.cancel()
-            refusalTask = nil
-            pipelineTask = nil
-            endSession()
+            finishPipeline()
         }
 
         let credentials = AppConfig.credentials()
@@ -715,133 +782,139 @@ final class DictationController: ObservableObject {
             return
         }
 
+        var job = SessionJob(
+            audio: clip.fileURL,
+            durationSeconds: clip.durationSeconds,
+            interrupted: clip.interrupted,
+            pending: nil,
+            target: target
+        )
+
         // 5. Prepare (off-main): mono downmix + loudness/peak normalize, 64 kbps.
         //    The destination is named — and registered for deletion — here, so a
-        //    quit *during* the preparation can't strand a half-written clip.
-        let uploadURL: URL
+        //    quit *during* the preparation can't strand a half-written clip. A
+        //    failure keeps the RAW clip (`job.audio` still points at it).
+        let raw = clip.fileURL
+        let destination = DictationCapture.preparedURL(for: raw)
+        inFlightClips.append(destination)
         do {
-            let raw = clip.fileURL
-            let destination = DictationCapture.preparedURL(for: raw)
-            inFlightClips.append(destination)
-            uploadURL = try await Task.detached(priority: .userInitiated) {
+            job.audio = try await Task.detached(priority: .userInitiated) {
                 try DictationCapture.prepareForUpload(raw, outputURL: destination)
             }.value
-            // `.value` on a detached task does not propagate our cancellation.
-            try Task.checkCancellation()
-        } catch is CancellationError {
-            pill.dismiss()
-            return
         } catch {
-            pill.show(.failed(.message("Couldn't prepare the audio (\(error.localizedDescription)).")))   // NO log row
+            if Task.isCancelled {
+                await settleCancelledRun(job)
+            } else {
+                log.error("audio preparation failed: \(String(describing: error), privacy: .public)")
+                let message = "Couldn't prepare the audio (\(error.localizedDescription))."
+                await settleFailedRun(
+                    job,
+                    summary: DictationTranscription.Summary(cause: "Couldn't prepare the audio", detail: message),
+                    fallback: message
+                )
+            }
+            return
+        }
+        // `.value` on a detached task does not propagate our cancellation.
+        guard !Task.isCancelled else {
+            await settleCancelledRun(job)
             return
         }
 
-        // 6. Transcribe through the `Transcriber` seam. Resolving the polisher
-        //    can cost the provider probes (CLI `auth status`, the local server)
-        //    whenever the detector's cache is cold, so it runs ALONGSIDE the
-        //    upload instead of after it — by the time step 7 awaits the task,
-        //    the answer is almost always already there.
-        //
-        //    It is deliberately NOT cancelled on the early exits below (Esc, an
-        //    STT failure, an empty transcript, a PolishGate skip). Cancelling it
-        //    would terminate the probes mid-flight, and each one reports a
-        //    killed child / cancelled request as a negative verdict — so the
-        //    orphan is left to finish and warm the detector's cache for the next
-        //    dictation. It costs nothing user-visible: the probes bound
-        //    themselves at 10 s each and the task touches no session state.
-        let polisherTask = Task { try await AppConfig.makePolisher() }
+        await runSession(job, key: key, settings: settings)
+    }
 
+    /// The teardown every pipeline exit shares — a fresh clip's run and the
+    /// pill's Retry.
+    private func finishPipeline() {
+        refusalTask?.cancel()
+        refusalTask = nil
+        pipelineTask = nil
+        stopRequestedByEscape = false
+        endSession()
+    }
+
+    /// Steps 6–10 of a live session — a fresh clip, or the pill's Retry of a
+    /// kept one: transcribe → polish → paste → log → settle. Scribe runs
+    /// under `DictationTranscription`'s policy (a budget that grows with the
+    /// clip, one retry after a transient failure); a run that ends without a
+    /// transcript keeps the clip (`settleFailedRun` / `settleCancelledRun`).
+    private func runSession(_ job: SessionJob, key: String, settings: Settings) async {
+        // Resolving the polisher can cost the provider probes (CLI `auth
+        // status`, the local server) whenever the detector's cache is cold, so
+        // it runs ALONGSIDE the upload instead of after it — by the time step 7
+        // awaits the task, the answer is almost always already there.
+        //
+        // It is deliberately NOT cancelled on the early exits below (Esc, an
+        // STT failure, an empty transcript, a PolishGate skip). Cancelling it
+        // would terminate the probes mid-flight, and each one reports a
+        // killed child / cancelled request as a negative verdict — so the
+        // orphan is left to finish and warm the detector's cache for the next
+        // dictation. It costs nothing user-visible: the probes bound
+        // themselves at 10 s each and the task touches no session state.
+        let polisherTask = Task { try await AppConfig.makePolisher() }
+        polishCancelledByUser = false
+
+        // 6. Transcribe through the `Transcriber` seam.
         let terms = Keyterms.sanitize(dictionary.load())
         let options = ScribeOptions.dictation(keyterms: terms)
         let transcriber: any Transcriber = injectedTranscriber ?? makeTranscriber(elevenLabsKey: key)
         pill.show(.transcribing)
-        let response: ScribeResponse
+        let transcription: DictationTranscription.Result
         do {
-            response = try await withTimeout(seconds: DictationDefaults.scribeTimeout) {
-                try await transcriber.transcribe(fileURL: uploadURL, options: options)
-            }
-            try Task.checkCancellation()
-        } catch is CancellationError {
-            pill.dismiss()
-            return
-        } catch let url as URLError where url.code == .cancelled {
-            // Esc during the upload: `withTimeout` races the sleep (which
-            // throws `CancellationError`) against URLSession (which reports
-            // task cancellation as `URLError(.cancelled)`); whichever child
-            // wins the race is the error that lands here. Both mean "the user
-            // cancelled" — never a sticky red "Network error: cancelled." pill.
-            pill.dismiss()
-            return
-        } catch {
+            transcription = try await DictationTranscription.run(
+                transcriber,
+                fileURL: job.audio,
+                options: options,
+                policy: .scribe(audioSeconds: job.durationSeconds),
+                onAttemptFailed: Self.logFailedAttempt
+            )
+        } catch let failure as DictationTranscription.Failure {
             // The full error (a Scribe HTTP body can be 512 bytes of JSON)
             // belongs in the log; the pill gets the short form.
-            log.error("transcription failed: \(String(describing: error), privacy: .public)")
-            pill.show(.failed(.message(Self.userFacing(error))))   // NO log row
+            log.error("transcription failed: \(String(describing: failure), privacy: .public)")
+            await settleFailedRun(
+                job,
+                summary: DictationTranscription.summary(of: failure, attempts: failure.attempts),
+                fallback: Self.userFacing(failure.underlying)
+            )
+            return
+        } catch {
+            // `run` throws nothing else: Esc, dictation turned off, or quit.
+            await settleCancelledRun(job)
             return
         }
-        let rawText = Self.extractText(response)
+        let rawText = Self.extractText(transcription.response)
         guard !rawText.isEmpty else {
-            // Silence is not an error: the pill just sinks back to resting,
-            // exactly like a too-short hold. No warning, no log row.
-            log.debug("transcript empty — nothing to paste")
-            pill.dismiss()
+            if let pending = job.pending {
+                // A kept clip with no speech in it. The row stays — the user
+                // decides in History — with the reason brought up to date.
+                await recordFailure(on: pending, reason: "No speech was found in the audio.")
+                pill.show(.warning("Nothing was heard — the audio is still in History"))
+            } else {
+                // Silence is not an error: the pill just sinks back to resting,
+                // exactly like a too-short hold. No warning, no log row.
+                log.debug("transcript empty — nothing to paste")
+                pill.dismiss()
+            }
             return
         }
 
         // 7. Polish (non-throwing; raw fallback built in) — unless the gate
-        // says Scribe's text is already what the user wants: a message into a
-        // chat app, or a short utterance. Skipping is not a fallback: no
-        // warning, no `polish_model` on the row, and the phase goes straight
-        // to inserting (no polishing wave on the pill).
+        // says Scribe's text is already what the user wants (`polish(…)`).
         let context = DictationContext(
-            appBundleId: target?.bundleIdentifier,
-            appName: target?.localizedName,
-            languageCode: response.languageCode,
+            appBundleId: job.target?.bundleIdentifier,
+            appName: job.target?.localizedName,
+            languageCode: transcription.response.languageCode,
             dictionary: terms
         )
-        let gate = PolishGate.decide(
-            rawText: rawText,
-            style: AppStyle.classify(bundleId: context.appBundleId),
-            alwaysPolish: settings.dictationPolishAlways
+        let polish = await polish(
+            rawText, context: context, settings: settings, polisherTask: polisherTask, interactive: true
         )
-        let polish: DictationPolishResult
-        var polishSeconds: Double?
-        if case let .skip(reason) = gate {
-            log.debug("polish skipped: \(reason, privacy: .public)")
-            polish = .skipped(text: rawText, reason: reason)
-        } else {
-            do {
-                // Resolved alongside the upload (step 6), so this normally
-                // returns at once; only a cold detector cache makes it wait.
-                let (polisher, selection) = try await polisherTask.value
-                polishSelection = selection
-                phase = .polishing
-                pill.show(.polishing)
-                // Runs as its own task so Esc can cancel the model call alone
-                // (`handleEscape`); `cancelPipeline()` cancels both together.
-                polishCancelledByUser = false
-                let started = ContinuousClock.now
-                let task = Task { await polisher.polish(rawText: rawText, context: context) }
-                polishTask = task
-                let attempted = await task.value
-                polishTask = nil
-                let elapsed = started.duration(to: .now)
-                polishSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-                if polishCancelledByUser {
-                    polish = .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
-                } else {
-                    polish = attempted
-                }
-                log.debug("polish \(polish.ranModel ? "ok" : (polish.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(polishSeconds ?? 0, format: .fixed(precision: 2)) s")
-            } catch {
-                // No backend could be built. `ProviderError`'s copy is a full
-                // sentence, so drop its final period before the suffix turns
-                // the whole line into one.
-                polish = .raw(text: rawText, reason: "\(Self.asClause(error.localizedDescription)) — pasted the raw transcript.")
-            }
-        }
-        // Esc during the polish call: the polisher swallows cancellation into a
-        // `.raw` result, so check here before anything reaches the pasteboard.
+        // The whole run cancelled during the polish call (not Esc, which
+        // cancels only the model call): the polisher swallows cancellation
+        // into a `.raw` result, so check here before anything reaches the
+        // pasteboard.
         guard !Task.isCancelled else {
             pill.dismiss()
             return
@@ -855,10 +928,10 @@ final class DictationController: ObservableObject {
         // letting a truncated sentence look finished. A polish fallback outranks
         // it (the text isn't what was said either), and so does the clipboard
         // fallback below (actionable: "press ⌘V").
-        var warning = polish.fallbackReason
-            ?? (clip.interrupted ? "The microphone changed mid-dictation — only part was captured." : nil)
+        var warning = polish.result.fallbackReason
+            ?? (job.interrupted ? "The microphone changed mid-dictation — only part was captured." : nil)
         do {
-            try await inserter.insert(polish.text, pressTimeTarget: target ?? .frontmost())
+            try await inserter.insert(polish.result.text, pressTimeTarget: job.target ?? .frontmost())
         } catch let insertion as TextInsertionError where insertion.textLeftOnClipboard {
             method = .clipboard
             warning = insertion.errorDescription
@@ -867,35 +940,155 @@ final class DictationController: ObservableObject {
             return
         }
 
-        // 9. Log (actor-serialized, off-main), then bump the revision.
-        let surcharge = terms.isEmpty ? 1 : DictationDefaults.keytermSurchargeMultiplier
-        let entry = DictationLogEntry(
-            timestamp: DictationLogEntry.isoTimestamp(Date()),
-            appBundleId: context.appBundleId,
-            appName: context.appName,
-            language: response.languageCode,                    // Scribe's code wins on disk
+        // 9. Log (actor-serialized, off-main) — a new row, or the kept row
+        //    filled in — then bump the revision.
+        let entry = makeEntry(
+            pending: job.pending,
+            durationSeconds: job.durationSeconds,
+            transcription: transcription,
+            transcriber: transcriber,
+            options: options,
+            terms: terms,
             rawText: rawText,
-            polishedText: polish.text,
-            usedRawFallback: polish.usedRawFallback,
-            fallbackReason: polish.fallbackReason,
-            transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
-            polishModel: polish.ranModel ? polishSelection?.model : nil,
-            polishProvider: polish.ranModel ? polishSelection?.provider.rawValue : nil,
-            durationSeconds: clip.durationSeconds,
-            insertMethod: method,
-            transcriptionCost: transcriber.usdPerHour * clip.durationSeconds / 3600 * surcharge,
-            polishCost: polish.cost,
-            polishSeconds: polishSeconds
+            polish: polish,
+            context: context,
+            method: method
         )
-        do {
-            try await logStore.append(entry)
-        } catch {
-            log.error("dictation log append failed: \(error.localizedDescription, privacy: .public)")
-        }
-        logRevision += 1   // AFTER the row is on disk
+        await persist(entry, resolving: job.pending)
 
         // 10. Settle.
         pill.show(warning.map { .warning($0) } ?? .done)
+    }
+
+    /// Step 7, shared by a live session and a History run: skip (the gate
+    /// says Scribe's text is already what the user wants — a message into a
+    /// chat app, or a short utterance), polish, or fall back to the raw text
+    /// with a reason. Never throws. Skipping is not a fallback: no warning,
+    /// no `polish_model` on the row, and no polishing wave on the pill.
+    ///
+    /// `interactive` is a live session: once the gate says polish, the session
+    /// is `.polishing` — BEFORE the polisher is resolved, so Esc in that wait
+    /// (seconds when the provider cache is cold) already means "paste it as
+    /// heard" rather than cancelling a dictation whose words are in hand — and
+    /// Esc during the model call cuts it short (`polishTask`). A History run
+    /// passes false and touches no session state.
+    private func polish(
+        _ rawText: String,
+        context: DictationContext,
+        settings: Settings,
+        polisherTask: Task<(DictationPolisher, ProviderFactory.Selection), any Error>,
+        interactive: Bool
+    ) async -> PolishOutcome {
+        let gate = PolishGate.decide(
+            rawText: rawText,
+            style: AppStyle.classify(bundleId: context.appBundleId),
+            alwaysPolish: settings.dictationPolishAlways
+        )
+        if case let .skip(reason) = gate {
+            log.debug("polish skipped: \(reason, privacy: .public)")
+            return PolishOutcome(result: .skipped(text: rawText, reason: reason))
+        }
+        if interactive {
+            phase = .polishing
+            pill.show(.polishing)
+        }
+        do {
+            // Resolved alongside the upload (step 6), so this normally
+            // returns at once; only a cold detector cache makes it wait.
+            let (polisher, selection) = try await polisherTask.value
+            if interactive, polishCancelledByUser {
+                // Esc while the model was still being picked.
+                return PolishOutcome(result: .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard."))
+            }
+            // Its own task so Esc can cancel the model call alone
+            // (`handleEscape`); `cancelPipeline()` cancels both together.
+            let started = ContinuousClock.now
+            let task = Task { await polisher.polish(rawText: rawText, context: context) }
+            if interactive { polishTask = task }
+            let attempted = await task.value
+            if interactive { polishTask = nil }
+            let elapsed = started.duration(to: .now)
+            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            let result: DictationPolishResult = (interactive && polishCancelledByUser)
+                ? .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
+                : attempted
+            log.debug("polish \(result.ranModel ? "ok" : (result.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(seconds, format: .fixed(precision: 2)) s")
+            return PolishOutcome(result: result, seconds: seconds, selection: selection)
+        } catch {
+            // No backend could be built. `ProviderError`'s copy is a full
+            // sentence, so drop its final period before the suffix turns the
+            // whole line into one.
+            return PolishOutcome(
+                result: .raw(text: rawText, reason: "\(Self.asClause(error.localizedDescription)) — pasted the raw transcript.")
+            )
+        }
+    }
+
+    /// The row a transcribed run logs: a new one, or the kept row filled in —
+    /// same id and timestamp, its audio and error cleared.
+    private func makeEntry(
+        pending: DictationLogEntry?,
+        durationSeconds: Double,
+        transcription: DictationTranscription.Result,
+        transcriber: any Transcriber,
+        options: ScribeOptions,
+        terms: [String],
+        rawText: String,
+        polish: PolishOutcome,
+        context: DictationContext,
+        method: DictationInsertMethod
+    ) -> DictationLogEntry {
+        let surcharge = terms.isEmpty ? 1 : DictationDefaults.keytermSurchargeMultiplier
+        let ranModel = polish.result.ranModel
+        return DictationLogEntry(
+            id: pending?.id ?? UUID().uuidString,
+            timestamp: pending?.timestamp ?? DictationLogEntry.isoTimestamp(Date()),
+            appBundleId: context.appBundleId,
+            appName: context.appName,
+            language: transcription.response.languageCode,              // the engine's code wins on disk
+            rawText: rawText,
+            polishedText: polish.result.text,
+            usedRawFallback: polish.result.usedRawFallback,
+            fallbackReason: polish.result.fallbackReason,
+            transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
+            polishModel: ranModel ? polish.selection?.model : nil,
+            polishProvider: ranModel ? polish.selection?.provider.rawValue : nil,
+            durationSeconds: durationSeconds,
+            insertMethod: method,
+            transcriptionCost: transcriber.usdPerHour * durationSeconds / 3600 * surcharge,
+            polishCost: polish.result.cost,
+            polishSeconds: polish.seconds,
+            transcriptionSeconds: transcription.seconds
+        )
+    }
+
+    /// Step 9's write: append a new row, or rewrite the kept row in place and
+    /// delete its clip (only once the row is on disk). A kept row deleted in
+    /// History mid-run is logged as a new row — the text did land somewhere.
+    private func persist(_ entry: DictationLogEntry, resolving pending: DictationLogEntry?) async {
+        do {
+            if let pending {
+                let replaced = try await logStore.replace(entry)
+                if !replaced {
+                    try await logStore.append(entry)
+                }
+                if let name = pending.audioFileName {
+                    audioStore.remove(fileNamed: name)
+                }
+            } else {
+                try await logStore.append(entry)
+            }
+        } catch {
+            log.error("dictation log write failed: \(error.localizedDescription, privacy: .public)")
+        }
+        logRevision += 1   // AFTER the row is on disk
+    }
+
+    /// `DictationTranscription.run`'s per-attempt report, into the unified log.
+    private static let logFailedAttempt: @Sendable (Int, any Error, TimeInterval) -> Void = { attempt, error, seconds in
+        Logger(subsystem: "dev.kleoth", category: "Dictation").error(
+            "transcription attempt \(attempt) failed after \(seconds, format: .fixed(precision: 1)) s: \(String(describing: error), privacy: .public)"
+        )
     }
 
     /// A finished sentence turned into a clause, so appending
@@ -1016,7 +1209,8 @@ final class DictationController: ObservableObject {
     private func pasteLastDictation() {
         guard phase == .idle else { return }
         syncLogStore()
-        guard let last = logStore.loadAll(limit: 1).first else { return }
+        // A pending row has no text yet: the last dictation that HAS some.
+        guard let last = logStore.loadAll(limit: 50).first(where: { !$0.isPending }) else { return }
         let text = last.polishedText.isEmpty ? last.rawText : last.polishedText
         Task { [weak self] in
             guard let self else { return }
@@ -1036,7 +1230,7 @@ final class DictationController: ObservableObject {
     /// last dictation's first words, the hotkey.
     private func menuContent() -> PillMenuContent {
         syncLogStore()
-        let last = logStore.loadAll(limit: 1).first
+        let last = logStore.loadAll(limit: 50).first { !$0.isPending }
         return PillMenuContent(
             microphones: InputDevices.list().map { PillMicrophone(id: $0.id, name: $0.name) },
             selectedMicrophoneId: inputDeviceId,
@@ -1093,13 +1287,347 @@ final class DictationController: ObservableObject {
             requestDictationHistory()
         case .hideForAnHour:
             hidePill()
+        case .retryTranscription(let id):
+            retryFromPill(id: id)
         }
     }
 
     /// ✕ or a click on a `.failed` pill. The pill has already hidden itself;
     /// this only matters when a session is somehow still live behind it.
     private func handlePillDismiss() {
+        // A dismissed "saved to History" pill just leaves the row in History.
         guard phase != .idle else { return }
         cancel()
+    }
+}
+
+// MARK: - Kept dictations (dictation-retry design §3.2–§3.5)
+
+extension DictationController {
+    /// How a History run ended.
+    enum PendingTranscriptionOutcome: Equatable {
+        /// Transcribed, polished and copied to the clipboard; the row is filled in.
+        case copied
+        /// Nothing came of it, and why (also written to the row when the
+        /// transcription itself failed).
+        case failed(String)
+    }
+
+    /// The kept-audio folder next to the day files. Computed from `logStore`,
+    /// so it follows wherever Settings moves the output folder.
+    private var audioStore: DictationAudioStore {
+        DictationAudioStore(dictationsDirectory: logStore.baseDir)
+    }
+
+    /// A pending row's kept clip, or nil when the row is not pending or its
+    /// file is gone.
+    func keptAudioURL(for entry: DictationLogEntry) -> URL? {
+        guard let name = entry.audioFileName,
+              let url = audioStore.url(forFileNamed: name),
+              FileManager.default.fileExists(atPath: url.path)
+        else { return nil }
+        return url
+    }
+
+    // MARK: Keeping
+
+    /// Keeps a run's clip so the dictation is not lost. A fresh clip MOVES
+    /// into `dictations/audio/` and a pending row is appended; a retry's row
+    /// already holds its clip and only records the new reason. Returns the
+    /// pending row, or nil when the clip could not be kept — the caller then
+    /// falls back to the old plain failure and the run's cleanup deletes the
+    /// clip.
+    private func keep(_ job: SessionJob, reason: String) async -> DictationLogEntry? {
+        if let pending = job.pending {
+            return await recordFailure(on: pending, reason: reason)
+        }
+        let store = audioStore
+        let id = UUID().uuidString
+        let fileName: String
+        do {
+            fileName = try store.keep(job.audio, id: id)
+        } catch {
+            log.error("couldn't keep the dictation audio: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        // Out of `$TMPDIR` now: the run's cleanup must not go looking for it.
+        inFlightClips.removeAll { $0.standardizedFileURL == job.audio.standardizedFileURL }
+
+        let entry = DictationLogEntry.pending(
+            id: id,
+            timestamp: DictationLogEntry.isoTimestamp(job.startedAt),
+            appBundleId: job.target?.bundleIdentifier,
+            appName: job.target?.localizedName,
+            durationSeconds: job.durationSeconds,
+            audioFileName: fileName,
+            transcriptionError: reason
+        )
+        do {
+            try await logStore.append(entry, on: job.startedAt)
+        } catch {
+            // The clip stays in `audio/`: the launch sweep moves it to the
+            // Trash a day later, so it is never silently destroyed.
+            log.error("couldn't log the kept dictation: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        logRevision += 1
+        log.notice("kept dictation audio \(fileName, privacy: .public): \(reason, privacy: .public)")
+        return entry
+    }
+
+    /// Brings a pending row's reason up to date (a retry failed, or found no
+    /// speech). Returns the row as written, or nil when it is gone — deleted
+    /// in History meanwhile — so no Retry is offered for a row that is not
+    /// there.
+    @discardableResult
+    private func recordFailure(on pending: DictationLogEntry, reason: String) async -> DictationLogEntry? {
+        var entry = pending
+        entry.transcriptionError = reason
+        defer { logRevision += 1 }
+        do {
+            return try await logStore.replace(entry) ? entry : nil
+        } catch {
+            log.error("couldn't update the kept dictation: \(error.localizedDescription, privacy: .public)")
+            return entry   // still on disk as it was: still pending, still retryable
+        }
+    }
+
+    /// A session that ended without a transcript: keep the clip and offer
+    /// Retry on the pill ("Timed out — saved to History"). When the clip
+    /// could not be kept, the old sticky failure with `fallback`.
+    private func settleFailedRun(
+        _ job: SessionJob,
+        summary: DictationTranscription.Summary,
+        fallback: String
+    ) async {
+        guard let kept = await keep(job, reason: summary.detail) else {
+            pill.show(.failed(.message(fallback)))
+            return
+        }
+        pill.show(.failed(.transcriptionKept("\(summary.cause) — saved to History", dictationId: kept.id)))
+    }
+
+    /// A session cancelled before its transcript arrived — Esc, dictation
+    /// turned off in Settings, the app quitting. A fresh clip is kept (the
+    /// words were already spoken) unless the app is quitting: `shutdown()`
+    /// deletes the temp files synchronously and an async keep could not finish
+    /// anyway. Esc says where the dictation went; the other paths stay quiet.
+    /// A retry's row already holds its clip and stays as it was.
+    private func settleCancelledRun(_ job: SessionJob) async {
+        let byEscape = stopRequestedByEscape
+        guard job.pending == nil, !isShuttingDown else {
+            pill.dismiss()
+            return
+        }
+        let kept = await keep(job, reason: "Stopped before the transcript arrived.")
+        switch (kept != nil, byEscape) {
+        case (true, true):
+            pill.show(.warning("Stopped — saved to History"))
+        case (false, true):
+            // Esc said "stop waiting", not "throw it away" — if the audio
+            // could not be kept, say so rather than vanish.
+            pill.show(.failed(.message("Stopped — the audio couldn't be saved.")))
+        case (_, false):
+            pill.dismiss()
+        }
+    }
+
+    // MARK: Retry from the pill
+
+    /// The Retry button on a "saved to History" pill: a new session over the
+    /// kept clip of row `id` — transcribe, polish into the app it was
+    /// dictated in, paste into the frontmost app, fill the row in. Refused
+    /// for a second while another session is live; a row that has meanwhile
+    /// been deleted, transcribed or picked up in History just dismisses the
+    /// pill (History shows where it is).
+    private func retryFromPill(id: String) {
+        switch phase {
+        case .idle:
+            break
+        case .transcribing, .polishing, .inserting:
+            refuseWhileBusy()
+            return
+        case .armed, .listening:
+            return
+        }
+        syncLogStore()
+        guard let entry = logStore.entry(id: id), entry.isPending,
+              !busyPendingIds.contains(id),
+              let audio = keptAudioURL(for: entry)
+        else {
+            pill.dismiss()
+            return
+        }
+        guard let key = AppConfig.credentials().elevenLabsKey, !key.isEmpty else {
+            pill.show(.failed(.missingElevenLabsKey))
+            return
+        }
+
+        let job = SessionJob(
+            audio: audio,
+            durationSeconds: entry.durationSeconds ?? 0,
+            interrupted: false,
+            pending: entry,
+            target: DictationTarget(bundleIdentifier: entry.appBundleId, localizedName: entry.appName)
+        )
+        let settings = AppConfig.settings()
+        busyPendingIds.insert(id)
+        phase = .transcribing
+        isSessionActive = true
+        monitor.escapeCancels = true
+        pipelineTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.busyPendingIds.remove(id)
+                self.finishPipeline()
+            }
+            await self.runSession(job, key: key, settings: settings)
+        }
+    }
+
+    // MARK: Transcribe from History
+
+    /// Transcribes a kept dictation from History — a background job: no pill,
+    /// no session, never a paste. The text is polished like a dictation into
+    /// the row's app and copied to the clipboard; the row is filled in and its
+    /// clip deleted. On device goes through the shared pipeline queue (never
+    /// two WhisperKit engines at once); the cloud runs straight away.
+    func transcribePending(id: String, onDevice: Bool) async -> PendingTranscriptionOutcome {
+        syncLogStore()
+        guard !busyPendingIds.contains(id) else {
+            return .failed("This dictation is already being transcribed.")
+        }
+        guard let entry = logStore.entry(id: id), entry.isPending else {
+            return .failed("This dictation is no longer waiting to be transcribed.")
+        }
+        guard let audio = keptAudioURL(for: entry) else {
+            return .failed("The audio file is missing.")
+        }
+        let settings = AppConfig.settings()
+        let transcriber: any Transcriber
+        let policy: DictationTranscription.Policy
+        if onDevice {
+            transcriber = LocalTranscriber(
+                language: RecordingController.normalizedTranscriptionLanguage(settings.transcriptionLanguage)
+            )
+            policy = .onDevice
+        } else {
+            guard let key = AppConfig.credentials().elevenLabsKey, !key.isEmpty else {
+                return .failed("Add an ElevenLabs API key in Settings to transcribe in the cloud.")
+            }
+            transcriber = injectedTranscriber ?? makeTranscriber(elevenLabsKey: key)
+            policy = .scribe(audioSeconds: entry.durationSeconds ?? 0)
+        }
+
+        busyPendingIds.insert(id)
+        defer { busyPendingIds.remove(id) }
+
+        let polisherTask = Task { try await AppConfig.makePolisher() }
+        let terms = Keyterms.sanitize(dictionary.load())
+        let options = ScribeOptions.dictation(keyterms: terms)
+        let work: @Sendable () async throws -> DictationTranscription.Result = {
+            try await DictationTranscription.run(
+                transcriber,
+                fileURL: audio,
+                options: options,
+                policy: policy,
+                onAttemptFailed: DictationController.logFailedAttempt
+            )
+        }
+        let transcription: DictationTranscription.Result
+        do {
+            transcription = onDevice ? try await onPipelineQueue(work) : try await work()
+        } catch let failure as DictationTranscription.Failure {
+            log.error("History transcription failed: \(String(describing: failure), privacy: .public)")
+            let summary = DictationTranscription.summary(of: failure, attempts: failure.attempts)
+            await recordFailure(on: entry, reason: summary.detail)
+            return .failed(summary.detail)
+        } catch {
+            return .failed("Stopped before the transcript arrived.")
+        }
+        let rawText = Self.extractText(transcription.response)
+        guard !rawText.isEmpty else {
+            let reason = "No speech was found in the audio."
+            await recordFailure(on: entry, reason: reason)
+            return .failed(reason)
+        }
+
+        let context = DictationContext(
+            appBundleId: entry.appBundleId,
+            appName: entry.appName,
+            languageCode: transcription.response.languageCode,
+            dictionary: terms
+        )
+        let polish = await polish(
+            rawText, context: context, settings: settings, polisherTask: polisherTask, interactive: false
+        )
+        // Never between a live session's clipboard write and its ⌘V (the
+        // inserter can wait out held modifier keys in between): the paste
+        // would carry this text into the frontmost app instead.
+        while phase == .inserting {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(polish.result.text, forType: .string)
+
+        let resolved = makeEntry(
+            pending: entry,
+            durationSeconds: entry.durationSeconds ?? 0,
+            transcription: transcription,
+            transcriber: transcriber,
+            options: options,
+            terms: terms,
+            rawText: rawText,
+            polish: polish,
+            context: context,
+            method: .notInserted
+        )
+        await persist(resolved, resolving: entry)
+        return .copied
+    }
+
+    /// Runs `work` as one job on `RecordingController`'s FIFO — the queue every
+    /// `LocalTranscriber` run shares, so two ~600 MB WhisperKit engines never
+    /// load at once — and hands its result back.
+    private func onPipelineQueue<T: Sendable>(
+        _ work: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        guard let queue = RecordingController.shared else { return try await work() }
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.enqueuePipelineJob {
+                do {
+                    continuation.resume(returning: try await work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: Housekeeping
+
+    /// Launch: kept clips no row points at any more (a keep whose row never
+    /// landed, a hand-edited day file) go to the Trash once they are a day
+    /// old. Off the main actor — it reads every day file.
+    private func sweepOrphanedAudio() {
+        syncLogStore()
+        let store = logStore
+        let audio = audioStore
+        Task.detached(priority: .utility) {
+            // Every kept clip older than a day, then the ones no record still
+            // names. Fails closed: when a record can't be read at all, the
+            // sweep trashes nothing.
+            let old = audio.orphans(referenced: [], olderThan: DictationDefaults.orphanedAudioMaxAge)
+            guard !old.isEmpty,
+                  let mentioned = store.audioFileNamesMentioned(among: Set(old.map(\.lastPathComponent)))
+            else { return }
+            let log = Logger(subsystem: "dev.kleoth", category: "Dictation")
+            for url in old where !mentioned.contains(url.lastPathComponent) {
+                if audio.trash(fileNamed: url.lastPathComponent) {
+                    log.notice("moved orphaned dictation audio to the Trash: \(url.lastPathComponent, privacy: .public)")
+                }
+            }
+        }
     }
 }

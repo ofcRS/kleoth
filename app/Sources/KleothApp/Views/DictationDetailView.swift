@@ -5,10 +5,26 @@ import KleothCore
 /// The detail pane for one dictation: where it went, what was pasted, and — one
 /// disclosure away — what Scribe actually heard before the polish pass.
 ///
-/// Read-only by design. The row is a record of something that already landed in
-/// another app; the only actions are copying it out.
+/// Read-only for a transcribed row: it is a record of something that already
+/// landed in another app, and the only actions are copying it out. A PENDING
+/// row (the transcription failed or was stopped; its audio is kept) gets the
+/// one thing it needs instead: try again, in the cloud or on this Mac, with
+/// the text copied to the clipboard when it is ready (dictation-retry design
+/// §3.4).
 struct DictationDetailView: View {
     let entry: DictationLogEntry
+
+    @EnvironmentObject private var dictation: DictationController
+
+    /// How this pane's last "Try again" ended. `.copied` outlives the row's
+    /// switch to its transcribed layout (the view keeps its identity — the
+    /// list tags it by the row id), which is where the note is shown.
+    @State private var runNote: RunNote?
+
+    private enum RunNote: Equatable {
+        case copied
+        case failed(String)
+    }
 
     /// "Copy" → "Copied!" for 1.5 s, cancel-and-restart so rapid copies keep the
     /// checkmark a full beat from the most recent one (same idiom as
@@ -22,8 +38,12 @@ struct DictationDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: KleothMetrics.spacingL) {
                 header
-                polished
-                raw
+                if entry.isPending {
+                    pendingPanel
+                } else {
+                    polished
+                    raw
+                }
             }
             .padding(KleothMetrics.spacingL)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -61,11 +81,15 @@ struct DictationDetailView: View {
                 // tier badges — "On-device"/"Cloud", never "Local"/"SOTA"); the
                 // exact model hangs off the tooltip for the curious.
                 KleothFlowLayout(spacing: KleothMetrics.spacingXS) {
+                    if entry.isPending {
+                        KleothPill("Audio saved", systemImage: "exclamationmark.arrow.circlepath", tint: KleothPalette.pendingTint)
+                    }
                     if let language = DictationFormat.languageLabel(entry.language) {
                         KleothPill(language, systemImage: "character.bubble")
                     }
                     if let model = entry.transcriptionModel, !model.isEmpty {
-                        KleothPill("Cloud transcription", systemImage: "waveform")
+                        let engine = DictationFormat.transcriptionLabel(model)
+                        KleothPill(engine.title, systemImage: engine.systemImage)
                             .help("Transcribed with \(model)")
                     }
                     if !entry.usedRawFallback, let model = entry.polishModel, !model.isEmpty {
@@ -89,6 +113,11 @@ struct DictationDetailView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if runNote == .copied, !entry.isPending {
+                    Label("Copied to the clipboard.", systemImage: "doc.on.clipboard")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -100,7 +129,8 @@ struct DictationDetailView: View {
     /// the stored fields (the row carries no reason of its own); nil for rows
     /// that were polished or fell back.
     private var skippedReason: String? {
-        guard !entry.usedRawFallback, (entry.polishModel ?? "").isEmpty else { return nil }
+        // A pending row has no text to have skipped anything on.
+        guard !entry.isPending, !entry.usedRawFallback, (entry.polishModel ?? "").isEmpty else { return nil }
         let decision = PolishGate.decide(
             rawText: entry.rawText,
             style: AppStyle.classify(bundleId: entry.appBundleId),
@@ -147,6 +177,134 @@ struct DictationDetailView: View {
                     .padding(.top, KleothMetrics.spacingXS)
             }
             .font(.callout.weight(.medium))
+        }
+    }
+
+    // MARK: - Pending (not transcribed yet)
+
+    /// Why the row has no text, and the way out: try again in the cloud or
+    /// on this Mac. A "Transcribing…" row replaces the buttons while this row
+    /// runs — from here or from the pill's Retry.
+    @ViewBuilder
+    private var pendingPanel: some View {
+        let audio = dictation.keptAudioURL(for: entry)
+        let isBusy = dictation.busyPendingIds.contains(entry.id)
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+            pendingCard(audioMissing: audio == nil)
+            if isBusy {
+                transcribingRow
+            } else if audio != nil {
+                retryButtons
+                Text("The text is copied to the clipboard when it's ready. Kleoth keeps the audio until then.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // A refusal the row itself doesn't record (no key, already
+            // running); a failed transcription is already the card's reason.
+            if !isBusy, case .failed(let reason) = runNote, reason != entry.transcriptionError {
+                Text(reason)
+                    .font(.callout)
+                    .foregroundStyle(KleothPalette.failureTint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let audio {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([audio])
+                } label: {
+                    Label("Show Audio in Finder", systemImage: "folder")
+                }
+                .buttonStyle(.link)
+            }
+        }
+    }
+
+    /// Same shape as the recordings viewer's failure card, in the pending
+    /// tint: nothing was lost, the audio is right here.
+    private func pendingCard(audioMissing: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: KleothMetrics.spacingS) {
+            Image(systemName: "exclamationmark.arrow.circlepath")
+                .foregroundStyle(KleothPalette.pendingTint)
+                .symbolRenderingMode(.hierarchical)
+            VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+                Text("Not transcribed")
+                    .font(.callout.weight(.semibold))
+                Text(entry.transcriptionError ?? "The transcription didn't finish.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if audioMissing {
+                    Text("The saved audio is gone, so this dictation can't be transcribed again. Delete it to clear the row.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(KleothMetrics.spacingM)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            KleothPalette.pendingTint.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: KleothMetrics.cornerRadiusCard, style: .continuous)
+                .strokeBorder(KleothPalette.pendingTint.opacity(0.25), lineWidth: KleothMetrics.hairline)
+        )
+    }
+
+    /// The two engines, worded the way the recordings viewer words a retry.
+    /// The cloud comes first: it is what a dictation normally uses.
+    private var retryButtons: some View {
+        HStack(spacing: KleothMetrics.spacingS) {
+            Button {
+                transcribe(onDevice: false)
+            } label: {
+                Label("Try again in cloud", systemImage: "cloud")
+                    .padding(.horizontal, KleothMetrics.spacingS)
+            }
+            .kleothProminentButton()
+            .controlSize(.large)
+            .help("Send the saved audio to ElevenLabs Scribe again.")
+
+            Button {
+                transcribe(onDevice: true)
+            } label: {
+                Label("Try again on device", systemImage: "desktopcomputer")
+                    .padding(.horizontal, KleothMetrics.spacingS)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help("Transcribe with the free on-device engine — the audio stays on this Mac. The first run downloads the model (about 600 MB).")
+        }
+    }
+
+    private var transcribingRow: some View {
+        HStack(spacing: KleothMetrics.spacingS) {
+            ProgressView().controlSize(.small)
+            Text("Transcribing…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .kleothCard(padding: KleothMetrics.spacingM)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A background run (no pill); the controller files the result and bumps
+    /// `logRevision`, and the list hands this pane the filled-in row.
+    private func transcribe(onDevice: Bool) {
+        runNote = nil
+        let id = entry.id
+        Task {
+            switch await dictation.transcribePending(id: id, onDevice: onDevice) {
+            case .copied:
+                runNote = .copied
+            case .failed(let reason):
+                runNote = .failed(reason)
+            }
         }
     }
 

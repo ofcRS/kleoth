@@ -3,8 +3,9 @@ import Foundation
 /// Thrown by ``withTimeout(seconds:operation:)`` when the operation loses the
 /// race against its deadline.
 ///
-/// Dictation needs a real wall-clock budget on every network leg (25 s for
-/// Scribe, 8 s for the polish call). `URLSessionTransport.defaultSession` uses a
+/// Dictation needs a real wall-clock budget on every network leg (per Scribe
+/// attempt, `DictationDefaults.scribeBudget(forAudioSeconds:)`; 30 s for the
+/// polish call). `URLSessionTransport.defaultSession` uses a
 /// 1200 s request timeout, so URLSession's own timeout would never save an
 /// interactive dictation — this helper is the budget that actually fires.
 public struct KleothTimeoutError: Error, Sendable, Equatable, LocalizedError {

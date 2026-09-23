@@ -2,6 +2,18 @@ import SwiftUI
 import AppKit
 import KleothCore
 
+/// The scope the latest History request asked for, read by a History window
+/// as it MOUNTS. The request counters (`meetingsHistoryRequest`, …) only reach
+/// a window that is already open — `onChange` never fires for the value a view
+/// mounts with — so a request that opens the window (the pill's "Dictation
+/// history…", Settings' History rows, the popover's recording row) landed on
+/// Meetings whatever it asked for. Every request site sets this; the window
+/// consumes it on appear, and an open window clears it as it flips.
+@MainActor
+enum HistoryRouting {
+    static var requestedScope: HistoryScope?
+}
+
 /// Which history the window is showing. Meetings and dictations are different
 /// enough — a Finder-like folder list vs. a text-only log — that each gets its
 /// own `NavigationSplitView` behind a scope picker, rather than one list over a
@@ -85,7 +97,11 @@ struct HistoryView: View {
         // Become a regular, ⌘-Tab-able app while this window is open, then revert
         // to a pure menu-bar agent when it closes. Without this, an LSUIElement
         // (.accessory) app's windows don't show in the ⌘-Tab switcher.
-        .onAppear { AppActivation.shared.windowOpened() }
+        .onAppear {
+            AppActivation.shared.windowOpened()
+            if let requested = HistoryRouting.requestedScope { scope = requested }
+            HistoryRouting.requestedScope = nil
+        }
         .onDisappear { AppActivation.shared.windowClosed() }
         // The popover's deep links live up here too, NOT on the meetings
         // branch: that branch isn't mounted while the scope is Dictations, so
@@ -94,6 +110,7 @@ struct HistoryView: View {
         // scope; the request counter also covers "Show all meetings…" (no id)
         // and a repeat click on the already-selected meeting (no id change).
         .onChange(of: controller.meetingsHistoryRequest) { _, _ in
+            HistoryRouting.requestedScope = nil
             scope = .meetings
             if let id = controller.selectedMeetingID { selection = [id] }
         }
@@ -106,10 +123,12 @@ struct HistoryView: View {
         // flips the scope (a repeat click on the already-selected recording
         // changes no id), and `RecordingsListView` observes the id itself.
         .onChange(of: screenRecording.recordingsHistoryRequest) { _, _ in
+            HistoryRouting.requestedScope = nil
             scope = .recordings
         }
         // The pill menu's "Dictation history…", same idiom.
         .onChange(of: dictation.dictationsHistoryRequest) { _, _ in
+            HistoryRouting.requestedScope = nil
             scope = .dictations
         }
     }

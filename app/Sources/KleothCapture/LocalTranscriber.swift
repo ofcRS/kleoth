@@ -50,6 +50,13 @@ public struct LocalTranscriber: Transcriber {
     /// On-device transcription is free.
     public var usdPerHour: Double { 0 }
 
+    /// What a transcript records as its engine (a dictation row's
+    /// `transcription_model`, a recording sidecar's `transcript_model`):
+    /// `whisperkit/<model>` rather than the protocol default, the type name.
+    public func modelIdentifier(for options: ScribeOptions) -> String {
+        "whisperkit/\(model)"
+    }
+
     /// Pre-downloads the Whisper model using a background URLSession (so a large
     /// or slow first-run download is not killed by the 60-second request
     /// timeout), reporting fractional progress (0…1). Cheap once the model is

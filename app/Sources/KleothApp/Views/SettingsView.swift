@@ -303,9 +303,14 @@ struct SettingsView: View {
     /// scope's request counter, which `HistoryView` observes, then open).
     private func openHistory(_ target: HistoryTarget) {
         switch target {
-        case .meetings: controller.meetingsHistoryRequest += 1
-        case .dictations: dictation.requestDictationHistory()
-        case .recordings: screenRecording.recordingsHistoryRequest += 1
+        case .meetings:
+            HistoryRouting.requestedScope = .meetings
+            controller.meetingsHistoryRequest += 1
+        case .dictations:
+            dictation.requestDictationHistory()
+        case .recordings:
+            HistoryRouting.requestedScope = .recordings
+            screenRecording.recordingsHistoryRequest += 1
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
         openWindow(id: "kleoth-history")

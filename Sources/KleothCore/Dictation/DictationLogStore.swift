@@ -13,8 +13,8 @@ import Foundation
 /// views. Every write lands via an atomic replace, so a concurrent read sees
 /// either the old or the new file, never a torn one.
 ///
-/// Audio is never stored here — dictation clips are deleted the moment the
-/// pipeline exits.
+/// Audio is never stored in the day files. A pending row only NAMES its kept
+/// clip, which lives next door in `dictations/audio/` (``DictationAudioStore``).
 public actor DictationLogStore {
     /// `<outputDir>/dictations`. Immutable, hence safe to read from anywhere.
     public nonisolated let baseDir: URL
@@ -76,6 +76,48 @@ public actor DictationLogStore {
             }
         }
         return result
+    }
+
+    /// The row with this id, whichever day it is filed under.
+    public nonisolated func entry(id: String) -> DictationLogEntry? {
+        for day in availableDays() {
+            if let entry = loadDay(named: day).first(where: { $0.id == id }) {
+                return entry
+            }
+        }
+        return nil
+    }
+
+    /// Which of `candidates` (kept-clip file names) some record here still
+    /// names — the launch sweep trashes only the rest. Matched as TEXT over
+    /// every `.json` file in the folder (day files, quarantined `.corrupt-`
+    /// copies, hand-broken files alike), so a day file that no longer decodes
+    /// still protects its clips instead of reading as "no rows". nil when a
+    /// file could not be read at all: the caller must then treat every
+    /// candidate as referenced — the sweep fails closed.
+    public nonisolated func audioFileNamesMentioned(among candidates: Set<String>) -> Set<String>? {
+        guard !candidates.isEmpty else { return [] }
+        let manager = FileManager.default
+        let names: [String]
+        do {
+            names = try manager.contentsOfDirectory(atPath: baseDir.path)
+        } catch {
+            // No folder at all: nothing names anything. A folder that exists
+            // but can't be listed is unknown ground.
+            return manager.fileExists(atPath: baseDir.path) ? nil : []
+        }
+        var mentioned = Set<String>()
+        for name in names where name.hasSuffix(".json") {
+            guard let data = manager.contents(atPath: baseDir.appendingPathComponent(name).path) else {
+                return nil
+            }
+            let text = String(decoding: data, as: UTF8.self)
+            for candidate in candidates where !mentioned.contains(candidate) && text.contains(candidate) {
+                mentioned.insert(candidate)
+            }
+            if mentioned.count == candidates.count { break }
+        }
+        return mentioned
     }
 
     /// Bare day stamps (`"2026-09-03"`), newest-first. Quarantined
@@ -156,6 +198,21 @@ public actor DictationLogStore {
             }
         }
         return removed
+    }
+
+    /// Rewrites the row with `entry.id` in place — same day file, same
+    /// position — e.g. a pending row once a retry has transcribed it. Returns
+    /// false, writing nothing, when no row has that id (deleted meanwhile).
+    @discardableResult
+    public func replace(_ entry: DictationLogEntry) throws -> Bool {
+        for day in availableDays() {
+            var entries = loadDay(named: day)
+            guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { continue }
+            entries[index] = entry
+            try write(entries, to: dayFileURL(named: day))
+            return true
+        }
+        return false
     }
 
     // MARK: - Private

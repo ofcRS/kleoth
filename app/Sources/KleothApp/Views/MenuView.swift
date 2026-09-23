@@ -500,6 +500,7 @@ struct MenuView: View {
     /// keyed by is its standardized path (`ScreenRecordingItem.id`).
     private func openRecordings(select url: URL?) {
         screenRecording.selectedRecordingID = url?.standardizedFileURL.path
+        HistoryRouting.requestedScope = .recordings
         screenRecording.recordingsHistoryRequest += 1
         NSApplication.shared.activate(ignoringOtherApps: true)
         openWindow(id: "kleoth-history")
@@ -512,6 +513,7 @@ struct MenuView: View {
     /// silently land on the dictation list.
     private func openHistory(select id: RecentMeeting.ID?) {
         controller.selectedMeetingID = id
+        HistoryRouting.requestedScope = .meetings
         controller.meetingsHistoryRequest += 1
         NSApplication.shared.activate(ignoringOtherApps: true)
         openWindow(id: "kleoth-history")

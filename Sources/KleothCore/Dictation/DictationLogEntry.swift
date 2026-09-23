@@ -6,6 +6,10 @@ public enum DictationInsertMethod: String, Codable, Sendable {
     case paste
     /// The text was left on the clipboard (Accessibility / secure-input refusal).
     case clipboard
+    /// Nothing went into an app: a pending row (the audio is kept, the text is
+    /// not there yet), or one transcribed later from History, where the text is
+    /// copied on request. `"none"` on disk; an older build reads it as `paste`.
+    case notInserted = "none"
 }
 
 /// One dictation, as stored in `~/Kleoth/dictations/<yyyy-MM-dd>.json`.
@@ -15,17 +19,22 @@ public enum DictationInsertMethod: String, Codable, Sendable {
 /// acronym suffix does NOT round-trip (`appBundleID` → `app_bundle_id` →
 /// decodes to `appBundleId` ✗). Keep new keys acronym-free too.
 ///
-/// Audio is never kept — only this text record. Costs are stored (like
-/// `meta.json`) but never displayed: Settings → Usage stays the only money
-/// surface in the app.
+/// A dictation that pasted keeps no audio — only this text record. A
+/// dictation whose transcription failed (or was stopped) is a PENDING row:
+/// empty text, and `audioFileName` naming its clip in `dictations/audio/`
+/// until a retry fills the text in and deletes the clip (dictation-retry
+/// design §3.2). Costs are stored (like `meta.json`) but never displayed:
+/// Settings → Usage stays the only money surface in the app.
 public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
     public var id: String
     /// ISO-8601 `.withInternetDateTime`, e.g. `2026-09-03T15:14:09Z`.
     public var timestamp: String
     public var appBundleId: String?
     public var appName: String?
-    /// Scribe's `language_code` (ISO-639-3, e.g. `"rus"`) — never the polisher's
-    /// BCP-47 guess, so there is exactly one language source of truth on disk.
+    /// The transcription engine's language code — Scribe's `language_code`
+    /// (ISO-639-3, e.g. `"rus"`), or WhisperKit's ISO-639-1 (`"ru"`) for a row
+    /// transcribed on device from History — never the polisher's BCP-47
+    /// guess, so there is exactly one language source of truth on disk.
     public var language: String?
     public var rawText: String
     /// Equal to `rawText` when `usedRawFallback` is true.
@@ -43,6 +52,15 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
     /// Wall-clock seconds the polish call took (nil when no model was called).
     /// Diagnostic: a run of slow rows points at the model, not the text.
     public var polishSeconds: Double?
+    /// The kept clip in `<dictations>/audio/` — set exactly while the row is
+    /// pending (``isPending``), cleared when a retry transcribes it.
+    public var audioFileName: String?
+    /// Why the row is pending, as a sentence for History ("Scribe didn't
+    /// answer within 46 s. Tried twice."). nil once transcribed.
+    public var transcriptionError: String?
+    /// Wall-clock seconds of the transcription attempt that produced the text.
+    /// Diagnostic, like `polishSeconds`: it calibrates the Scribe budget.
+    public var transcriptionSeconds: Double?
 
     public init(
         id: String = UUID().uuidString,
@@ -61,7 +79,10 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         insertMethod: DictationInsertMethod = .paste,
         transcriptionCost: Double? = nil,
         polishCost: Double? = nil,
-        polishSeconds: Double? = nil
+        polishSeconds: Double? = nil,
+        audioFileName: String? = nil,
+        transcriptionError: String? = nil,
+        transcriptionSeconds: Double? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -80,6 +101,38 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         self.transcriptionCost = transcriptionCost
         self.polishCost = polishCost
         self.polishSeconds = polishSeconds
+        self.audioFileName = audioFileName
+        self.transcriptionError = transcriptionError
+        self.transcriptionSeconds = transcriptionSeconds
+    }
+
+    /// A dictation waiting to be transcribed: its audio is kept, its text is
+    /// not there yet.
+    public var isPending: Bool { audioFileName != nil }
+
+    /// The row a failed or stopped dictation leaves behind: no text, nothing
+    /// inserted, the kept clip and the reason.
+    public static func pending(
+        id: String = UUID().uuidString,
+        timestamp: String,
+        appBundleId: String?,
+        appName: String?,
+        durationSeconds: Double?,
+        audioFileName: String,
+        transcriptionError: String
+    ) -> DictationLogEntry {
+        DictationLogEntry(
+            id: id,
+            timestamp: timestamp,
+            appBundleId: appBundleId,
+            appName: appName,
+            rawText: "",
+            polishedText: "",
+            durationSeconds: durationSeconds,
+            insertMethod: .notInserted,
+            audioFileName: audioFileName,
+            transcriptionError: transcriptionError
+        )
     }
 
     // MARK: - Coding
@@ -91,6 +144,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         case rawText, polishedText, usedRawFallback, fallbackReason
         case transcriptionModel, polishModel, polishProvider, durationSeconds
         case insertMethod, transcriptionCost, polishCost, polishSeconds
+        case audioFileName, transcriptionError, transcriptionSeconds
     }
 
     /// Lenient decode: only `id` / `timestamp` / `raw_text` / `polished_text`
@@ -121,6 +175,9 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         transcriptionCost = try container.decodeIfPresent(Double.self, forKey: .transcriptionCost)
         polishCost = try container.decodeIfPresent(Double.self, forKey: .polishCost)
         polishSeconds = try container.decodeIfPresent(Double.self, forKey: .polishSeconds)
+        audioFileName = try container.decodeIfPresent(String.self, forKey: .audioFileName)
+        transcriptionError = try container.decodeIfPresent(String.self, forKey: .transcriptionError)
+        transcriptionSeconds = try container.decodeIfPresent(Double.self, forKey: .transcriptionSeconds)
     }
 
     /// Explicit (rather than synthesized) so every key is always present —
@@ -146,6 +203,9 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         try container.encode(transcriptionCost, forKey: .transcriptionCost)
         try container.encode(polishCost, forKey: .polishCost)
         try container.encode(polishSeconds, forKey: .polishSeconds)
+        try container.encode(audioFileName, forKey: .audioFileName)
+        try container.encode(transcriptionError, forKey: .transcriptionError)
+        try container.encode(transcriptionSeconds, forKey: .transcriptionSeconds)
     }
 
     // MARK: - Time

@@ -454,10 +454,10 @@ struct DictationPillView: View {
                 .accessibilityHidden(true)
             label(message)
         case .failed(let fault):
-            Image(systemName: "xmark.octagon.fill")
+            Image(systemName: fault.symbolName)
                 .symbolRenderingMode(.hierarchical)
                 .font(.callout)
-                .foregroundStyle(PillStyle.failureTint)
+                .foregroundStyle(fault.isRecoverable ? PillStyle.pendingTint : PillStyle.failureTint)
                 .accessibilityHidden(true)
             label(fault.text)
             if let action = fault.action {

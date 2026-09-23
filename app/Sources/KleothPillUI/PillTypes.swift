@@ -102,6 +102,13 @@ public enum DictationPillFault: Equatable, Sendable {
     /// Granted, but this process was launched before the grant — TCC only
     /// answers for the process as it started, so a relaunch is the fix.
     case screenRecordingStale
+    /// The transcription failed but the audio was KEPT (a pending row in
+    /// History): "Timed out — saved to History", with a Retry button that
+    /// sends the kept clip again. Nothing was lost, so it is drawn in the
+    /// pending tint, not the failure red (dictation-retry design §3.3).
+    /// `dictationId` is the pending row's id; it rides on the Retry action,
+    /// so the retry never depends on host state a dismissal could clear.
+    case transcriptionKept(String, dictationId: String)
 
     /// Belt and braces for `.message`: no state may carry an unbounded line
     /// into the pill (the panel width follows this text). The controller
@@ -115,11 +122,23 @@ public enum DictationPillFault: Equatable, Sendable {
         case .secureInput: return "The focused field blocks dictation"
         case .screenRecordingNeeded: return "Allow Screen Recording, then quit and reopen Kleoth"
         case .screenRecordingStale: return "Quit and reopen Kleoth to finish enabling Screen Recording"
-        case .message(let message):
+        case .message(let message), .transcriptionKept(let message, _):
             let single = message.replacingOccurrences(of: "\n", with: " ")
             guard single.count > Self.maxMessageLength else { return single }
             return String(single.prefix(Self.maxMessageLength)) + "…"
         }
+    }
+
+    /// Nothing is lost and the pill itself can put it right (Retry).
+    public var isRecoverable: Bool {
+        if case .transcriptionKept = self { return true }
+        return false
+    }
+
+    /// The leading glyph: the octagon for a dead end, a circular arrow for a
+    /// kept dictation waiting to be retried.
+    public var symbolName: String {
+        isRecoverable ? "exclamationmark.arrow.circlepath" : "xmark.octagon.fill"
     }
 
     public var action: DictationPillAction? {
@@ -127,6 +146,7 @@ public enum DictationPillFault: Equatable, Sendable {
         case .missingElevenLabsKey: return .openSettings
         case .needsAccessibility: return .openAccessibilitySettings
         case .screenRecordingNeeded, .screenRecordingStale: return .openScreenRecordingSettings
+        case .transcriptionKept(_, let id): return .retryTranscription(dictationId: id)
         case .secureInput, .message: return nil
         }
     }
@@ -153,6 +173,10 @@ public enum DictationPillAction: Equatable, Sendable {
     case pasteLastDictation
     case openDictationHistory
     case hideForAnHour
+    /// The Retry button on a `.transcriptionKept` pill: transcribe the kept
+    /// clip of the pending row `dictationId` again and paste it into the
+    /// frontmost app.
+    case retryTranscription(dictationId: String)
 
     /// The label of the pill's action BUTTON. Empty for the tap-only actions:
     /// they are the capsule itself, not a button with words.
@@ -162,6 +186,7 @@ public enum DictationPillAction: Equatable, Sendable {
         case .openAccessibilitySettings: return "Open Accessibility"
         case .startScreenRecording, .stopScreenRecording, .revealLastRecording: return ""
         case .openScreenRecordingSettings: return "Open Screen Recording"
+        case .retryTranscription: return "Retry"
         case .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
              .pasteLastDictation, .openDictationHistory, .hideForAnHour:
             return ""

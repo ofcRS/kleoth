@@ -381,8 +381,10 @@ public final class DictationCapture {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// `$TMPDIR/kleoth-dictation/` — every raw and prepared clip lives here and
-    /// nowhere else. Dictation audio is never kept.
+    /// `$TMPDIR/kleoth-dictation/` — every raw and prepared clip lives here
+    /// while its run is in flight. A run that ends without a transcript moves
+    /// its clip to `<output>/dictations/audio/` (`DictationAudioStore`); every
+    /// other clip is deleted when the run exits.
     public static func tempDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("kleoth-dictation", isDirectory: true)
