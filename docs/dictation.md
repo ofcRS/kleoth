@@ -9,6 +9,11 @@ and keeps every dictation as plain JSON on your disk.
 **[⬇ Download Kleoth](https://github.com/ofcRS/kleoth/releases/latest)** · macOS 14.4+ ·
 [Back to the README](../README.md)
 
+<p align="center">
+  <img src="assets/demo-dictation.gif" alt="Hold fn+shift and talk; the pill listens, transcribes, cleans up, and the text is pasted into the editor" width="720"><br>
+  <em>Kleoth's real pill, rendered with sample content.</em>
+</p>
+
 ## How it works
 
 1. **Hold fn+shift and speak.** A small dark pill at the edge of your screen springs out and shows a

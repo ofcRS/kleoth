@@ -12,6 +12,11 @@ export yet.** If you need a link to send someone, Loom still does that and Kleot
 **[⬇ Download Kleoth](https://github.com/ofcRS/kleoth/releases/latest)** · macOS 14.4+ ·
 [Back to the README](../README.md)
 
+<p align="center">
+  <img src="assets/demo-screen.gif" alt="Click Record in the pill; it becomes a toolbar with a timer and audio meters; click Stop and the recording is saved" width="720"><br>
+  <em>Kleoth's real pill, rendered with sample content. The region picker is left out.</em>
+</p>
+
 ## How it works
 
 1. **Start.** Pick "Record screen…" in the menu-bar popover, or hover the pill at the edge of your

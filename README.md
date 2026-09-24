@@ -26,10 +26,15 @@ No account. No database. Local-first by design.
 
 > *kleos* (Greek κλέος) — "that which is heard." From the Proto-Indo-European root \*ḱlew‑, "to hear."
 
-<!-- Demos, to record (10–20 s each, docs/assets/demo-*.gif) and place here once they exist:
-     1. dictating into an editor, an AI chat and a terminal;
-     2. a meeting → its transcript → its summary;
-     3. a screen recording → the viewer with its word-timed transcript. -->
+<p align="center">
+  <img src="docs/assets/demo-dictation.gif" alt="Dictation: hold fn+shift and talk; the pill listens, transcribes, cleans up, and the text is pasted into the editor" width="49%">
+  <img src="docs/assets/demo-screen.gif" alt="Screen recording: click Record in the pill, the pill becomes a toolbar with a timer and audio meters, click Stop, the recording is saved" width="49%"><br>
+  <em>Kleoth's real pill, rendered with sample content; the screen demo skips the region picker
+  (<a href="app/branding-src/demo/make-demos.sh">how</a>).</em>
+</p>
+
+<!-- Demo still to come: a meeting → its transcript → its summary, and the recordings viewer
+     (rendered from the app's own windows with demo data). -->
 
 ## Dictation: Wispr Flow-style voice typing in any app
 
