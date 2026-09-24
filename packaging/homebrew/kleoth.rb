@@ -13,7 +13,7 @@ cask "kleoth" do
   url "https://github.com/ofcRS/kleoth/releases/download/v#{version}/Kleoth-#{version}.dmg",
       verified: "github.com/ofcRS/kleoth/"
   name "Kleoth"
-  desc "Local-first dictation, bot-free meeting notes and screen recording"
+  desc "Voice dictation, bot-free meeting notes and local screen recording"
   homepage "https://github.com/ofcRS/kleoth"
 
   livecheck do

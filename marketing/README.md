@@ -9,6 +9,7 @@ one file, and a script writes it everywhere else.
 | `positioning.json` | **The source.** Tagline, GitHub About/topics/homepage, the three jobs and their status, the BYO-AI line, short descriptions, image text, `reviewed_for`. |
 | `sync.ts` | `check` reports drift, `apply` writes everything below, `hook` is the release gate. |
 | `positioning.lock.json` | Written by `apply`: a fingerprint of the image text, so `check` knows when the images are stale. |
+| `sync.test.ts` | `bun test ./marketing/sync.test.ts`: the hook's command parser (what counts as tagging or publishing a release). |
 
 What `apply` writes from it:
 
@@ -39,7 +40,9 @@ bun marketing/sync.ts apply --no-remote  # files only
 The release gate is `reviewed_for`. The copy can't be generated from a changelog, so the gate
 makes a person (or Claude) review it. `check` fails while `reviewed_for` is not the version in
 `Info.plist`. The Claude Code hook in `.claude/settings.json` runs that check before any
-`git tag vX.Y.Z` or `gh release create` and blocks it until it passes. `docs/RELEASING.md` has the
+`git tag vX.Y.Z` or `gh release create` (also through `git -C`, `gh -R`, `env`, subshells) and
+blocks it until it passes. It also requires everything `apply` writes to be committed, and it
+blocks when the check itself errors. `docs/RELEASING.md` has the
 same step for releases cut by hand, and the `announce-release` workflow warns if the live
 About/topics don't match after a release.
 
@@ -49,6 +52,7 @@ About/topics don't match after a release.
    - Something left beta? Change its `status`, and drop "beta" from its page and the README section.
    - A limit gone (see **Claims held back** below)? Make the claim.
    - A limit added, or a claim no longer true? Take it out.
+   - Features described as "from the next release" that this release ships? Drop the qualifier.
 2. Set `reviewed_for` to the new version.
 3. After `bash app/make-dmg.sh`, run `bun marketing/sync.ts apply`. That writes the copy, the
    download link, the cask version and SHA, the images if their text changed, and the GitHub

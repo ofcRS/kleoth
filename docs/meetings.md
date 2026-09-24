@@ -13,9 +13,10 @@ server. It is free and open source (Apache-2.0).
 
 1. **Record.** Click **Start Recording** in the menu bar, press your global hotkey, or use
    `kleoth://record` from a script or Raycast. Kleoth records two tracks: your mic, and the audio
-   your Mac plays (through a Core Audio process tap, macOS 14.4+). A small "Before you record" notice
-   asks you to confirm that everyone consents, and the acknowledgement is stamped into the meeting.
-2. **Transcribe.** On device by default, with Whisper large-v3 through
+   your Mac plays (through a Core Audio process tap, macOS 14.4+). The first time you record, a consent
+   notice asks you to confirm that everyone agrees; the acknowledgement is stamped into each
+   meeting's `meta.json`.
+2. **Transcribe.** On device by default, with Whisper large-v3 turbo through
    [WhisperKit](https://github.com/argmaxinc/WhisperKit) on the Apple Neural Engine. It is free,
    offline after a one-time ~600 MB model download, and needs no key. The language is detected
    automatically (English, Russian and dozens more), or pinned in Settings. Transcribing on stop is
@@ -26,10 +27,11 @@ server. It is free and open source (Apache-2.0).
    need no guesswork. Rename a speaker to a real name and the summary's action items and highlights
    follow.
 4. **Summarize.** A TL;DR, an overview, action items and per-speaker highlights, written in the
-   meeting's own language. The summary runs on the AI you already use: Claude Code, Codex, a local
-   Ollama or LM Studio server, or OpenRouter (see [AI providers](ai-providers.md)). A summary is
-   saved only when it is complete. One that comes back cut off or with a section missing is retried
-   once, and otherwise reported as failed, never saved half-empty.
+   meeting's own language. The summary runs right after each transcription, on your AI provider:
+   Claude Code, Codex, a local Ollama or LM Studio server, or OpenRouter. On Automatic, the
+   default, that is the first one Kleoth finds (see [AI providers](ai-providers.md)). From the next
+   release, a summary is saved only when it is complete. One that comes back cut off or with a
+   section missing is retried once, and otherwise reported as failed, never saved half-empty.
 
 ## Your meeting is a folder
 
@@ -59,10 +61,13 @@ folders, and so do the Raycast extension and the `kleoth://` URL scheme.
 
 ## What leaves your Mac
 
-- **By default, nothing.** Recording and on-device transcription never touch the network.
+- **Recording and on-device transcription** stay on your Mac. The only network use is the
+  one-time model download.
 - **Cloud transcription**, if you click it: the meeting's audio goes to ElevenLabs Scribe with your key.
-- **Summaries**: the transcript goes to the AI provider you picked. A local server keeps it on the
-  machine. Claude Code and Codex use the account you're already signed in with.
+- **Summaries**: after each transcription, the transcript goes to your AI provider. On Automatic
+  that is the first one found (local server, Claude Code, Codex, OpenRouter). With no local server
+  running and the Claude Code or Codex CLI signed in, that means Anthropic's or OpenAI's servers,
+  under your account. To keep transcripts on the Mac, pick a local server in Settings → Accounts.
 
 ## Consent
 

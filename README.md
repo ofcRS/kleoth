@@ -35,22 +35,22 @@ No account. No database. Local-first by design.
 
 Hold **fn+shift**, speak, let go: Kleoth transcribes what you said, cleans it up with one short
 language-model pass (fillers and false starts gone, never translated) and pastes it into whatever
-app has focus. If you know Wispr Flow or Superwhisper, it is the same gesture. Double-tap for
+app has focus. If you know Wispr Flow or Superwhisper, it is the same hold-to-talk idea. Double-tap for
 hands-free. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
 would have typed — paragraphs, a list where you listed things; a quick chat message is pasted as
 heard. A personal dictionary biases recognition toward your names and jargon, and every dictation
 lands in a searchable history.
 
 Speech-to-text runs on [ElevenLabs Scribe](https://elevenlabs.io) with your own key; the clean-up
-runs on the AI you choose. A dictation that can't be transcribed is never lost: its audio waits in
-History, and the pill's **Retry** — or History's "Try again", in the cloud or on this Mac —
-transcribes it later. [More about dictation →](docs/dictation.md)
+runs on your AI provider. From the next release, a dictation that can't be transcribed keeps its
+audio: it waits in History, and the pill's **Retry** — or History's "Try again", in the cloud or on
+this Mac — transcribes it later. [More about dictation →](docs/dictation.md)
 
 ## Meetings: a local alternative to Granola, a bot-free one to Otter, Fireflies and tl;dv
 
 Kleoth records your microphone and the call's audio directly on your Mac — Zoom, Google Meet,
-Teams, a browser tab, anything that plays sound. No bot joins the call, and nothing is uploaded
-unless you ask.
+Teams, a browser tab, anything that plays sound. No bot joins the call, and the audio stays on
+your Mac unless you choose cloud transcription.
 
 - **Transcribed on device** by Whisper ([WhisperKit](https://github.com/argmaxinc/WhisperKit) on the
   Apple Neural Engine). No account, no API key. The language is detected automatically — English,
@@ -60,7 +60,8 @@ unless you ask.
 - **Cloud transcription when it matters** — one click sends a meeting to ElevenLabs Scribe, with
   your key; the on-device version is kept alongside.
 - **Summaries in the meeting's language** — TL;DR, overview, action items and per-speaker
-  highlights, from the AI you choose.
+  highlights, written after each transcription by your AI provider (on Automatic, the first one
+  Kleoth finds — see [Bring your own AI](#bring-your-own-ai)).
 - **Files, not a database** — every meeting is a folder of audio, `transcript.md`, `summary.md` and
   JSON in `~/Kleoth`. Grep it, sync it, delete it.
 
@@ -68,7 +69,8 @@ unless you ask.
 
 ## Screen recording: Loom-style, local (beta)
 
-Hover the pill (or pick "Record screen…" in the popover), drag a region or take the whole display,
+Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on), drag a
+region or take the whole display,
 and Kleoth records it with system audio **and** your microphone as one small H.264 MP4 (about 22 MB
 per minute) in `~/Kleoth/screen-recordings/`. Each recording is transcribed on device afterwards
 and opens in a viewer with the transcript beside the video: the spoken word is highlighted, clicking
@@ -246,11 +248,18 @@ and local servers only — the Claude Code and Codex CLIs take no output cap.
 
 ## Data & privacy
 
-By default, **nothing leaves your machine.** Transcription is on-device; dictation, summaries and
-cloud transcription only run when you opt in. Summaries and dictation cleanup need no API key at all when
-you point them at Claude Code, Codex, a local server (Ollama, LM Studio) or Apple's on-device model
-(see [Bring your own AI](#bring-your-own-ai)) — nothing is ever sent anywhere you did not sign up
-for yourself.
+**Recording and on-device transcription never leave your Mac**, and nothing ever goes to a Kleoth
+server — there isn't one. What does leave, and when:
+
+- **Audio** goes only to ElevenLabs Scribe, with your key: each dictation, and a meeting or
+  recording you choose to transcribe in the cloud.
+- **Transcripts** go to your AI provider: a meeting's, for its summary, right after it is
+  transcribed; a dictation's, for clean-up. On **Automatic** (the default) that is the first
+  provider Kleoth finds — local server, Claude Code, Codex, OpenRouter, Apple — so with no local
+  server running and the Claude Code or Codex CLI signed in, your transcripts go to Anthropic or
+  OpenAI under your account.
+  To keep them on your Mac, pick a local server (Ollama, LM Studio) or, for dictation, Apple's
+  on-device model in Settings → Accounts (see [Bring your own AI](#bring-your-own-ai)).
 
 Each meeting is one self-contained folder, `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`:
 

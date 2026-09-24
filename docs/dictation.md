@@ -3,7 +3,7 @@
 Kleoth's dictation turns speech into typed text in whatever Mac app has focus. Hold **fn+shift**,
 speak, let go, and the cleaned-up text is pasted where your cursor is: an editor, a terminal running
 Claude Code or Codex, ChatGPT in a browser, Slack, Mail. If you have used Wispr Flow or
-Superwhisper, it is the same gesture. Kleoth is free and open source (Apache-2.0), has no account,
+Superwhisper, it is the same hold-to-talk idea. Kleoth is free and open source (Apache-2.0), has no account,
 and keeps every dictation as plain JSON on your disk.
 
 **[⬇ Download Kleoth](https://github.com/ofcRS/kleoth/releases/latest)** · macOS 14.4+ ·
@@ -34,12 +34,14 @@ The clean-up runs on whichever AI you already use: a local Ollama or LM Studio s
 OpenRouter, or Apple's on-device model on macOS 26. With none of them, the raw Scribe transcript is
 pasted as it is. See [AI providers](ai-providers.md).
 
-## Nothing is lost
+## When transcription fails (next release)
 
-A dictation that cannot be transcribed keeps its audio: Scribe timed out twice, the network
-dropped, the key was rejected, or you pressed Esc while it was transcribing. The pill says
-"Timed out — saved to History" and offers **Retry**, which sends the same audio again and pastes
-the result. In History, the row shows as *Not transcribed*. There, **Try again in cloud** or
+From the next release, a dictation that cannot be transcribed keeps its audio: Scribe timed out
+twice, the network dropped, or the key was rejected. The pill says what happened ("Timed out —
+saved to History") and offers **Retry**, which sends the same audio again and pastes the result.
+Pressing Esc while it transcribes stops waiting and keeps the audio too ("Stopped — saved to
+History"). Quitting Kleoth mid-transcription still discards it. In History, the row shows as
+*Not transcribed*. There, **Try again in cloud** or
 **Try again on device** (free, runs Whisper on this Mac) copies the text to your clipboard when
 it's ready. Once a dictation is transcribed, its audio is deleted.
 
@@ -54,7 +56,7 @@ Dictation. The first 100 terms are used.
 ## What leaves your Mac
 
 - **To ElevenLabs Scribe, with your key:** the audio of each dictation and your dictionary terms.
-- **To the clean-up provider you picked:** the transcript, the name of the app you are typing into,
+- **To your clean-up provider** (on Automatic, the first one Kleoth finds): the transcript, the name of the app you are typing into,
   the detected language and your dictionary terms. If that provider is a local server or Apple's
   on-device model, nothing leaves the machine.
 - Nothing goes to Kleoth: there is no Kleoth server.

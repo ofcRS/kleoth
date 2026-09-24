@@ -6,7 +6,7 @@ The viewer plays the video with the transcript beside it: the word being spoken 
 clicking a word jumps to it. Nothing is uploaded, and there is no account. It is part of Kleoth,
 a free, open-source (Apache-2.0) Mac app.
 
-**Status: beta.** Recording is solid. The viewer is a first cut: **no trimming, no sharing, no
+**Status: beta.** The viewer is a first cut: **no trimming, no sharing, no
 export yet.** If you need a link to send someone, Loom still does that and Kleoth doesn't.
 
 **[⬇ Download Kleoth](https://github.com/ofcRS/kleoth/releases/latest)** · macOS 14.4+ ·
@@ -14,15 +14,15 @@ export yet.** If you need a link to send someone, Loom still does that and Kleot
 
 ## How it works
 
-1. **Start.** Hover the pill at the edge of your screen and click **Record**, or pick "Record
-   screen…" in the menu-bar popover.
+1. **Start.** Pick "Record screen…" in the menu-bar popover, or hover the pill at the edge of your
+   screen (shown while dictation is on) and click **Record**.
 2. **Pick what to record.** The screen dims. Drag a region, or press Return for the whole display.
    Esc cancels. Kleoth's own windows (the pill, the picker, the toolbar) are never in the frame.
 3. **Record.** The pill becomes a toolbar with the elapsed time and live meters for your mic and
    the system audio. Only its **Stop** button stops, so a stray click can't end a recording. You
    can dictate mid-recording.
-4. **Stop.** The file lands in `~/Kleoth/screen-recordings/` as an H.264 MP4, at most 1920 px wide
-   and 30 fps, about 22 MB per minute. System audio and mic are mixed into one track. Quitting
+4. **Stop.** The file lands in `~/Kleoth/screen-recordings/` as an H.264 MP4, at most 1920 px on the
+   long edge and 30 fps, about 22 MB per minute. System audio and mic are mixed into one track. Quitting
    mid-recording asks first and still saves the file. A recording interrupted by a crash is
    recovered on the next launch.
 5. **Read it.** Each recording is transcribed on device right after it is saved. In History →

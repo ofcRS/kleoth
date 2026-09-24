@@ -44,7 +44,9 @@ type Positioning = {
   image: { jobs: string; tagline: string; sub: string };
 };
 
-const pos: Positioning = JSON.parse(readFileSync(P(POSITIONING), "utf8"));
+let loaded: Positioning | undefined;
+/** positioning.json, parsed on first use: the hook only needs it for release commands. */
+const pos = (): Positioning => (loaded ??= JSON.parse(readFileSync(P(POSITIONING), "utf8")));
 const read = (rel: string) => readFileSync(P(rel), "utf8");
 
 // ---------------------------------------------------------------- facts
@@ -66,7 +68,7 @@ function dmgFor(version: string): Dmg | null {
 
 function imagesFingerprint(): string {
   return createHash("sha256")
-    .update(JSON.stringify({ name: pos.name, image: pos.image, script: read(IMAGE_SCRIPT) }))
+    .update(JSON.stringify({ name: pos().name, image: pos().image, script: read(IMAGE_SCRIPT) }))
     .digest("hex");
 }
 
@@ -81,8 +83,8 @@ const BADGES = (repo: string) => [
 ].join("\n");
 
 function heroBlock(): string {
-  const alt = `${pos.name} — ${pos.tagline.replace(/\.$/, "")}`;
-  const jobs = pos.jobs
+  const alt = `${pos().name} — ${pos().tagline.replace(/\.$/, "")}`;
+  const jobs = pos().jobs
     .map((j) => {
       const status = j.status === "stable" ? "" : ` (${j.status})`;
       return `- **[${j.title}](${j.page})${status}.** ${j.line}`;
@@ -93,22 +95,22 @@ function heroBlock(): string {
     `  <img src="docs/assets/hero.png" alt="${alt}" width="830">`,
     `</p>`,
     ``,
-    BADGES(pos.github.repo),
+    BADGES(pos().github.repo),
     ``,
-    `**${pos.tagline}**`,
+    `**${pos().tagline}**`,
     ``,
-    pos.intro,
+    pos().intro,
     ``,
     jobs,
     ``,
-    `${pos.byo_ai} [Which providers, and what each needs →](${pos.byo_ai_page})`,
+    `${pos().byo_ai} [Which providers, and what each needs →](${pos().byo_ai_page})`,
     ``,
-    pos.closer,
+    pos().closer,
   ].join("\n");
 }
 
 function releaseBlock(version: string, dmg: Dmg): string {
-  const base = `https://github.com/${pos.github.repo}/releases/download/v${version}`;
+  const base = `https://github.com/${pos().github.repo}/releases/download/v${version}`;
   const mb = (dmg.bytes / 1e6).toFixed(1);
   return [
     `**[⬇ Download Kleoth-${version}.dmg](${base}/Kleoth-${version}.dmg)**`,
@@ -172,7 +174,7 @@ function targets(version: string, dmg: Dmg | null): Target[] {
     {
       name: "Homebrew cask desc",
       file: CASK,
-      expected: (t) => replaceOnce(t, CASK, /^  desc ".*"$/m, `  desc ${JSON.stringify(pos.short.homebrew)}`),
+      expected: (t) => replaceOnce(t, CASK, /^  desc ".*"$/m, `  desc ${JSON.stringify(pos().short.homebrew)}`),
     },
     {
       name: `Homebrew cask version + sha256 (v${version})`,
@@ -189,14 +191,14 @@ function targets(version: string, dmg: Dmg | null): Target[] {
       name: "Raycast extension description",
       file: RAYCAST,
       expected: (t) =>
-        replaceOnce(t, RAYCAST, /^  "description": ".*",$/m, `  "description": ${JSON.stringify(pos.short.raycast)},`),
+        replaceOnce(t, RAYCAST, /^  "description": ".*",$/m, `  "description": ${JSON.stringify(pos().short.raycast)},`),
     },
     {
       name: "DMG Read Me heading",
       file: MAKE_DMG,
       expected: (t) =>
         replaceOnce(t, MAKE_DMG, /(Read Me\.txt" <<'EOF'\n).*\n=+\n/,
-          `Read Me.txt" <<'EOF'\n${pos.short.dmg}\n${"=".repeat(pos.short.dmg.length)}\n`),
+          `Read Me.txt" <<'EOF'\n${pos().short.dmg}\n${"=".repeat(pos().short.dmg.length)}\n`),
     },
   ];
 }
@@ -218,14 +220,18 @@ function evaluate(t: Target): { result: Result; next: string | null; current: st
 // ---------------------------------------------------------------- GitHub metadata
 
 function gh(args: string[], input?: string): { ok: boolean; out: string; err: string } {
-  const p = Bun.spawnSync(["gh", ...args], { cwd: ROOT, stdin: input ? Buffer.from(input) : undefined });
-  return { ok: p.exitCode === 0, out: p.stdout.toString(), err: p.stderr.toString().trim() };
+  try {
+    const p = Bun.spawnSync(["gh", ...args], { cwd: ROOT, stdin: input ? Buffer.from(input) : undefined });
+    return { ok: p.exitCode === 0, out: p.stdout.toString(), err: p.stderr.toString().trim() };
+  } catch (e) {
+    return { ok: false, out: "", err: `gh unavailable (${(e as Error).message})` };
+  }
 }
 
 type Live = { description: string; homepage: string; topics: string[] };
 
 function liveMetadata(): Live | string {
-  const r = gh(["repo", "view", pos.github.repo, "--json", "description,homepageUrl,repositoryTopics"]);
+  const r = gh(["repo", "view", pos().github.repo, "--json", "description,homepageUrl,repositoryTopics"]);
   if (!r.ok) return `gh repo view failed: ${r.err || "unknown error"}`;
   const j = JSON.parse(r.out);
   return {
@@ -239,9 +245,9 @@ function remoteResults(live: Live | string): Result[] {
   if (typeof live === "string") return [{ name: "GitHub About/topics", ok: false, detail: live }];
   const same = (a: string[], b: string[]) => [...a].sort().join(",") === [...b].sort().join(",");
   return [
-    { name: "GitHub About", ok: live.description === pos.github.about, detail: "differs from positioning.json" },
-    { name: "GitHub homepage", ok: live.homepage === pos.github.homepage, detail: "differs from positioning.json" },
-    { name: "GitHub topics", ok: same(live.topics, pos.github.topics), detail: "differ from positioning.json" },
+    { name: "GitHub About", ok: live.description === pos().github.about, detail: "differs from positioning.json" },
+    { name: "GitHub homepage", ok: live.homepage === pos().github.homepage, detail: "differs from positioning.json" },
+    { name: "GitHub topics", ok: same(live.topics, pos().github.topics), detail: "differ from positioning.json" },
   ].map((r) => (r.ok ? { name: r.name, ok: true } : r));
 }
 
@@ -269,9 +275,9 @@ function check(o: Opts): Result[] {
 
   results.push({
     name: `positioning reviewed for v${version}`,
-    ok: pos.reviewed_for === version,
-    detail: pos.reviewed_for === version ? undefined
-      : `reviewed_for is ${pos.reviewed_for} — read CHANGELOG [${version}] against positioning.json, update the copy, bump reviewed_for`,
+    ok: pos().reviewed_for === version,
+    detail: pos().reviewed_for === version ? undefined
+      : `reviewed_for is ${pos().reviewed_for} — read CHANGELOG [${version}] against positioning.json, update the copy, bump reviewed_for`,
   });
 
   if (o.release && !dmg) {
@@ -328,19 +334,19 @@ function apply(o: Opts): boolean {
       console.log(`  ✗       GitHub metadata — ${live}`);
       ok = false;
     } else {
-      const repo = pos.github.repo;
+      const repo = pos().github.repo;
       const edits = [
-        ...(live.description !== pos.github.about ? ["--description", pos.github.about] : []),
-        ...(live.homepage !== pos.github.homepage ? ["--homepage", pos.github.homepage] : []),
+        ...(live.description !== pos().github.about ? ["--description", pos().github.about] : []),
+        ...(live.homepage !== pos().github.homepage ? ["--homepage", pos().github.homepage] : []),
       ];
       if (edits.length) {
         const r = gh(["repo", "edit", repo, ...edits]);
         console.log(r.ok ? `  pushed  GitHub About/homepage` : `  ✗       GitHub About/homepage — ${r.err}`);
         ok &&= r.ok;
       }
-      if ([...live.topics].sort().join() !== [...pos.github.topics].sort().join()) {
+      if ([...live.topics].sort().join() !== [...pos().github.topics].sort().join()) {
         const r = gh(["api", "--method", "PUT", `repos/${repo}/topics`, "--input", "-"],
-          JSON.stringify({ names: pos.github.topics }));
+          JSON.stringify({ names: pos().github.topics }));
         console.log(r.ok ? `  pushed  GitHub topics` : `  ✗       GitHub topics — ${r.err}`);
         ok &&= r.ok;
       }
@@ -355,7 +361,7 @@ function reminders(): string[] {
   if (tag) {
     const d = Bun.spawnSync(["git", "diff", "--quiet", tag, "--", SOCIAL_PREVIEW], { cwd: ROOT });
     if (d.exitCode === 1) {
-      out.push(`${SOCIAL_PREVIEW} changed since ${tag}: upload it at https://github.com/${pos.github.repo}/settings → Social preview (GitHub has no API for it).`);
+      out.push(`${SOCIAL_PREVIEW} changed since ${tag}: upload it at https://github.com/${pos().github.repo}/settings → Social preview (GitHub has no API for it).`);
     }
   }
   out.push("After a copy change, re-run the discovery queries in marketing/README.md.");
@@ -371,18 +377,46 @@ function print(results: Result[]) {
 
 // ---------------------------------------------------------------- hook
 
-/** The release version a shell command is about to tag or publish, or null. */
-function releaseVersion(command: string): string | null {
+/** Files a release must carry committed: everything `apply` writes, plus the copy it comes from. */
+const RELEASE_FILES = [
+  README, CASK, RAYCAST, MAKE_DMG, "docs/assets/hero.png", SOCIAL_PREVIEW, "marketing/",
+  "docs/dictation.md", "docs/meetings.md", "docs/screen-recording.md", "docs/ai-providers.md",
+];
+
+/**
+ * Whether a shell command tags or publishes a release, and which version it names (null = none
+ * named, as in a bare `gh release create`). Not a release → null. Quoted text is ignored for flags
+ * and the version, so `-m "fix -d"` or `-m "notes for v0.4.9"` can't mislead it.
+ */
+export function releaseCommand(command: string): { version: string | null } | null {
   for (const raw of command.split(/&&|\|\||;|\||\n/)) {
-    const seg = raw.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S*\s+)*/, "");
-    const tagged = /^git\s+tag\b/.test(seg) && !/\s(?:-d|-l|--delete|--list|--contains|--points-at)\b/.test(seg);
-    const released = /^gh\s+release\s+create\b/.test(seg);
-    if (!tagged && !released) continue;
-    const v = seg.match(/\bv(\d+\.\d+\.\d+)\b/);
-    if (v) return v[1];
-    if (released) return plistVersion();
+    let seg = raw.trim();
+    for (;;) {
+      const next = seg.replace(/^(?:[({!]\s*|(?:command|env|time|exec|nohup)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)/, "");
+      if (next === seg) break;
+      seg = next;
+    }
+    seg = seg.replace(/\s*[)}]+\s*$/, "");
+    const bare = seg.replace(/"[^"]*"|'[^']*'/g, " ");
+    const git = bare.match(/^git((?:\s+(?:-C\s+\S+|-c\s+\S+|--[\w-]+(?:=\S+)?|-[pP]))*)\s+tag\b(.*)$/);
+    const ghm = bare.match(/^gh((?:\s+(?:-R\s+\S+|--repo(?:=|\s+)\S+))*)\s+release\s+create\b(.*)$/);
+    const args = git?.[2] ?? ghm?.[2];
+    if (args === undefined) continue;
+    if (git && /(?:^|\s)(?:-[dlvn]\S*|--delete|--list|--verify|--contains|--no-contains|--points-at|--merged|--no-merged)(?=\s|=|$)/.test(args)) continue;
+    const v = args.match(/(?:^|\s)v(\d+\.\d+\.\d+)(?=\s|$)/) ?? seg.match(/["']v(\d+\.\d+\.\d+)["']/);
+    if (v) return { version: v[1] };
+    if (ghm) return { version: null };
   }
   return null;
+}
+
+function uncommitted(): Result[] {
+  const r = Bun.spawnSync(["git", "status", "--porcelain", "--", ...RELEASE_FILES], { cwd: ROOT });
+  if (r.exitCode !== 0) return [{ name: "committed positioning", ok: false, detail: "git status failed" }];
+  const files = r.stdout.toString().trimEnd().split("\n").filter(Boolean).map((l) => l.slice(3));
+  return files.length
+    ? [{ name: "committed positioning", ok: false, detail: `uncommitted: ${files.join(", ")} — commit before tagging` }]
+    : [];
 }
 
 async function hook(): Promise<number> {
@@ -392,36 +426,48 @@ async function hook(): Promise<number> {
   } catch {
     return 0;
   }
-  const version = releaseVersion(command);
-  if (!version) return 0;
-  const failed = check({ offline: false, release: true, version, remote: false }).filter((r) => !r.ok && !r.skipped);
-  if (failed.length === 0) return 0;
-  console.error(`Release v${version} blocked: Kleoth's public positioning is stale.`);
-  for (const r of failed) console.error(`  ✗ ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
-  console.error(
-    `Fix: review marketing/positioning.json against CHANGELOG [${version}] (marketing/README.md → "Every release"), ` +
-      `bump reviewed_for, run \`bun marketing/sync.ts apply\`, commit, then retry.`,
-  );
+  const release = releaseCommand(command);
+  if (!release) return 0;
+  // From here on, any failure blocks: exit 1 would let the release through.
+  try {
+    const version = release.version ?? plistVersion();
+    const failed = [...uncommitted(), ...check({ offline: false, release: true, version, remote: false })]
+      .filter((r) => !r.ok && !r.skipped);
+    if (failed.length === 0) return 0;
+    console.error(`Release v${version} blocked: Kleoth's public positioning is stale.`);
+    for (const r of failed) console.error(`  ✗ ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
+    console.error(
+      `Fix: review marketing/positioning.json against CHANGELOG [${version}] (marketing/README.md → "Every release"), ` +
+        `bump reviewed_for, run \`bun marketing/sync.ts apply\`, commit, then retry.`,
+    );
+  } catch (e) {
+    console.error(`Release blocked: the positioning check itself failed — ${(e as Error).message}`);
+    console.error("Run `bun marketing/sync.ts check` to see why, fix it, then retry.");
+  }
   return 2;
 }
 
 // ---------------------------------------------------------------- main
 
-const [cmd, ...rest] = Bun.argv.slice(2);
-const opts = parseOpts(rest);
+if (import.meta.main) await main();
 
-if (cmd === "check") {
-  const results = check(opts);
-  print(results);
-  for (const r of reminders()) console.log(`  · ${r}`);
-  process.exit(results.every((r) => r.ok) ? 0 : 1);
-} else if (cmd === "apply") {
-  const ok = apply(opts);
-  for (const r of reminders()) console.log(`  · ${r}`);
-  process.exit(ok ? 0 : 1);
-} else if (cmd === "hook") {
-  process.exit(await hook());
-} else {
-  console.error("usage: bun marketing/sync.ts check [--offline] [--release] [--version X] | apply [--no-remote] | hook");
-  process.exit(64);
+async function main() {
+  const [cmd, ...rest] = Bun.argv.slice(2);
+  const opts = parseOpts(rest);
+
+  if (cmd === "check") {
+    const results = check(opts);
+    print(results);
+    for (const r of reminders()) console.log(`  · ${r}`);
+    process.exit(results.every((r) => r.ok) ? 0 : 1);
+  } else if (cmd === "apply") {
+    const ok = apply(opts);
+    for (const r of reminders()) console.log(`  · ${r}`);
+    process.exit(ok ? 0 : 1);
+  } else if (cmd === "hook") {
+    process.exit(await hook());
+  } else {
+    console.error("usage: bun marketing/sync.ts check [--offline] [--release] [--version X] | apply [--no-remote] | hook");
+    process.exit(64);
+  }
 }

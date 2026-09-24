@@ -54,6 +54,9 @@ resource bundle, then copies the app to `/Applications`.
 bash app/make-dmg.sh
 ```
 
+If `marketing/positioning.json` changed since the last `bun marketing/sync.ts apply`, run
+`bun marketing/sync.ts apply --no-remote` first: the DMG's *Read Me.txt* heading comes from it.
+
 This runs `make-app.sh release` first (so the DMG always matches what runs), stages the app with an
 `/Applications` symlink + a `Read Me.txt` + the volume icon, builds a compressed `UDZO` DMG, signs
 the DMG (with "Kleoth Self-Signed", else ad-hoc), verifies it, and prints the size + SHA-256.

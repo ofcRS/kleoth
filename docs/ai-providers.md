@@ -36,9 +36,8 @@ Meetings and Dictation pages of Settings, from the models the provider actually 
 Kleoth runs the `claude` or `codex` binary you installed, signed in with your own account. It never
 reads, stores or passes on a token. Claude Code is called in isolation: no settings, no
 `CLAUDE.md`, no MCP servers, no tools, and Kleoth's own system prompt. That keeps each call's
-overhead to a few thousand tokens instead of the ~150k a default session loads, and it can't
-touch your files. Kleoth
-records these calls as free, because your subscription covers them.
+overhead small, and it can't touch your files. The calls count against your Claude or ChatGPT
+plan, or your API billing if the CLI is signed in with a key.
 
 From the command line: `kleoth summarize <meeting-dir> --provider claude-code` (or `codex`, `local`,
 `openrouter`). Inside Claude Code, the repository's `summarize-meeting` skill writes the same
@@ -69,15 +68,18 @@ and fully local, with a small context, which is why it doesn't do summaries.
 
 | Engine | Where it runs | Used for | Needs |
 |---|---|---|---|
-| **Whisper large-v3** via [WhisperKit](https://github.com/argmaxinc/WhisperKit) | on your Mac (Apple Neural Engine) | meetings, screen recordings, retrying a failed dictation | a one-time ~600 MB download |
+| **Whisper large-v3 turbo** via [WhisperKit](https://github.com/argmaxinc/WhisperKit) | on your Mac (Apple Neural Engine) | meetings, screen recordings, retrying a failed dictation | a one-time ~600 MB download |
 | **[ElevenLabs Scribe](https://elevenlabs.io)** | ElevenLabs' cloud, with your key | live dictation; meetings and recordings you send to the cloud | an API key with the `speech_to_text` permission |
 
 ## What goes where
 
 - **Audio** goes only to ElevenLabs Scribe, only with your key, and only for a dictation or a
   cloud transcription you asked for.
-- **Transcripts** go only to the language-model provider you chose, for a summary or a clean-up.
-  A local server or Apple's model keeps them on the machine.
+- **Transcripts** go to the language-model provider in use, for a summary (right after each
+  meeting is transcribed) or a clean-up. That is the one you picked or, on Automatic, the first one
+  found. With no local server running and the Claude Code or Codex CLI signed in, that means
+  Anthropic's or OpenAI's servers, under your account. A local server or Apple's model keeps them
+  on the machine.
 - **Nothing goes to Kleoth.** There is no Kleoth server, account or telemetry.
 
 ## Related

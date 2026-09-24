@@ -5,7 +5,7 @@
   "tagline": "Local-first voice, meetings and screen capture for macOS.",
   "github": {
     "repo": "ofcRS/kleoth",
-    "about": "Local-first macOS app for Wispr Flow-style dictation, bot-free meeting recording and Loom-style screen recording — on-device transcription, bring your own AI (Claude Code, Codex, Ollama, OpenRouter), files you own.",
+    "about": "Local-first macOS app: Wispr Flow-style dictation, bot-free meeting recording and Loom-style screen recording. Meetings transcribed on device with Whisper; bring your own AI (Claude Code, Codex, Ollama, OpenRouter); files you own.",
     "homepage": "",
     "topics": [
       "macos",
@@ -58,13 +58,13 @@
   "byo_ai_page": "docs/ai-providers.md",
   "closer": "No account. No database. Local-first by design.",
   "short": {
-    "homebrew": "Local-first dictation, bot-free meeting notes and screen recording",
-    "raycast": "Start and stop Kleoth recordings and search your transcribed meetings. Kleoth: local-first dictation, bot-free meetings and screen recording for macOS.",
+    "homebrew": "Voice dictation, bot-free meeting notes and local screen recording",
+    "raycast": "Start and stop Kleoth recordings and search your transcribed meetings. Kleoth: dictation, bot-free meeting notes and local screen recording for macOS.",
     "dmg": "Kleoth — local-first voice, meetings and screen capture"
   },
   "image": {
     "jobs": "Dictate  ·  Meet  ·  Record your screen",
     "tagline": "Local-first voice & capture for macOS",
-    "sub": "On-device transcription  ·  Bring your own AI  ·  Files you own"
+    "sub": "Meetings transcribed on device  ·  Bring your own AI  ·  Files you own"
   }
 }
