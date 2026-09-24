@@ -199,7 +199,7 @@ final class PillCoordinator {
              .openScreenRecordingSettings:
             onRecordingAction?(action)
         case .openSettings, .openAccessibilitySettings,
-             .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
+             .startHandsFreeDictation, .stopHandsFreeDictation, .switchToHandsFree, .selectMicrophone,
              .pasteLastDictation, .openDictationHistory, .hideForAnHour, .retryTranscription:
             dictationAction?(action)
         }

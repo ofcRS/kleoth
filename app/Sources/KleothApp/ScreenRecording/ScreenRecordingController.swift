@@ -873,7 +873,7 @@ final class ScreenRecordingController: ObservableObject {
             }
             coordinator.dismissRecordingPhase()
         case .openSettings, .openAccessibilitySettings,
-             .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
+             .startHandsFreeDictation, .stopHandsFreeDictation, .switchToHandsFree, .selectMicrophone,
              .pasteLastDictation, .openDictationHistory, .hideForAnHour, .retryTranscription:
             // Never routed here — the coordinator sends these to the dictation
             // handler. Listed so the switch stays exhaustive.

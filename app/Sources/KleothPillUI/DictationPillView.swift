@@ -129,6 +129,8 @@ struct DictationPillView: View {
                     controller.openMenu()
                 case .listening(handsFree: true):
                     controller.perform(.stopHandsFreeDictation)
+                case .listening(handsFree: false):
+                    controller.perform(.switchToHandsFree)
                 case .saved:
                     controller.perform(.revealLastRecording)
                 default:
@@ -408,30 +410,41 @@ struct DictationPillView: View {
             }
             .transition(.opacity)
         case .listening(let handsFree):
-            if handsFree {
-                // Hands-free: the accent dot says "no key is held"; under the
-                // pointer it becomes a stop glyph, because a click on this
-                // capsule ends the dictation.
-                ZStack {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                        .opacity(model.hovered ? 0 : 1)
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 9, weight: .black))
-                        .foregroundStyle(Color.accentColor)
-                        .rotationEffect(-edgeRotation)
-                        .opacity(model.hovered ? 1 : 0)
-                        .scaleEffect(model.hovered ? 1 : 0.5)
-                }
-                .frame(width: 10, height: 10)
-                .animation(.spring(duration: 0.18, bounce: 0.35), value: model.hovered)
-                .onChange(of: model.hovered) { _, on in
-                    (on ? NSCursor.pointingHand : NSCursor.arrow).set()
-                }
-                .transition(.opacity)
-                .accessibilityHidden(true)
+            // The leading slot, in both kinds, so going hands-free mid-hold
+            // never reshapes the bar. Push-to-talk: a faint lock — a click
+            // (or ⌘) keeps the held dictation going hands-free — lit under
+            // the pointer. Hands-free: the accent dot says "no key is held";
+            // under the pointer it becomes a stop glyph, because a click on
+            // this capsule ends the dictation.
+            ZStack {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(PillStyle.ink)
+                    .rotationEffect(-edgeRotation)
+                    .opacity(handsFree ? 0 : (model.hovered ? 1 : 0.35))
+                    .scaleEffect(handsFree ? 0.5 : 1)
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 6, height: 6)
+                    .opacity(handsFree && !model.hovered ? 1 : 0)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundStyle(Color.accentColor)
+                    .rotationEffect(-edgeRotation)
+                    .opacity(handsFree && model.hovered ? 1 : 0)
+                    .scaleEffect(handsFree && model.hovered ? 1 : 0.5)
             }
+            .frame(width: 10, height: 10)
+            .animation(.spring(duration: 0.18, bounce: 0.35), value: model.hovered)
+            .animation(.spring(duration: 0.18, bounce: 0.35), value: handsFree)
+            .onChange(of: model.hovered) { _, on in
+                (on ? NSCursor.pointingHand : NSCursor.arrow).set()
+            }
+            // The dictation ended under the pointer: the capsule is no longer
+            // a button, so the pointing hand must not outlive the slot.
+            .onDisappear { if model.hovered { NSCursor.arrow.set() } }
+            .transition(.opacity)
+            .accessibilityHidden(true)
             Waveform(mode: .live(level: model.level), reduceMotion: reduceMotion)
                 .transition(.opacity.combined(with: .scale(scale: 0.7)))
         case .transcribing:

@@ -106,6 +106,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   while transcribing — not quit) KEEPS its clip as a pending row; pill "… — saved to History" + Retry
   (pastes); History "Try again in cloud / on device" is a background job that copies (on device via
   `enqueuePipelineJob`). Pasted dictations still keep no audio.
+- **Hands-free mid-hold (2026-09-24):** tap ⌘ while fn+shift is held, or click the push-to-talk pill →
+  the same capture goes hands-free (`ChordEdgeDetector` `latch` → `.latchKey`; pill → `.externalLatch`;
+  both → `.latched`). A MODIFIER on purpose: the monitor is listen-only, so Space would be typed into
+  the target app. Only from a confirmed hold; ⌥/⌃ mid-hold still end. Dictation design §10.3 item 16.
 - **Dictation polish:** `DictationDefaults.polishModel` = `google/gemini-3.5-flash-lite` (~1 s),
   fallback glm-5.3-flash; `PolishGate` skips chat targets and < 24 words; `AppStyle` = compose/chat only.
 - **OpenRouter account guardrails:** no-train + ZDR settings turn `require_parameters: true` into 404s
@@ -193,6 +197,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - The repo is public — anything on `main` is world-readable.
 
 ## State (update in place, keep to a few lines)
+- Hands-free mid-hold (2026-09-24, CHANGELOG `[Unreleased]`): core tests, app build, pill filmed (bottom/right
+  edges, real click). Not yet human-verified: the real hotkey — dictation design §10.3 item 16 checklist (a)–(e).
 - Dictation retry merged to main 2026-09-24 (unreleased; CHANGELOG `[Unreleased]`): length-scaled
   Scribe budget + one retry, kept audio for failed/stopped dictations, pill Retry, History "Not
   transcribed" rows with Try again, History opening on the requested tab. Verified: 466 core tests,

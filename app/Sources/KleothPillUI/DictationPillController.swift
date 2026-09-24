@@ -1456,9 +1456,11 @@ public final class DictationPillController: DictationPillPresenting {
             length = dock?.size.width ?? PillStyle.restingWidth
         case .hidden, .idle, .armed:
             length = PillStyle.restingWidth
-        case .listening(let handsFree):
+        case .listening:
+            // Both kinds carry the leading slot (push-to-talk's lock, hands-
+            // free's dot), so going hands-free mid-hold never reshapes the bar.
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
-                + (handsFree ? 6 + PillStyle.spacingS : 0)
+                + 6 + PillStyle.spacingS
         case .transcribing, .polishing, .done:
             // `.done` keeps the bar's width so the check appears in place of the wave.
             length = PillStyle.waveformWidth + 2 * PillStyle.compactPadding
@@ -1542,7 +1544,9 @@ extension DictationPillState {
         case .idle: return "Dictation ready — hold \(DictationDefaults.hotkeyDescription) to speak"
         case .armed: return "Keep holding to dictate"
         case .listening(let handsFree):
-            return handsFree ? "Listening — tap \(DictationDefaults.hotkeyDescription) to stop" : "Listening…"
+            return handsFree
+                ? "Listening — tap \(DictationDefaults.hotkeyDescription) to stop"
+                : "Listening — click or tap \(DictationDefaults.handsFreeLatchDescription) to go hands-free"
         case .transcribing: return "Transcribing…"
         case .polishing: return "Polishing… (Esc pastes it as heard)"
         case .done: return "Pasted"
