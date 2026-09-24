@@ -234,8 +234,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   call detection (phase 2), then meeting covers (Codex engine; Apple's `ImageCreator` can't draw in the
   background). Designs (local until each branch lands): `docs/plans/2026-09-24-*.md`. After those:
   History as one timeline, then onboarding + positioning. Dropped: trimming silence before Scribe.
-- Positioning (2026-09-24, branch `docs/positioning`): after merge run `bun marketing/sync.ts apply` (pushes GitHub
-  About/topics), upload `docs/assets/social-preview.png` by hand, demo GIFs rendered on `feat/demo-films` (4 GIFs + screenshot; `-KleothDemo` gates). Later: a Kleoth
+- Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded 2026-09-25
+  (`check` keeps reminding about the preview until the next tag). Demo GIFs: PR #7. Later: a Kleoth
   landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
 - Demo films (2026-09-25, branch `feat/demo-films`): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
   `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
