@@ -36,8 +36,9 @@ and keeps the transcript and summary as files in `~/Kleoth`.
   JSON in `~/Kleoth`. Grep it, sync it, delete it. There is no database and no lock-in.
 - **Dictation anywhere (opt-in)** — hold **fn+shift**, speak, release: Kleoth transcribes the
   utterance (ElevenLabs Scribe, your key), cleans it up with one short LLM pass (fillers gone, never
-  translated), and pastes it into whatever app has focus. Double-tap for hands-free. History in
-  `~/Kleoth/dictations/`; a personal dictionary biases recognition toward your names and jargon.
+  translated), and pastes it into whatever app has focus. Double-tap for hands-free — or tap ⌘ (or
+  click the pill) mid-hold when it runs long. History in `~/Kleoth/dictations/`; a personal
+  dictionary biases recognition toward your names and jargon.
   A dictation that pastes keeps no audio. One that can't be transcribed (Scribe timed out twice,
   no network) is never lost: its audio waits in History, and the pill's **Retry** — or History's
   "Try again", in the cloud or on this Mac — transcribes it later.
