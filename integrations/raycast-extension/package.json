@@ -2,7 +2,7 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "kleoth",
   "title": "Kleoth",
-  "description": "Control the Kleoth meeting recorder and browse your transcribed meetings — local-first, bot-free.",
+  "description": "Start and stop Kleoth recordings and search your transcribed meetings. Kleoth: local-first dictation, bot-free meetings and screen recording for macOS.",
   "icon": "icon.png",
   "author": "shck",
   "license": "MIT",

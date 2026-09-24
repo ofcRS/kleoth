@@ -1,6 +1,6 @@
 # Kleoth
 
-Local-first, bot-free macOS meeting recorder + dictation + screen recording. Native Swift 6 /
+Local-first macOS voice & capture app: dictation, bot-free meeting recording, screen recording. Native Swift 6 /
 SwiftUI menu-bar app and a `kleoth` CLI. Captures mic + system audio locally → transcribes →
 summarizes → writes Markdown/JSON the user owns. Public repo: github.com/ofcRS/kleoth (Apache-2.0).
 
@@ -30,6 +30,7 @@ swift build --package-path app --product screenrec && app/.build/debug/screenrec
 swift run --package-path app pillsandbox                                # pill playground
 app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs
 bun ~/.claude/skills/gpt-images/scripts/gpt-images.ts app/branding-src/<set>/jobs.json           # brand imagery (brief: app/branding-src/BRAND.md)
+bun marketing/sync.ts check [--offline] | apply [--no-remote]   # public pitch: drift report / rewrite README hero, cask, Raycast, images, GitHub About+topics
 ```
 Logs: `/usr/bin/log stream --predicate 'subsystem == "dev.kleoth"'` (categories `Dictation`,
 `DictationHotkey`, `PillTrace` — the latter needs `defaults write dev.kleoth.app KleothPillTrace -bool YES`).
@@ -64,7 +65,8 @@ KeyboardShortcuts, WhisperKit 0.18)
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
-`docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`.
+`docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`,
+`docs/plans/2026-09-24-positioning.md`.
 
 ## Data on disk
 - Meeting = `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`: `mic.m4a`, `system.m4a`, `meeting.m4a`,
@@ -141,6 +143,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   `start()` — no consent check of their own (only the popover and onboarding, which show the notice in
   place, gate first). The window's start button never closes it; it closes itself once `isRecording`
   is true.
+- **Positioning (2026-09-24):** the public pitch (tagline, GitHub About/topics, README hero, cask/Raycast/
+  DMG text, hero + social-preview images) is written ONLY in `marketing/positioning.json`; `bun marketing/sync.ts
+  apply` writes the rest — never hand-edit the README `positioning`/`release` blocks. Three jobs: Dictate · Meet ·
+  Record screen (beta). Dictation is "Wispr Flow-style", never "alternative", while its STT is Scribe (cloud); held-back
+  claims are listed in `marketing/README.md`. Release gate: `reviewed_for` must equal the version; the
+  `.claude/settings.json` PreToolUse hook blocks `git tag vX.Y.Z` / `gh release create` until `check` passes.
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -216,5 +224,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   call detection (phase 2), then meeting covers (Codex engine; Apple's `ImageCreator` can't draw in the
   background). Designs (local until each branch lands): `docs/plans/2026-09-24-*.md`. After those:
   History as one timeline, then onboarding + positioning. Dropped: trimming silence before Scribe.
+- Positioning (2026-09-24, branch `docs/positioning`): after merge run `bun marketing/sync.ts apply` (pushes GitHub
+  About/topics), upload `docs/assets/social-preview.png` by hand, record the 3 demo GIFs (README slot). Later: a Kleoth
+  landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

@@ -3,6 +3,9 @@
 # draft announcement-post PR. Needs secret BLOG_DISPATCH_TOKEN — a fine-grained PAT scoped to
 # ofcRS/shck.dev with Contents: read+write. If the secret is absent the job logs a ::warning::
 # and exits 0 (fail-soft), so a release never shows a red X for a missing optional notification.
+#
+# Also checks Kleoth's public positioning (marketing/README.md) against the released tag and the
+# live GitHub About/topics, and logs a ::warning:: on drift — the release itself is not failed.
 name: announce-release
 
 on:
@@ -10,6 +13,24 @@ on:
     types: [published]
 
 jobs:
+  positioning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Check public positioning
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! bun marketing/sync.ts check --version "$TAG" > report.txt 2>&1; then
+            cat report.txt
+            echo "::warning title=Positioning is stale for ${TAG}::$(grep '✗' report.txt | tr '\n' ' ') — see marketing/README.md, then run bun marketing/sync.ts apply."
+          else
+            cat report.txt
+          fi
+
+
   notify-blog:
     runs-on: ubuntu-latest
     steps:

@@ -50,8 +50,8 @@ cp -R "$APP" "$STAGE/Kleoth.app"
 ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/Read Me.txt" <<'EOF'
-Kleoth — local-first meeting recorder
-=====================================
+Kleoth — local-first voice, meetings and screen capture
+=======================================================
 
 Install: drag Kleoth.app onto the Applications folder, then launch it from
 Applications. Kleoth lives in the menu bar (the lyre icon).

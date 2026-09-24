@@ -1,4 +1,5 @@
-# Homebrew cask for Kleoth — local-first, bot-free macOS meeting recorder.
+# Homebrew cask for Kleoth — local-first dictation, meeting notes and screen recording for macOS.
+# `desc`, `version` and `sha256` are written by `bun marketing/sync.ts apply` (marketing/README.md).
 #
 # This is a DRAFT until the tap repo exists. Before publishing:
 #   1. Once builds are notarized, delete the `caveats` block.
@@ -12,7 +13,7 @@ cask "kleoth" do
   url "https://github.com/ofcRS/kleoth/releases/download/v#{version}/Kleoth-#{version}.dmg",
       verified: "github.com/ofcRS/kleoth/"
   name "Kleoth"
-  desc "Local-first, bot-free meeting recorder (on-device transcription + AI summaries)"
+  desc "Local-first dictation, bot-free meeting notes and screen recording"
   homepage "https://github.com/ofcRS/kleoth"
 
   livecheck do
