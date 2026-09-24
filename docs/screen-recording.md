@@ -13,8 +13,7 @@ export yet.** If you need a link to send someone, Loom still does that and Kleot
 [Back to the README](../README.md)
 
 <p align="center">
-  <img src="assets/demo-screen.gif" alt="Click Record in the pill; it becomes a toolbar with a timer and audio meters; click Stop and the recording is saved" width="720"><br>
-  <em>Kleoth's real pill, rendered with sample content. The region picker is left out.</em>
+  <img src="assets/demo-screen.gif" alt="Click Record in the pill; it becomes a toolbar with a timer and audio meters; click Stop and the recording is saved" width="720">
 </p>
 
 ## How it works
@@ -36,8 +35,7 @@ export yet.** If you need a link to send someone, Loom still does that and Kleot
    can be transcribed on device or in the cloud from the viewer.
 
 <p align="center">
-  <img src="assets/demo-viewer.gif" alt="The recordings viewer: a narrated slide recording plays on the left while the transcript on the right highlights each word as it is spoken" width="720"><br>
-  <em>The viewer playing a demo recording; its word timings come from the on-device transcription.</em>
+  <img src="assets/demo-viewer.gif" alt="The recordings viewer: a narrated slide recording plays on the left while the transcript on the right highlights each word as it is spoken" width="720">
 </p>
 
 ## Your recording is two files
