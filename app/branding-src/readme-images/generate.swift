@@ -5,7 +5,8 @@
 // Fully headless AppKit offscreen rendering (no screen capture, no Xcode project).
 // Reuses the app icon (the satin-silver lyre, 2026-09 ident — see
 // ../BRAND.md) and draws it on a near-#0D1117 GitHub-dark background with a
-// subtle teal accent glow, then sets "Kleoth" + tagline in the system font.
+// subtle teal accent glow, then sets the name, the three jobs, the tagline and a
+// sub-line in the system font. The words come from marketing/positioning.json.
 //
 // Outputs (rendered @2x, then downscaled with `sips` by the caller is NOT needed —
 // this script writes the FINAL pixel sizes directly by rendering @2x into an
@@ -13,7 +14,8 @@
 //   docs/assets/social-preview.png  — 1280x640
 //   docs/assets/hero.png            — ~1600x420
 //
-// Run:  swift app/branding-src/readme-images/generate.swift
+// Run:  bun marketing/sync.ts apply   (runs this when the image text changed)
+//   or  swift app/branding-src/readme-images/generate.swift
 //
 import AppKit
 import Foundation
@@ -38,6 +40,30 @@ guard let appIcon = NSImage(contentsOf: iconURL) else {
     FileHandle.standardError.write("ERROR: could not load icon at \(iconURL.path)\n".data(using: .utf8)!)
     exit(1)
 }
+
+// MARK: - Copy
+
+/// The words on the images come from marketing/positioning.json, the one place Kleoth's
+/// pitch is written; `bun marketing/sync.ts apply` re-renders when they change.
+struct Positioning: Decodable {
+    struct Image: Decodable {
+        let jobs: String
+        let tagline: String
+        let sub: String
+    }
+    let name: String
+    let image: Image
+}
+
+let positioningURL = repoRoot.appendingPathComponent("marketing/positioning.json")
+let copy: Positioning = {
+    do {
+        return try JSONDecoder().decode(Positioning.self, from: Data(contentsOf: positioningURL))
+    } catch {
+        FileHandle.standardError.write("ERROR: could not read \(positioningURL.path): \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
+}()
 
 // MARK: - Palette
 
@@ -190,53 +216,79 @@ func paintBackground(_ size: NSSize, glowAt: NSPoint, glowRadius: CGFloat) {
                   radius: max(size.width, size.height) * 0.72, options: [])
 }
 
+// MARK: - Text stack
+
+/// One line of the lockup. `gapAbove` is the space between it and the line above.
+struct Line {
+    let text: String
+    let size: CGFloat
+    let weight: NSFont.Weight
+    let color: NSColor
+    let tracking: CGFloat
+    let gapAbove: CGFloat
+}
+
+/// Builds the lines, shrunk uniformly if the widest would overflow `maxWidth` — the copy
+/// comes from positioning.json, so its length is not known here.
+func buildStack(_ lines: [Line], maxWidth: CGFloat) -> [(text: NSAttributedString, gap: CGFloat)] {
+    func build(_ scale: CGFloat) -> [(text: NSAttributedString, gap: CGFloat)] {
+        lines.map { l in
+            (attr(l.text, font: .systemFont(ofSize: l.size * scale, weight: l.weight),
+                  color: l.color, tracking: l.tracking * scale),
+             l.gapAbove * scale)
+        }
+    }
+    let full = build(1)
+    let widest = full.map { $0.text.size().width }.max() ?? 0
+    return widest > maxWidth ? build(maxWidth / widest * 0.98) : full
+}
+
+func stackWidth(_ stack: [(text: NSAttributedString, gap: CGFloat)]) -> CGFloat {
+    stack.map { $0.text.size().width }.max() ?? 0
+}
+
+/// Draws the stack left-aligned at `x`, vertically centered on `centerY`.
+func drawStack(_ stack: [(text: NSAttributedString, gap: CGFloat)], x: CGFloat, centerY: CGFloat) {
+    let heights = stack.map { $0.text.size().height }
+    let stackH = heights.reduce(0, +) + stack.dropFirst().map(\.gap).reduce(0, +)
+    var top = centerY + stackH / 2
+    for (i, line) in stack.enumerated() {
+        if i > 0 { top -= line.gap }
+        top -= heights[i]
+        line.text.draw(at: NSPoint(x: x, y: top))
+    }
+}
+
+func lockupLines(title: CGFloat, jobs: CGFloat, tagline: CGFloat, sub: CGFloat) -> [Line] {
+    [
+        Line(text: copy.name, size: title, weight: .bold, color: titleColor, tracking: -title / 60, gapAbove: 0),
+        Line(text: copy.image.jobs, size: jobs, weight: .semibold, color: titleColor, tracking: 0.2, gapAbove: jobs * 0.55),
+        Line(text: copy.image.tagline, size: tagline, weight: .medium, color: taglineColor, tracking: 0.2, gapAbove: tagline * 0.45),
+        Line(text: copy.image.sub, size: sub, weight: .regular, color: subColor, tracking: 0.3, gapAbove: sub * 0.6),
+    ]
+}
+
 // MARK: - Social preview (1280 x 640)
 
 func drawSocial(_ size: NSSize) {
-    let iconSize: CGFloat = 312
-    let blockGap: CGFloat = 60                // gap between icon and text column
+    let iconSize: CGFloat = 300
+    let blockGap: CGFloat = 56                // gap between icon and text column
+    let margin: CGFloat = 72
 
-    // Title + lines.
-    let title = attr("Kleoth", font: .systemFont(ofSize: 120, weight: .bold),
-                     color: titleColor, tracking: -2)
-    let tagline = attr("Local-first, bot-free meeting recorder for macOS",
-                       font: .systemFont(ofSize: 33, weight: .medium),
-                       color: taglineColor, tracking: 0.2)
-    let sub = attr("On-device Whisper  ·  Your files, your Mac  ·  No meeting bots",
-                   font: .systemFont(ofSize: 25, weight: .regular),
-                   color: subColor, tracking: 0.3)
-
-    let tSize = title.size()
-    let gSize = tagline.size()
-    let sSize = sub.size()
-    let textColW = max(tSize.width, gSize.width, sSize.width)
+    let stack = buildStack(lockupLines(title: 112, jobs: 38, tagline: 30, sub: 23),
+                           maxWidth: size.width - 2 * margin - iconSize - blockGap)
 
     // Center the icon+text group horizontally as a unit, nudged a hair left of true
     // center so the group reads as optically centered (large icon carries weight left).
-    let groupW = iconSize + blockGap + textColW
+    let groupW = iconSize + blockGap + stackWidth(stack)
     let groupX = (size.width - groupW) / 2 - 6
-    let iconX = groupX
-    let iconY = (size.height - iconSize) / 2
-    let iconRect = NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize)
+    let iconRect = NSRect(x: groupX, y: (size.height - iconSize) / 2, width: iconSize, height: iconSize)
 
     paintBackground(size,
                     glowAt: NSPoint(x: iconRect.midX + 30, y: iconRect.midY),
                     glowRadius: 600)
-
     drawIcon(appIcon, in: iconRect)
-
-    // Vertical text stack, optically centered against the icon.
-    let textX = iconX + iconSize + blockGap
-    let lineSpacingTagToTitle: CGFloat = 26
-    let lineSpacingSubToTag: CGFloat = 18
-    let stackH = tSize.height + lineSpacingTagToTitle + gSize.height + lineSpacingSubToTag + sSize.height
-    var cursorY = (size.height + stackH) / 2 - tSize.height   // top line baseline box
-
-    title.draw(at: NSPoint(x: textX, y: cursorY))
-    cursorY -= (lineSpacingTagToTitle + gSize.height)
-    tagline.draw(at: NSPoint(x: textX, y: cursorY))
-    cursorY -= (lineSpacingSubToTag + sSize.height)
-    sub.draw(at: NSPoint(x: textX, y: cursorY))
+    drawStack(stack, x: iconRect.maxX + blockGap, centerY: size.height / 2)
 }
 
 // MARK: - Hero banner (1600 x 420)
@@ -246,41 +298,15 @@ func drawHero(_ size: NSSize) {
     let leftPad: CGFloat = 96
     let blockGap: CGFloat = 52
 
-    let title = attr("Kleoth", font: .systemFont(ofSize: 92, weight: .bold),
-                     color: titleColor, tracking: -1.5)
-    let tagline = attr("Local-first, bot-free meeting recorder for macOS",
-                       font: .systemFont(ofSize: 30, weight: .medium),
-                       color: taglineColor, tracking: 0.2)
-    let sub = attr("On-device Whisper  ·  Your files, your Mac  ·  No meeting bots",
-                   font: .systemFont(ofSize: 23, weight: .regular),
-                   color: subColor, tracking: 0.3)
-
-    let iconX = leftPad
-    let iconY = (size.height - iconSize) / 2
-    let iconRect = NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize)
+    let iconRect = NSRect(x: leftPad, y: (size.height - iconSize) / 2, width: iconSize, height: iconSize)
+    let stack = buildStack(lockupLines(title: 88, jobs: 32, tagline: 26, sub: 20),
+                           maxWidth: size.width - iconRect.maxX - blockGap - leftPad)
 
     paintBackground(size,
                     glowAt: NSPoint(x: iconRect.midX + 40, y: iconRect.midY),
                     glowRadius: 520)
-
-    // A faint hairline divider feel is avoided — keep it airy.
     drawIcon(appIcon, in: iconRect)
-
-    let tSize = title.size()
-    let gSize = tagline.size()
-    let sSize = sub.size()
-
-    let textX = iconX + iconSize + blockGap
-    let lineSpacingTagToTitle: CGFloat = 22
-    let lineSpacingSubToTag: CGFloat = 16
-    let stackH = tSize.height + lineSpacingTagToTitle + gSize.height + lineSpacingSubToTag + sSize.height
-    var cursorY = (size.height + stackH) / 2 - tSize.height
-
-    title.draw(at: NSPoint(x: textX, y: cursorY))
-    cursorY -= (lineSpacingTagToTitle + gSize.height)
-    tagline.draw(at: NSPoint(x: textX, y: cursorY))
-    cursorY -= (lineSpacingSubToTag + sSize.height)
-    sub.draw(at: NSPoint(x: textX, y: cursorY))
+    drawStack(stack, x: iconRect.maxX + blockGap, centerY: size.height / 2)
 }
 
 // MARK: - Run

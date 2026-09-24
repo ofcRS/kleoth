@@ -4,7 +4,8 @@ Read this before generating any image for Kleoth (the `/gpt-images` skill looks 
 It records the visual family the user chose on 2026-09-06 over the earlier golden-lyre-on-purple
 set, and the prompts that produced the accepted pieces.
 
-The product: a restrained native macOS meeting recorder and transcription utility. "Kleoth" is
+The product: a restrained native macOS voice and capture utility: dictation, meeting recording and
+transcription, screen recording (the public pitch lives in `marketing/positioning.json`). "Kleoth" is
 Greek *kleos* — "that which is heard". In dictation the user may say "Cleos"; it is the same thing.
 
 ## The family

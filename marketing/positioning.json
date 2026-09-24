@@ -1,0 +1,70 @@
+{
+  "$comment": "Kleoth's public positioning — the one place its pitch is written. Edit here, then run `bun marketing/sync.ts apply`. How and when: marketing/README.md.",
+  "reviewed_for": "0.4.0",
+  "name": "Kleoth",
+  "tagline": "Local-first voice, meetings and screen capture for macOS.",
+  "github": {
+    "repo": "ofcRS/kleoth",
+    "about": "Local-first macOS app: Wispr Flow-style dictation, bot-free meeting recording and Loom-style screen recording. Meetings transcribed on device with Whisper; bring your own AI (Claude Code, Codex, Ollama, OpenRouter); files you own.",
+    "homepage": "",
+    "topics": [
+      "macos",
+      "local-first",
+      "open-source",
+      "dictation",
+      "voice-typing",
+      "voice-to-text",
+      "meeting-recorder",
+      "meeting-notes",
+      "screen-recording",
+      "speech-to-text",
+      "transcription",
+      "privacy",
+      "on-device",
+      "whisperkit",
+      "elevenlabs",
+      "openrouter",
+      "claude-code",
+      "codex",
+      "ollama",
+      "granola-alternative"
+    ]
+  },
+  "intro": "Kleoth is an open-source Mac app for **system-wide dictation**, **bot-free meeting recording** and **screen recording with transcripts**. What it records and transcribes are plain files in `~/Kleoth` that you own; transcription can stay on your Mac, and the AI steps run on whatever you already use.",
+  "jobs": [
+    {
+      "id": "dictation",
+      "title": "Dictate anywhere",
+      "status": "stable",
+      "page": "docs/dictation.md",
+      "line": "Hold fn+shift, speak, let go: cleaned-up text lands in whatever app has focus — an editor, a terminal, an AI chat, mail. Wispr Flow-style voice typing with a personal dictionary and a searchable history. Speech-to-text runs on ElevenLabs Scribe with your own key."
+    },
+    {
+      "id": "meetings",
+      "title": "Record meetings without a bot",
+      "status": "stable",
+      "page": "docs/meetings.md",
+      "line": "Your mic and the call's audio (Zoom, Meet, Teams, anything that plays sound), recorded on your Mac with nobody joining the call. Transcribed on device with Whisper, summarized in the meeting's own language, saved as Markdown and JSON. A local, open-source alternative to Granola, and a bot-free one to Otter, Fireflies and tl;dv."
+    },
+    {
+      "id": "screen-recording",
+      "title": "Record your screen",
+      "status": "beta",
+      "page": "docs/screen-recording.md",
+      "line": "A display or a region, with system audio and your mic, as a small MP4. Transcribed on device afterwards; the viewer highlights each word as it is spoken. Loom-style, but nothing is uploaded. No trimming, sharing or export yet."
+    }
+  ],
+  "byo_ai": "**Bring your own AI — or none.** Summaries and dictation clean-up run on whatever you already use: Claude Code, Codex, a local Ollama or LM Studio server, OpenRouter, or Apple's on-device model. Kleoth doesn't sell you another AI subscription.",
+  "byo_ai_page": "docs/ai-providers.md",
+  "closer": "No account. No database. Local-first by design.",
+  "short": {
+    "homebrew": "Voice dictation, bot-free meeting notes and local screen recording",
+    "raycast": "Start and stop Kleoth recordings and search your transcribed meetings. Kleoth: dictation, bot-free meeting notes and local screen recording for macOS.",
+    "dmg": "Kleoth — local-first voice, meetings and screen capture"
+  },
+  "image": {
+    "jobs": "Dictate  ·  Meet  ·  Record your screen",
+    "tagline": "Local-first voice & capture for macOS",
+    "sub": "Meetings transcribed on device  ·  Bring your own AI  ·  Files you own"
+  }
+}

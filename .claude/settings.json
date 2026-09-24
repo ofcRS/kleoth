@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v bun >/dev/null 2>&1 && [ -f \"$CLAUDE_PROJECT_DIR/marketing/sync.ts\" ]; then bun \"$CLAUDE_PROJECT_DIR/marketing/sync.ts\" hook; fi",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
