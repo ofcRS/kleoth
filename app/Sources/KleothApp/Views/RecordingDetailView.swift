@@ -77,6 +77,12 @@ struct RecordingDetailView: View {
             copiedResetTask?.cancel()
             copied = false
         }
+        // `DemoDirector`'s cue to press play, so its film shows the word
+        // highlight moving. Posted only by a `-KleothDemo` launch.
+        .onReceive(NotificationCenter.default.publisher(for: DemoMode.playNotification)) { _ in
+            guard DemoMode.isOn, !player.isPlaying else { return }
+            player.togglePlay()
+        }
         .confirmationDialog(
             "Move “\(item.displayTitle)” to the Trash?",
             isPresented: $confirmTrash,

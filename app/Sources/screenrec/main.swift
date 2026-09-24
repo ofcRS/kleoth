@@ -11,6 +11,7 @@ import KleothCore
 ///     screenrec <seconds> [--display N] [--region x,y,w,h] [--no-mic]
 ///               [--out file] [--inspect file] [--extract file]
 ///               [--words file [--segments] [--language ru]]
+///               [--sidecar movie.mp4 [--title text] [--language ru]]
 ///
 /// It prints the permission state, the resolved pixel size + bit rate, frames
 /// appended / dropped, audio blocks, live mic/system levels, mic gaps, duration
@@ -21,6 +22,9 @@ import KleothCore
 /// `--extract` and `--words` are the recordings-viewer lane's probes:
 /// `RecordingAudioExtractor` (movie → `.m4a`) and `LocalTranscriber` with
 /// `wordTimestamps: true` (the per-word timings the viewer highlights).
+/// `--sidecar` runs both the way the app does after a recording is saved and
+/// writes the `<stem>.json` sidecar the viewer reads — how the README demo's
+/// recording gets real on-device word timings (`make-demo-data.sh`).
 ///
 /// `--region` is display-local, **top-left-origin points** — the same
 /// convention `SCStreamConfiguration.sourceRect` uses (SCStream.h:269), so a
@@ -37,6 +41,12 @@ struct ScreenRecMain {
         }
         if let extract = arguments.extract {
             await Extractor.run(movie: URL(fileURLWithPath: extract), to: arguments.out.map { URL(fileURLWithPath: $0) })
+            return
+        }
+        if let sidecar = arguments.sidecar {
+            let ok = await Sidecar.run(
+                movie: URL(fileURLWithPath: sidecar), title: arguments.title, language: arguments.language)
+            if !ok { exit(1) }
             return
         }
         if let words = arguments.words {
@@ -303,6 +313,7 @@ private struct Arguments {
         screenrec --inspect file
         screenrec --extract movie.mp4 [--out audio.m4a]
         screenrec --words audio.m4a [--segments] [--language ru]
+        screenrec --sidecar movie.mp4 [--title text] [--language ru]
 
           seconds     how long to record (default 10)
           --display   index into the active display list (default 0)
@@ -316,7 +327,10 @@ private struct Arguments {
                       (LocalTranscriber wordTimestamps: true), then exit
           --segments  with --words: the OLD per-SEGMENT path (wordTimestamps: false),
                       i.e. what meetings still get — run both to diff them
-          --language  pin the --words language (e.g. ru); default is auto-detect
+          --language  pin the --words / --sidecar language (e.g. ru); default is auto-detect
+          --sidecar   transcribe a movie on device as the app does after saving one, and
+                      write its "<stem>.json" sidecar beside it, then exit
+          --title     with --sidecar: the recording's title (what a rename in the viewer sets)
         """
 
     var seconds: Double = 10
@@ -326,6 +340,8 @@ private struct Arguments {
     var inspect: String?
     var extract: String?
     var words: String?
+    var sidecar: String?
+    var title: String?
     var segments = false
     var language: String?
     var showsHelp = false
@@ -353,6 +369,8 @@ private struct Arguments {
             case "--inspect": inspect = iterator.next()
             case "--extract": extract = iterator.next()
             case "--words": words = iterator.next()
+            case "--sidecar": sidecar = iterator.next()
+            case "--title": title = iterator.next()
             case "--segments": segments = true
             case "--language": language = iterator.next()
             case "-h", "--help": showsHelp = true
@@ -454,6 +472,53 @@ private enum Extractor {
             + "\(ScreenRecordingFileNaming.sizeText(bytes: bytes)) "
             + "(from \(ScreenRecordingFileNaming.sizeText(bytes: movieBytes)))")
         await Inspector.print(url: output)
+    }
+}
+
+// MARK: - Sidecar
+
+/// `--sidecar`: `ScreenRecordingController.runTranscription`'s on-device path,
+/// step for step — extract the audio, `LocalTranscriber` with word timings,
+/// the same record fields — then `ScreenRecordingStore.saveRecord`.
+private enum Sidecar {
+    static func run(movie: URL, title: String?, language: String?) async -> Bool {
+        guard FileManager.default.fileExists(atPath: movie.path) else {
+            Swift.print("sidecar    : no file at \(movie.path)")
+            return false
+        }
+        guard LocalTranscriber.cachedModel(variant: LocalTranscriber.defaultModel) != nil else {
+            Swift.print("sidecar    : \(LocalTranscriber.defaultModel) is not downloaded — run the app once, or localtranscribe")
+            return false
+        }
+        let audio = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(movie.deletingPathExtension().lastPathComponent + "-sidecar.m4a")
+        defer { try? FileManager.default.removeItem(at: audio) }
+        do {
+            try? FileManager.default.removeItem(at: audio)
+            try await RecordingAudioExtractor.extractAudio(from: movie, to: audio)
+            let transcriber = LocalTranscriber(language: language, wordTimestamps: true)
+            let options = ScribeOptions()
+            let response = try await transcriber.transcribe(fileURL: audio, options: options)
+            var record = ScreenRecordingRecord()
+            record.schemaVersion = ScreenRecordingRecord.currentSchemaVersion
+            record.title = title
+            record.durationSecs = response.audioDurationSecs ?? AudioProbe.durationSeconds(of: audio)
+            record.languageCode = response.languageCode
+            record.transcriptTier = TranscriptTier.local
+            record.transcriptModel = transcriber.modelIdentifier(for: options)
+            record.transcribedAt = Date()
+            record.words = ScreenRecordingRecord.words(from: response)
+            record.transcriptError = record.words.isEmpty ? "No speech was found in this recording." : nil
+            try ScreenRecordingStore.saveRecord(record, for: movie)
+            Swift.print("sidecar    : \(ScreenRecordingFileNaming.sidecarURL(for: movie).path)")
+            Swift.print("             \(record.words.count) words · language \(record.languageCode ?? "?") · "
+                + "\(String(format: "%.1f", record.durationSecs ?? 0)) s")
+            Swift.print("             " + record.text)
+            return !record.words.isEmpty
+        } catch {
+            Swift.print("sidecar    : FAILED — \(error.localizedDescription)")
+            return false
+        }
     }
 }
 

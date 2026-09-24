@@ -21,7 +21,9 @@ struct KleothApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
+        // A `-KleothDemo` launch has no menu-bar item: nothing of it shows but
+        // the window `DemoDirector` films.
+        MenuBarExtra(isInserted: .constant(!DemoMode.isOn)) {
             MenuView()
                 .environmentObject(controller)
                 .environmentObject(dictation)

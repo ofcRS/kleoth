@@ -35,6 +35,11 @@ export yet.** If you need a link to send someone, Loom still does that and Kleot
    clicking a word seeks, and double-clicking a word or the title corrects it. Older recordings
    can be transcribed on device or in the cloud from the viewer.
 
+<p align="center">
+  <img src="assets/demo-viewer.gif" alt="The recordings viewer: a narrated slide recording plays on the left while the transcript on the right highlights each word as it is spoken" width="720"><br>
+  <em>The viewer playing a demo recording; its word timings come from the on-device transcription.</em>
+</p>
+
 ## Your recording is two files
 
 ```

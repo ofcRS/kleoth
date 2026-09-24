@@ -45,6 +45,44 @@ func writeDemo(_ frames: [CapturedFrame], kind: DemoKind, to dir: URL) throws ->
     return url
 }
 
+/// `--slides <dir> --length <s> [--marks a,b,c,d]`: the screen demo's slide
+/// window on its own — no pill, no caption — at 30 fps, as the picture of the
+/// demo SCREEN RECORDING that the recordings-viewer film plays back
+/// (`app/branding-src/demo/make-demo-data.sh`). The pill is not in it because
+/// a real recording leaves Kleoth's windows out. `marks` are the seconds the
+/// narration turns to the title and then to each bar; the cursor goes there
+/// and that bar is outlined.
+func writeSlideFrames(to dir: URL, length: TimeInterval, marks: [TimeInterval]) throws {
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let camera = CGRect(origin: .zero, size: stageSize)
+    let stage = DemoStage(kind: .screen, camera: camera, screen: camera, frames: [])
+    let fps = 30.0
+    var position = stage.slideSpot(nil)
+    for index in 0..<Int(length * fps) {
+        let t = Double(index) / fps
+        // -1 before the first mark, 0 = the title, 1… = the bars.
+        let step = (marks.lastIndex { $0 <= t }) ?? -1
+        let bar = step >= 1 ? step - 1 : nil
+        let target = stage.slideSpot(step == 0 ? -1 : bar)
+        let k = CGFloat(1 - exp(-(1 / fps) * 6))
+        position = CGPoint(x: position.x + (target.x - position.x) * k, y: position.y + (target.y - position.y) * k)
+        guard let ctx = CGContext(
+            data: nil, width: Int(stageSize.width * stageScale), height: Int(stageSize.height * stageScale),
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { continue }
+        ctx.scaleBy(x: stageScale, y: stageScale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        stage.drawDesktop(ctx)
+        stage.drawSlides(focus: bar)
+        stage.drawArrow(at: position)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let image = ctx.makeImage() else { continue }
+        try writePNG(image, to: dir.appendingPathComponent(String(format: "frame-%04d.png", index)))
+    }
+}
+
 // MARK: - Stage
 
 private struct DemoStage {
@@ -99,7 +137,7 @@ private struct DemoStage {
             if ["armed", "listening"].contains(captured.step) { drawKeys() }
             drawSpeech(at: t)
         case .screen:
-            drawSlides()
+            drawSlides(focus: nil)
         }
         drawPill(captured, in: ctx)
         if kind == .screen { drawCursor(index) }
@@ -276,7 +314,8 @@ private struct DemoStage {
 
     // MARK: Screen
 
-    func drawSlides() {
+    /// `focus`: a bar to outline, for the slides-only recording.
+    func drawSlides(focus: Int?) {
         let content = drawWindow(editorRect, title: "Q4 roadmap")
         let heading = NSAttributedString(string: "Q4 roadmap", attributes: [
             .font: NSFont.systemFont(ofSize: 28, weight: .bold), .foregroundColor: NSColor(white: 0.1, alpha: 1),
@@ -303,7 +342,24 @@ private struct DemoStage {
             row.2.setFill()
             NSBezierPath(roundedRect: CGRect(x: track.minX, y: track.minY, width: track.width * row.1, height: 22),
                          xRadius: 6, yRadius: 6).fill()
+            if focus == i {
+                row.2.withAlphaComponent(0.9).setStroke()
+                let ring = NSBezierPath(roundedRect: track.insetBy(dx: -4, dy: -4), xRadius: 9, yRadius: 9)
+                ring.lineWidth = 2
+                ring.stroke()
+            }
         }
+    }
+
+    /// Where the slides-only recording's cursor rests: the end of a bar, the
+    /// title (`-1`), or off to the side (nil).
+    func slideSpot(_ bar: Int?) -> CGPoint {
+        let content = CGRect(x: editorRect.minX, y: editorRect.minY, width: editorRect.width, height: editorRect.height - 33)
+        guard let bar else { return CGPoint(x: content.maxX - 70, y: content.minY + 40) }
+        if bar < 0 { return CGPoint(x: content.minX + 200, y: content.maxY - 44) }
+        let fill: [CGFloat] = [0.78, 0.52, 0.30]
+        let track = CGRect(x: content.minX + 140, y: content.maxY - 132 - CGFloat(bar) * 40, width: content.width - 180, height: 22)
+        return CGPoint(x: track.minX + track.width * fill[min(bar, 2)] - 6, y: track.midY - 4)
     }
 
     /// Where the cursor is on every frame: on the pill while the film points at
@@ -347,6 +403,10 @@ private struct DemoStage {
                 ring.stroke()
             }
         }
+        drawArrow(at: point)
+    }
+
+    func drawArrow(at point: CGPoint) {
         let arrow = NSCursor.arrow
         let size = arrow.image.size
         let scale: CGFloat = 1.25

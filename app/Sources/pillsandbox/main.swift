@@ -28,6 +28,11 @@ import KleothPillUI
 ///         stage (a desktop, an editor or a slide window, captions, the fn+shift
 ///         keys, a cursor) in `<dir>/demo/` with an ffmpeg concat list, for the
 ///         README demos (`app/branding-src/demo/make-demos.sh`).
+///
+///     swift run --package-path app pillsandbox --slides <dir> --length <seconds> [--marks 0.4,3.1,7.8,12.5]
+///         Just the screen demo's slide window, no pill, at 30 fps: the picture
+///         of the demo screen recording (`writeSlideFrames`), then exits.
+///
 ///         `--levels` feeds synthetic mic + system RMS into the REAL
 ///         `setRecordingLevels`, so the recording toolbar's meters move in the
 ///         film; `off` (the default) leaves them at rest.
@@ -75,6 +80,10 @@ struct Arguments {
     var grabFrames = false
     /// Also compose README demo frames (`writeDemo`).
     var demo: DemoKind?
+    /// `--slides`: write the slide-only frames and exit (`writeSlideFrames`).
+    var slidesDirectory: URL?
+    var slidesLength: TimeInterval = 20
+    var slidesMarks: [TimeInterval] = []
 
     enum LevelPattern: String {
         case off, speech, steady
@@ -96,6 +105,9 @@ struct Arguments {
             case "--stage": out.stage = value().flatMap(StageTone.init(rawValue:)) ?? .none; i += 1
             case "--grab-frames": out.grabFrames = true
             case "--demo": out.demo = value().flatMap(DemoKind.init(rawValue:)); i += 1
+            case "--slides": out.slidesDirectory = value().map { URL(fileURLWithPath: $0, isDirectory: true) }; i += 1
+            case "--length": out.slidesLength = value().flatMap(Double.init) ?? 20; i += 1
+            case "--marks": out.slidesMarks = value()?.split(separator: ",").compactMap { Double($0) } ?? []; i += 1
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
             // `--levels` on its own means "speech"; a following pattern name wins.
@@ -1023,6 +1035,18 @@ enum InputDevices {
 
 let arguments = Arguments.parse(Array(CommandLine.arguments.dropFirst()))
 let app = NSApplication.shared
+// After `NSApplication.shared`: the cursor image needs a window-server connection.
+if let slides = arguments.slidesDirectory {
+    do {
+        try MainActor.assumeIsolated {
+            try writeSlideFrames(to: slides, length: arguments.slidesLength, marks: arguments.slidesMarks)
+        }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("slides: \(error)\n".utf8))
+        exit(1)
+    }
+}
 
 final class SandboxDelegate: NSObject, NSApplicationDelegate {
     var driver: SandboxDriver?

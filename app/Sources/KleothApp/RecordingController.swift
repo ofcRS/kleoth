@@ -246,6 +246,9 @@ public final class RecordingController: ObservableObject {
     /// unconditional assignment would invalidate every observer (the menu-bar
     /// label, the popover, History) five times a minute for an identical value.
     public func refreshProviderStatus() async {
+        // Detection spawns `claude`/`codex` and probes a local server; a demo
+        // launch shows finished meetings and needs none of it.
+        guard !DemoMode.isOn else { return }
         let status = await AppConfig.providerStatus()
         // The Settings `.task` poll is cancelled on a page switch or when the
         // window closes — possibly mid-probe, and a cancelled probe reports
@@ -1680,7 +1683,7 @@ public final class RecordingController: ObservableObject {
     /// a ~600 MB download mid-processing. Best-effort: failures are logged and
     /// swallowed (the transcribe path retries, also via a background session).
     public func prewarmTranscriptionModel() async {
-        guard modelDownloadProgress == nil else { return }
+        guard !DemoMode.isOn, modelDownloadProgress == nil else { return }
         modelDownloadProgress = 0
         do {
             try await LocalTranscriber.downloadModel { [weak self] frac in

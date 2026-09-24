@@ -1,0 +1,28 @@
+# The meeting the README film opens: a pricing-page review with decisions, owners and dates.
+when: 0 10:30
+you: Samantha
+them: Priya | Karen
+
+YOU: Hi Priya, thanks for jumping on. I want to lock the pricing page today, so engineering can start on Monday.
+THEM: Sounds good. I sent the new mockups this morning. The big change is that we go from four plans down to three: Free, Pro, and Team.
+YOU: I like three. What happened to the Starter plan?
+THEM: Almost nobody picked it. In the last test, Starter got under five percent of sign-ups, and people kept asking how it was different from Pro. So I folded its limits into Free.
+YOU: Makes sense. What does Free include now?
+THEM: Three projects, one gigabyte of storage, and the full editor. The only things missing are sharing and version history.
+YOU: Okay. And Pro stays at twelve dollars a month?
+THEM: Twelve monthly, or ten a month if you pay yearly. That's the other decision I need from you. Do we show yearly by default?
+YOU: What did the test say?
+THEM: With yearly selected by default, about a third more people chose the annual plan, and refunds didn't go up.
+YOU: Then yes, yearly by default. But the toggle has to be obvious. I don't want anyone to feel tricked.
+THEM: Agreed. I'll put the monthly price right under the yearly one, in the same size.
+YOU: Good. What about Team?
+THEM: Team is eighteen dollars per seat, with a minimum of three seats. It adds shared workspaces, admin controls, and priority support.
+YOU: I'm not sure about the three seat minimum. Small agencies are a big part of our trials.
+THEM: That's fair. Marco thought the minimum would cut down on support tickets, but we don't have any data on it.
+YOU: Let's drop it for launch, and look at the numbers again in a month.
+THEM: Okay, no minimum. One more thing. The comparison table is long. It has twenty two rows.
+YOU: Cut it to the ten rows people actually ask about, and put the rest behind a link that says compare all features.
+THEM: Will do. I'll send the updated design by Thursday.
+YOU: Great. I'll write the copy for the FAQ, and I'll ask Marco to check that billing can handle the yearly toggle. Can we get it live before the October newsletter?
+THEM: If engineering starts on Monday, yes. The newsletter goes out on the fourteenth, so we have about two weeks.
+YOU: Perfect. Thanks, Priya.

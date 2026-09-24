@@ -1,0 +1,15 @@
+when: -1 16:00
+you: Samantha
+them: Aoife | Moira
+
+YOU: Hi Aoife, thanks for making the time. You've been on the Team plan for about six weeks now, and I wanted to hear how it's going.
+THEM: Overall, really well. The team uses it every day for our product launches. The shared templates alone save us a few hours a week.
+YOU: That's great to hear. What isn't working?
+THEM: Two things. First, permissions. Our freelancers can see every workspace, and we'd like to limit them to just one.
+YOU: That's a common request. We're building guest roles right now, and they should ship in November.
+THEM: Good. The second thing is exports. When we export a board to PDF, the images come out blurry.
+YOU: I'm sorry about that. Could you send me one of those files? I'll get it to the team today.
+THEM: I'll email it after the call. And one question. Is there a discount if we move to yearly billing?
+YOU: Yes, yearly works out to about two months free. I'll send you a quote for twelve seats.
+THEM: Perfect. If guest roles land in November, I think we'll switch to yearly then.
+YOU: Sounds good. I'll keep you posted on the release date.
