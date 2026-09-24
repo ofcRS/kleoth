@@ -168,6 +168,9 @@ public enum DictationPillAction: Equatable, Sendable {
     case startHandsFreeDictation
     /// Click on the hands-free listening capsule.
     case stopHandsFreeDictation
+    /// Click on the push-to-talk listening capsule (fn+shift still held): the
+    /// same dictation keeps going hands-free.
+    case switchToHandsFree
     /// Microphone submenu. `nil` = follow the system default.
     case selectMicrophone(String?)
     case pasteLastDictation
@@ -187,8 +190,8 @@ public enum DictationPillAction: Equatable, Sendable {
         case .startScreenRecording, .stopScreenRecording, .revealLastRecording: return ""
         case .openScreenRecordingSettings: return "Open Screen Recording"
         case .retryTranscription: return "Retry"
-        case .startHandsFreeDictation, .stopHandsFreeDictation, .selectMicrophone,
-             .pasteLastDictation, .openDictationHistory, .hideForAnHour:
+        case .startHandsFreeDictation, .stopHandsFreeDictation, .switchToHandsFree,
+             .selectMicrophone, .pasteLastDictation, .openDictationHistory, .hideForAnHour:
             return ""
         }
     }

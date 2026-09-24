@@ -24,6 +24,15 @@ public enum ChordSignal: Sendable, Equatable {
     /// click on the listening capsule): `handsFree` → `idle`, nothing
     /// emitted. A no-op in every other state.
     case externalHandsFreeOff
+    /// The latch modifier (⌘) joined the held chord — fn+shift+⌘ straight
+    /// from exactly fn+shift (`ChordEdgeDetector`). For the detector the chord
+    /// is over, like `.chordUp`, and no release follows. From a confirmed hold
+    /// the dictation switches to hands-free; everywhere else it IS `.chordUp`.
+    case latchKey
+    /// The controller switches a held push-to-talk to hands-free (the click on
+    /// the listening capsule). fn+shift are still down, so their release is
+    /// swallowed. A no-op outside a confirmed hold.
+    case externalLatch
 }
 
 public enum DictationHotkeyEvent: Sendable, Equatable {
@@ -37,6 +46,9 @@ public enum DictationHotkeyEvent: Sendable, Equatable {
     case toggledOn
     /// Tap while hands-free → stop and transcribe + insert.
     case toggledOff
+    /// A confirmed push-to-talk switched to hands-free mid-hold (⌘, or the
+    /// click on the capsule). The capture keeps going; only the pill changes.
+    case latched
     /// Discard whatever was captured; never show (or hide) the pill.
     case cancelled(CancelReason)
     /// Emitted by the MONITOR (never by the machine) when Escape is pressed
@@ -167,6 +179,31 @@ public struct DictationChordMachine: Sendable {
         if case .externalHandsFreeOff = signal {
             if case .handsFree = state { state = .idle }
             return []
+        }
+
+        // Push-to-talk switched to hands-free mid-hold (2026-09-24). Both
+        // paths land in a state a double-tap already reaches, so every later
+        // row applies unchanged. ⌘: the detector has already read the chord as
+        // over (no release follows) → `handsFree`; anywhere but a hold it is
+        // `.chordUp`. The click: the keys are still down → `handsFreeArming`,
+        // whose release settles silently in `handsFree`.
+        if case .latchKey = signal {
+            switch state {
+            case .holding:
+                state = .handsFree
+                return [.latched]
+            case .pressed(let since) where now - since >= config.minHold:
+                // The hold timer was missed; the hold was real (see chordUp).
+                state = .handsFree
+                return [.began, .latched]
+            default:
+                return transition(.chordUp, at: now)
+            }
+        }
+        if case .externalLatch = signal {
+            guard case .holding = state else { return [] }
+            state = .handsFreeArming
+            return [.latched]
         }
 
         switch (state, signal) {

@@ -35,8 +35,9 @@ No account. No database. Local-first by design.
 
 Hold **fn+shift**, speak, let go: Kleoth transcribes what you said, cleans it up with one short
 language-model pass (fillers and false starts gone, never translated) and pastes it into whatever
-app has focus. If you know Wispr Flow or Superwhisper, it is the same hold-to-talk idea. Double-tap for
-hands-free. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
+app has focus. If you know Wispr Flow or Superwhisper, it is the same hold-to-talk idea. Double-tap
+for hands-free; from the next release, a hold that runs long can go hands-free too — tap ⌘ or click
+the pill. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
 would have typed — paragraphs, a list where you listed things; a quick chat message is pasted as
 heard. A personal dictionary biases recognition toward your names and jargon, and every dictation
 lands in a searchable history.
@@ -69,9 +70,8 @@ your Mac unless you choose cloud transcription.
 
 ## Screen recording: Loom-style, local (beta)
 
-Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on), drag a
-region or take the whole display,
-and Kleoth records it with system audio **and** your microphone as one small H.264 MP4 (about 22 MB
+Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on), drag
+a region or take the whole display, and Kleoth records it with system audio **and** your microphone as one small H.264 MP4 (about 22 MB
 per minute) in `~/Kleoth/screen-recordings/`. Each recording is transcribed on device afterwards
 and opens in a viewer with the transcript beside the video: the spoken word is highlighted, clicking
 a word seeks, double-clicking corrects it. It is a beta — no trimming, sharing or export yet.

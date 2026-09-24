@@ -13,7 +13,9 @@ and keeps every dictation as plain JSON on your disk.
 
 1. **Hold fn+shift and speak.** A small dark pill at the edge of your screen springs out and shows a
    live waveform. Let go when you are done. Double-tap the chord for hands-free and tap once to
-   stop; Esc cancels. You can also click **Dictate** on the pill's hover dock.
+   stop; Esc cancels. You can also click **Dictate** on the pill's hover dock. From the next
+   release, a hold that runs long can go hands-free mid-way: tap ⌘ while you hold, or click the
+   pill, and let go of the keys. Nothing said so far is lost.
 2. **Speech-to-text.** The clip goes to [ElevenLabs Scribe](https://elevenlabs.io) with your own
    API key. Your personal dictionary is sent along as key terms, so names and jargon come back
    spelled your way. Scribe gets a time budget that grows with the length of the clip, and a

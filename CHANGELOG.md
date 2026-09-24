@@ -8,6 +8,11 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Added
 
+- **Go hands-free in the middle of a dictation.** Started holding fn+shift and it's turning into a
+  long one? Tap ⌘ while you hold, or click the pill: the same dictation keeps listening, you can let
+  go of the keys, and it ends like any hands-free dictation (tap fn+shift or click the pill; Esc
+  cancels). Nothing said so far is lost. While you hold, the pill shows a faint lock where the
+  hands-free dot goes. Adding ⌥ or ⌃ mid-hold still ends the dictation as before; only ⌘ changed.
 - **A dictation is never lost to a failed transcription.** When Scribe can't transcribe a
   dictation — it timed out twice, the network dropped, the key was rejected — the audio is kept
   and the pill says so: "Timed out — saved to History", with a **Retry** button that sends the
