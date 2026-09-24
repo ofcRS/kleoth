@@ -18,6 +18,13 @@ All notable changes to Kleoth are documented here. The format is based on
   (the free on-device engine, when Scribe keeps failing) and copies the text to the clipboard when
   it's ready; **Show Audio in Finder** reaches the clip. Deleting the row moves its audio to the
   Trash. Once a dictation is transcribed its audio is deleted — dictations that paste keep none.
+- **`kleoth summarize --max-output-tokens <n>`.** Sets the summary's output-token budget (1 to
+  1000000, default 8192); an answer cut off at that limit is retried once with twice the budget.
+  It applies to OpenRouter and local servers — the Claude Code and Codex CLIs take no output cap.
+- **`-KleothSimulateFirstRun` (testing).** Quit Kleoth, then
+  `open -a Kleoth --args -KleothSimulateFirstRun YES` launches it as if consent and onboarding had
+  never been done, for that launch only, so the first-run flows can be checked on a Mac that
+  finished them long ago. The flag stores nothing.
 
 ### Fixed
 
@@ -28,6 +35,37 @@ All notable changes to Kleoth are documented here. The format is based on
 - **"Dictation history…" opening on Meetings.** History opened from the pill menu, Settings or
   the popover's recording row now lands on the tab it was asked for, not only when the window was
   already open.
+- **Incomplete or cut-off summaries.** An answer that left parts out — no overview, no action
+  items — was saved and shown as a finished summary with those sections silently missing. A
+  summary is now saved only when it is complete: not cut off, readable, and with a TL;DR, an
+  overview, action items and per-speaker highlights (an empty overview or list is fine). An answer
+  short of that gets one retry aimed at what went wrong — asked again more compactly with twice the
+  room, asked for the missing parts by name, or simply asked again after an empty answer — and
+  otherwise fails with a message that says why: "The summary was cut off…", "The summary came back
+  incomplete (no overview)…". A cut-off is now recognized as one even when the provider reports a
+  normal finish, as Codex, Claude Code and some local servers do. Nothing partial is ever written:
+  the transcript is saved, and a summary already on disk stays.
+- **A failed summary looked like one that was never tried.** When the summary step failed after a
+  transcription, only the popover's status line said so ("summary skipped"); the meeting itself
+  showed "No summary yet". The reason now shows where you look: a "Summary failed: …" card on the
+  meeting and a red Failed chip on its History row (hover for the message), and the popover says
+  "summary failed" with the reason. A run that writes no summary no longer names a model or
+  provider in `meta.json`, so the header stops showing the model of a summary that failed.
+- **Only the newest meeting's summary could be retried.** Short of transcribing a meeting again
+  with the other engine (paid in the cloud, or on device for a cloud-only meeting), the app's only
+  retry was `kleoth://summarize-latest` or its app intent. Every transcribed meeting without a
+  summary — never summarized, or the last try failed — now has a small **Summarize** button beside
+  "No summary yet". It runs the summary alone on your current AI provider, and the meeting reads
+  "Summarizing…" meanwhile. It is disabled while the meeting is busy, and when no AI provider is
+  available — its tooltip then says why. `kleoth://summarize-latest` now does the same for the
+  newest meeting only. It says so when that meeting isn't transcribed yet, and does nothing while
+  it is still processing. It never falls back to an older meeting.
+- **The record hotkey did nothing before the consent notice was acknowledged.** Neither did
+  `kleoth://record` or `kleoth://toggle`: Kleoth refused, but said so only in the popover's status
+  line (the Start Kleoth Recording app intent answered with a dialog that offered nothing to
+  click). A small **Before you record** window now comes forward with the popover's consent
+  notice. **I understand — start recording** acknowledges and starts, and the window closes once
+  the recording runs — or stays and shows why the start failed. **Not now** records nothing.
 
 ## [0.4.0] — 2026-09-20
 

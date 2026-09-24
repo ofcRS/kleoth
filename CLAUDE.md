@@ -13,11 +13,12 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (466 tests)
+swift build && swift test                        # core + CLI (490 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
 pkill -x Kleoth; open -a Kleoth                  # relaunch (make-app does NOT kill the running instance)
+pkill -x Kleoth; open -a Kleoth --args -KleothSimulateFirstRun YES   # first-run flows again, this launch only
 bash app/make-dmg.sh                             # app/dist/Kleoth-<version>.dmg (version = app/bundle/Info.plist)
 swift run kleoth summarize <dir> --model <slug> --provider claude-code|codex|local|openrouter  # re-summarize in place
 
@@ -63,7 +64,7 @@ KeyboardShortcuts, WhisperKit 0.18)
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
-`docs/plans/2026-09-23-dictation-retry.md`.
+`docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`.
 
 ## Data on disk
 - Meeting = `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`: `mic.m4a`, `system.m4a`, `meeting.m4a`,
@@ -92,6 +93,13 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - **Summarization:** OpenRouter, default `ModelCatalog.defaultModel` = `z-ai/glm-5.3-flash`; strict
   `json_schema` with fallback to `json_object`; output language = transcript language. Summary shape is
   lean: `title?`, `tldr`, `overview?`, `action_items`, `per_speaker_highlights`.
+- **Summary completeness (2026-09-24):** `Summarizer.assess` accepts an answer only if it is not cut off
+  (finish `"length"`, or JSON that stops before it closes — Codex, Claude Code and some local servers
+  say `"stop"` regardless), decodes, and has a non-blank `tldr` and non-null `overview`, `action_items`,
+  `per_speaker_highlights` (blank/empty OK). ONE retry shaped by the failure (cut off → fresh, 2× budget,
+  compact; `reasoning: low` only after an EMPTY cut-off; an empty answer is never replayed), then it
+  throws. Nothing partial is ever saved; `meta.json` names `model`/`summary_provider` only if that run
+  wrote one.
 - **Dictation retry (2026-09-23):** Scribe budget per attempt = `min(120, 25 + 0.5 × clip s)`, one
   retry 1 s after a transient failure (timeout, network, 408/429/5xx); dictation URLSession 130 s/150 s
   so the budget always fires first. A run with no transcript (failed, prep failed, Esc/Settings-off
@@ -127,6 +135,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   (nil = OpenRouter). OpenRouter's own model still comes from the legacy `default_model`/`dictation_model`
   keys via `Settings.effectiveProviderSettings`, with `ai_models` overrides taking priority. Design:
   `docs/plans/2026-09-15-ai-providers.md`.
+- **Consent window (2026-09-24):** the consent guard lives ONLY in `RecordingController.start()`; a
+  refusal bumps `consentRequest`, and the always-mounted menu-bar label opens "Before you record" on it
+  (`onChange` + a mount-time check). New start paths (pill meeting button, call detection) just call
+  `start()` — no consent check of their own (only the popover and onboarding, which show the notice in
+  place, gate first). The window's start button never closes it; it closes itself once `isRecording`
+  is true.
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -164,6 +178,14 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Provider detection: the local-server probe opens its own 2 s/3 s ephemeral `URLSession` (the default
   `URLSessionTransport` waits for connectivity and hangs forever with no server listening); `codex login
   status` prints "Logged in using ChatGPT" to **stderr**, not stdout — check both streams.
+- Ollama's OpenAI-compatible `/v1` ignores a per-request `num_ctx` and reportedly drops the START of an
+  over-long prompt without an error (its default context can be 4k): long meetings need
+  `OLLAMA_CONTEXT_LENGTH` ≥ 32768 on the server. `assess` sees only the answer, so it can't catch the
+  loss (summary spec §9 Q4).
+- `-KleothSimulateFirstRun YES` reads consent + onboarding as not done for that launch only. It is read
+  from the argument domain alone (`defaults write` does nothing) and writes nothing, and `--args`
+  reaches only a NEW process (`pkill -x Kleoth` first). Read first-run state from
+  `RecordingController`, never the Keychain, or the flag can't reach it.
 
 ## Security (hard rules)
 - API keys are never printed or committed. `.env` and `config.json` are gitignored; inspect `.env`
@@ -182,10 +204,17 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   `polish_provider` in the day file, signing out of Claude Code, a local Ollama server,
   `kleoth summarize <dir> --provider codex`); pill menu actions end to end; screen-recording manual
   checklist items 1–8 (design doc §8); recordings viewer checklist (design doc §7).
-- Next (2026-09-24, designs in progress, nothing approved yet): context-aware dictation (a selection
-  is merged with the dictation and replaced; nothing outside it changes — the user's pick), meetings in
-  the pill + mic-usage detection, meeting illustrations, fixes for truncated summaries + the onboarding
-  Skip dead end → `docs/plans/2026-09-24-*.md`. After those: History as one timeline, then onboarding +
-  positioning. Dropped: trimming silence before Scribe.
+- Summary completeness + consent window (2026-09-24, unreleased; CHANGELOG `[Unreleased]`; design
+  `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`): `Summarizer.assess` + one shaped
+  retry (a cut-off, empty, incomplete or malformed answer is never saved), `meta.json` provenance only
+  with a summary, `--max-output-tokens`, a Summarize button + summary failures pinned on the meeting,
+  the "Before you record" window for hotkey/URL/intent starts, `-KleothSimulateFirstRun`. Verified:
+  core tests, app build, per-task and whole-branch reviews. Not yet human-verified: design doc §6
+  checklist items 2–12.
+- Next (2026-09-24): context-aware dictation — in progress on `feat/dictation-context` (the T3 Code
+  focus spike, `dictate --focus-probe`, awaits the user's run); then meetings in the pill (phase 1) +
+  call detection (phase 2), then meeting covers (Codex engine; Apple's `ImageCreator` can't draw in the
+  background). Designs (local until each branch lands): `docs/plans/2026-09-24-*.md`. After those:
+  History as one timeline, then onboarding + positioning. Dropped: trimming silence before Scribe.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

@@ -158,6 +158,14 @@ in this order, unless you pick one in Settings → Accounts:
 Codex only summarizes (no dictation cleanup path); Apple's on-device model only cleans up
 dictation and needs macOS 26 with Apple Intelligence turned on in System Settings.
 
+**Long meetings on Ollama** need a larger context than Ollama's default, which can be as small as
+4096 tokens: start the server with `OLLAMA_CONTEXT_LENGTH` set to 32768 or more
+(`OLLAMA_CONTEXT_LENGTH=32768 ollama serve`; for the Ollama app, run
+`launchctl setenv OLLAMA_CONTEXT_LENGTH 32768` and restart it). Ollama's OpenAI-compatible
+endpoint (the `/v1` URL Kleoth uses) has no way to set the context size per request, and an
+over-long prompt is reportedly cut from the start without an error — the summary may then cover
+only the end of the meeting.
+
 Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
 with their own login; the local server and Apple's model never leave the machine.
 
@@ -176,6 +184,10 @@ swift run kleoth render     <dir>         # re-render summary.md from summary.js
 Run `swift run kleoth <subcommand> --help` for flags. The CLI resolves keys from environment
 variables (`ELEVEN_API_KEY`, `OPENROUTER_API_KEY`), a local `.env`, or
 `~/.config/kleoth/config.json`.
+
+`kleoth summarize --max-output-tokens <n>` sets the summary's output-token budget (default 8192;
+an answer cut off at that limit is retried once with twice the budget). It applies to OpenRouter
+and local servers only — the Claude Code and Codex CLIs take no output cap.
 
 > **Free summaries in Claude Code:** the `summarize-meeting` project skill produces the same
 > `summary.json` / `summary.md` using your Claude Code session — no OpenRouter key, zero API cost.
