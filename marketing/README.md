@@ -57,10 +57,15 @@ About/topics don't match after a release.
 3. After `bash app/make-dmg.sh`, run `bun marketing/sync.ts apply`. That writes the copy, the
    download link, the cask version and SHA, the images if their text changed, and the GitHub
    About/topics.
-4. If `social-preview.png` changed, upload it by hand: GitHub → Settings → General → Social
+4. If the pill changed this release, re-render the pill demos: `bash app/branding-src/demo/make-demos.sh`
+   (the real pill on a drawn stage; nothing is captured from the screen). If History, the meeting
+   view or the recordings viewer changed, re-render those and the screenshot:
+   `bash app/branding-src/demo/make-app-demos.sh` (~5 min; the fictional meetings are summarized
+   through your Claude Code; a demo copy of the app films its own window from behind yours).
+5. If `social-preview.png` changed, upload it by hand: GitHub → Settings → General → Social
    preview. GitHub has no API for it; `check` and `apply` remind you.
-5. Commit, then tag and release.
-6. After a copy change, run the [discovery queries](#discovery-queries).
+6. Commit, then tag and release.
+7. After a copy change, run the [discovery queries](#discovery-queries).
 
 ## Claims held back
 

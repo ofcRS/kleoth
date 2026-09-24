@@ -22,7 +22,17 @@ import KleothPillUI
 ///         [--levels off|speech|steady] [--sequence idle,listening,transcribing,done,idle]
 ///         (sequence items: idle armed listening handsfree transcribing polishing done warning
 ///          failed kept recording saving saved hidden, plus peek / unpeek = pointer enters / leaves
-///          the resting pill)
+///          the resting pill; any item may end in `@<seconds>` to hold it that long
+///          instead of `--hold`, e.g. `listening@3.2`)
+///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
+///         stage (a desktop, an editor or a slide window, captions, the fn+shift
+///         keys, a cursor) in `<dir>/demo/` with an ffmpeg concat list, for the
+///         README demos (`app/branding-src/demo/make-demos.sh`).
+///
+///     swift run --package-path app pillsandbox --slides <dir> --length <seconds> [--marks 0.4,3.1,7.8,12.5]
+///         Just the screen demo's slide window, no pill, at 30 fps: the picture
+///         of the demo screen recording (`writeSlideFrames`), then exits.
+///
 ///         `--levels` feeds synthetic mic + system RMS into the REAL
 ///         `setRecordingLevels`, so the recording toolbar's meters move in the
 ///         film; `off` (the default) leaves them at rest.
@@ -68,6 +78,12 @@ struct Arguments {
     /// tick (`shot-NNNN.png`) — the only way to film Liquid Glass in motion
     /// (`captureFrame` sees just our window's own pixels).
     var grabFrames = false
+    /// Also compose README demo frames (`writeDemo`).
+    var demo: DemoKind?
+    /// `--slides`: write the slide-only frames and exit (`writeSlideFrames`).
+    var slidesDirectory: URL?
+    var slidesLength: TimeInterval = 20
+    var slidesMarks: [TimeInterval] = []
 
     enum LevelPattern: String {
         case off, speech, steady
@@ -88,6 +104,10 @@ struct Arguments {
             case "--dock-scale": out.dockScale = value().flatMap(Double.init) ?? out.dockScale; i += 1
             case "--stage": out.stage = value().flatMap(StageTone.init(rawValue:)) ?? .none; i += 1
             case "--grab-frames": out.grabFrames = true
+            case "--demo": out.demo = value().flatMap(DemoKind.init(rawValue:)); i += 1
+            case "--slides": out.slidesDirectory = value().map { URL(fileURLWithPath: $0, isDirectory: true) }; i += 1
+            case "--length": out.slidesLength = value().flatMap(Double.init) ?? 20; i += 1
+            case "--marks": out.slidesMarks = value()?.split(separator: ",").compactMap { Double($0) } ?? []; i += 1
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
             // `--levels` on its own means "speech"; a following pattern name wins.
@@ -110,6 +130,10 @@ struct Arguments {
 /// same rule the real session follows (§6.1).
 enum SandboxClock {
     static let filmStart = Date()
+    /// When the sandbox's screen recording started — set by
+    /// `.startScreenRecording`, so the toolbar's digits start at 0:00 there
+    /// and `.saved` reports the length the toolbar showed.
+    @MainActor static var recordingStart = filmStart
 }
 
 /// Synthetic RAW RMS for the recording meters — the same units
@@ -212,7 +236,7 @@ final class SandboxDriver: ObservableObject {
     /// tucks — every phase collapses back to the dot-and-digits capsule.
     @Published var backdropRecording = false {
         didSet {
-            controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle)
+            controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.recordingStart) : .idle)
         }
     }
     @Published var phase: String = "idle"
@@ -305,6 +329,7 @@ final class SandboxDriver: ObservableObject {
             }
         case .startScreenRecording:
             log("Record screen… (would open the region picker)")
+            SandboxClock.recordingStart = Date()
             backdropRecording = true
             simulateRecordingLevels = true
         case .stopScreenRecording:
@@ -324,7 +349,11 @@ final class SandboxDriver: ObservableObject {
                 try? await Task.sleep(for: .seconds(1.2))
                 guard !Task.isCancelled else { return }
                 backdropRecording = false
-                controller.show(.saved("0:42 · 15 MB"))
+                // What the toolbar showed, at the app's ~22 MB a minute, in the
+                // app's own words (`ScreenRecordingSummary.pillText`).
+                let seconds = max(1, Int(Date().timeIntervalSince(SandboxClock.recordingStart) - 1.2))
+                let bytes = Int64(Double(seconds) / 60 * 22_000_000)
+                controller.show(.saved("\(ElapsedFormatter.string(seconds: seconds)) · \(ScreenRecordingFileNaming.sizeText(bytes: bytes))"))
             }
         case .revealLastRecording:
             log("Reveal the last recording in Finder")
@@ -343,7 +372,7 @@ final class SandboxDriver: ObservableObject {
             hideTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(6))
                 guard !Task.isCancelled, let self else { return }
-                controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle)
+                controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.recordingStart) : .idle)
                 log("…back after the hour")
             }
         case .openSettings:
@@ -510,7 +539,7 @@ struct ControlPanel: View {
                     args.filmDirectory = dir
                     args.edge = driver.edge
                     args.fraction = driver.fraction
-                    args.backdrop = driver.backdropRecording ? .recording(since: SandboxClock.filmStart) : .idle
+                    args.backdrop = driver.backdropRecording ? .recording(since: SandboxClock.recordingStart) : .idle
                     args.levels = driver.simulateRecordingLevels ? .speech : .off
                     driver.lastFilm = "Filming…"
                     Task { @MainActor in
@@ -541,6 +570,10 @@ struct ControlPanel: View {
 struct CapturedFrame {
     let time: TimeInterval
     let frame: DictationPillController.Frame
+    /// The sequence item running when it was taken, without any `@hold`.
+    var step = ""
+    /// Where the film's pointer is, in screen coordinates (nil = off the pill).
+    var pointer: CGPoint?
 }
 
 /// Runs the sequence, captures, writes frames + sheet. Returns a one-line summary.
@@ -567,20 +600,26 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     let interval = 1.0 / max(args.fps, 1)
     let start = Date()
     var speechClock = 0.0
-    for name in args.sequence {
+    var pointerSpot: String?
+    for item in args.sequence {
+        let parts = item.split(separator: "@", maxSplits: 1).map(String.init)
+        let name = parts[0]
         // "peek" / "unpeek" simulate the pointer entering / leaving the pill.
         // "hover:mic|rec|menu|center" put the pointer on one glyph of the peek
         // dock (or the capsule's centre); "menu" opens the pill menu, films
         // the screen around it and closes it after the hold.
-        var holdFor = args.hold
+        var holdFor = parts.count > 1 ? (Double(parts[1]) ?? args.hold) : args.hold
         if name == "peek" || name == "unpeek" {
             controller.setHovered(name == "peek")
+            pointerSpot = name == "peek" ? "center" : nil
         } else if name.hasPrefix("wait:") {
             // "wait:<seconds>" changes nothing and holds for that long — for
             // timed grabs after a transition (e.g. how a glass surface settles).
             holdFor = Double(name.dropFirst(5)) ?? args.hold
         } else if name.hasPrefix("hover:") {
-            controller.setPointer(filmPointer(String(name.dropFirst(6)), edge: args.edge, controller: controller))
+            let spot = String(name.dropFirst(6))
+            controller.setPointer(filmPointer(spot, edge: args.edge, controller: controller))
+            pointerSpot = spot == "off" || spot == "none" ? nil : spot
         } else if name.hasPrefix("click:") {
             // "click:mic|rec|menu|center" — a REAL click on the pill: a
             // synthesized mouse down + up delivered to the pill's own window,
@@ -588,6 +627,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             // hosting view's event handling (what `perform:` skips — and what
             // the 2026-09-10 crash needed). No Accessibility involved: an app
             // may send events to its own windows.
+            pointerSpot = String(name.dropFirst(6))
             filmClick(String(name.dropFirst(6)), edge: args.edge, controller: controller)
         } else if name.hasPrefix("perform:") {
             // "perform:startScreenRecording|stopScreenRecording|startHandsFreeDictation|…"
@@ -649,7 +689,14 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
                 controller.setRecordingLevels(syntheticLevels(args.levels, at: speechClock))
             }
             if let frame = controller.captureFrame() {
-                captured.append(CapturedFrame(time: Date().timeIntervalSince(start), frame: frame))
+                var pointer: CGPoint?
+                if let spot = pointerSpot, let p = filmPointer(spot, edge: args.edge, controller: controller) {
+                    // Root space is y-down from the panel's top-left.
+                    pointer = CGPoint(x: frame.panelFrame.minX + p.x, y: frame.panelFrame.maxY - p.y)
+                }
+                captured.append(CapturedFrame(
+                    time: Date().timeIntervalSince(start), frame: frame, step: name, pointer: pointer
+                ))
                 if args.grabFrames {
                     // One fixed region for the whole film (a strip needs a
                     // steady camera): around the first frame's anchor, wide
@@ -679,6 +726,14 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
         sheetName = try writeFilm(captured, to: dir, edge: args.edge).lastPathComponent
     } catch {
         FileHandle.standardError.write(Data("sheet failed: \(error)\n".utf8))
+    }
+    if let kind = args.demo {
+        do {
+            let list = try writeDemo(captured, kind: kind, to: dir.appendingPathComponent("demo", isDirectory: true))
+            print("demo: \(list.path)")
+        } catch {
+            FileHandle.standardError.write(Data("demo failed: \(error)\n".utf8))
+        }
     }
     let summary = "\(captured.count) frames → \(dir.path)  sheet: \(sheetName)"
     print(summary)
@@ -806,6 +861,10 @@ func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationP
     case "mic": along = -pitch
     case "menu": along = pitch
     case "rec", "center": along = 0
+    // The recording toolbar's Stop button: the capsule is 222 pt wide
+    // (`PillStyle.recordingContentWidth` + two 14 pt paddings) and Stop, 22 pt,
+    // is its last item — so its centre sits 111 − 14 − 11 = 86 pt right of centre.
+    case "stop": along = 86
     case "off", "none": return nil
     default: along = 0
     }
@@ -976,6 +1035,18 @@ enum InputDevices {
 
 let arguments = Arguments.parse(Array(CommandLine.arguments.dropFirst()))
 let app = NSApplication.shared
+// After `NSApplication.shared`: the cursor image needs a window-server connection.
+if let slides = arguments.slidesDirectory {
+    do {
+        try MainActor.assumeIsolated {
+            try writeSlideFrames(to: slides, length: arguments.slidesLength, marks: arguments.slidesMarks)
+        }
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("slides: \(error)\n".utf8))
+        exit(1)
+    }
+}
 
 final class SandboxDelegate: NSObject, NSApplicationDelegate {
     var driver: SandboxDriver?

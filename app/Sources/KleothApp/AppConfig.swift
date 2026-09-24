@@ -22,6 +22,8 @@ enum AppConfig {
     }
 
     static func mergeCredentialsFromKeychain(_ base: Credentials) -> Credentials {
+        // A demo launch holds no keys, so nothing it runs can spend or upload.
+        if DemoMode.isOn { return Credentials() }
         var merged = base
         if let key = Keychain.get(Keychain.Account.elevenLabsKey), !key.isEmpty {
             merged.elevenLabsKey = key
@@ -106,6 +108,13 @@ enum AppConfig {
         // Chains `ModelCatalog.migrating` and the retired polish defaults
         // (`DictationDefaults.retiredPolishModels`).
         merged.dictationModel = DictationDefaults.migratingPolishModel(merged.dictationModel)
+        // Demo mode: whatever `config.json` says, every folder is the demo
+        // folder and nothing starts on its own.
+        if DemoMode.isOn {
+            merged.outputDir = DemoMode.outputDir
+            merged.dictationEnabled = false
+            merged.autoTranscribe = false
+        }
         return merged
     }
 
@@ -136,6 +145,9 @@ enum AppConfig {
     /// The summarizer for the current settings, or the `ProviderError` that
     /// says why there is none.
     static func makeSummarizer() async throws -> (Summarizer, ProviderFactory.Selection) {
+        // A demo launch reaches no provider — not a CLI, not a local server —
+        // even from a click on its window.
+        if DemoMode.isOn { throw CancellationError() }
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)
@@ -147,6 +159,7 @@ enum AppConfig {
     /// The dictation polisher for the current settings, or the `ProviderError`
     /// that says why there is none.
     static func makePolisher() async throws -> (DictationPolisher, ProviderFactory.Selection) {
+        if DemoMode.isOn { throw CancellationError() }
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)

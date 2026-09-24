@@ -9,6 +9,11 @@ server. It is free and open source (Apache-2.0).
 **[⬇ Download Kleoth](https://github.com/ofcRS/kleoth/releases/latest)** · macOS 14.4+ ·
 [Back to the README](../README.md)
 
+<p align="center">
+  <img src="assets/demo-meeting.gif" alt="The History window: a meeting's TL;DR and summary, its action items with owners and due dates, per-speaker highlights, then the next meeting" width="720"><br>
+  <em>Kleoth's real History window over fictional meetings, transcribed on device and summarized by Claude Code.</em>
+</p>
+
 ## How it works
 
 1. **Record.** Click **Start Recording** in the menu bar, press your global hotkey, or use

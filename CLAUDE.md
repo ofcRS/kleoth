@@ -26,9 +26,12 @@ swift run kleoth summarize <dir> --model <slug> --provider claude-code|codex|loc
 swift build --package-path app --product localtranscribe && app/.build/debug/localtranscribe <meeting-dir> [scribe]
 swift build --package-path app --product dictate && app/.build/debug/dictate 4 [--no-polish] [--device <uid>] [--provider claude-code|codex|local|openrouter] [--text "<raw>" --runs N]
 app/.build/debug/dictate --file <audio> [--fail-first N] [--keep-on-failure]   # real clip through the Scribe retry policy; N injected transient failures; keep → a REAL pending History row
-swift build --package-path app --product screenrec && app/.build/debug/screenrec 10 [--inspect f.mp4] [--extract f.mp4] [--words f.m4a]
+swift build --package-path app --product screenrec && app/.build/debug/screenrec 10 [--inspect f.mp4] [--extract f.mp4] [--words f.m4a] [--sidecar f.mp4 --title T]
 swift run --package-path app pillsandbox                                # pill playground
-app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs
+app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs (step@secs; --demo dictation|screen composes README frames)
+bash app/branding-src/demo/make-demos.sh                          # README demo GIFs from the real pill → docs/assets/demo-*.gif
+bash app/branding-src/demo/make-app-demos.sh [data-dir]            # meeting + viewer GIFs, screenshot-detail.png: a KleothDemo.app copy (-KleothDemo) films its own window
+bun app/branding-src/demo/make-demo-data.ts <dir> [--provider local]   # fictional meetings/recording, real on-device transcripts + summaries (default: Claude Code)
 bun ~/.claude/skills/gpt-images/scripts/gpt-images.ts app/branding-src/<set>/jobs.json           # brand imagery (brief: app/branding-src/BRAND.md)
 bun marketing/sync.ts check [--offline] | apply [--no-remote]   # public pitch: drift report / rewrite README hero, cask, Raycast, images, GitHub About+topics
 bun test ./marketing/sync.test.ts                              # release-gate command parser
@@ -67,7 +70,7 @@ KeyboardShortcuts, WhisperKit 0.18)
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
 `docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`,
-`docs/plans/2026-09-24-positioning.md`.
+`docs/plans/2026-09-24-positioning.md`, `docs/plans/2026-09-24-demo-mode.md` (`-KleothDemo`: what a demo launch must never do).
 
 ## Data on disk
 - Meeting = `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`: `mic.m4a`, `system.m4a`, `meeting.m4a`,
@@ -232,7 +235,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   background). Designs (local until each branch lands): `docs/plans/2026-09-24-*.md`. After those:
   History as one timeline, then onboarding + positioning. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24, branch `docs/positioning`): after merge run `bun marketing/sync.ts apply` (pushes GitHub
-  About/topics), upload `docs/assets/social-preview.png` by hand, record the 3 demo GIFs (README slot). Later: a Kleoth
+  About/topics), upload `docs/assets/social-preview.png` by hand, demo GIFs rendered on `feat/demo-films` (4 GIFs + screenshot; `-KleothDemo` gates). Later: a Kleoth
   landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
+- Demo films (2026-09-25, branch `feat/demo-films`): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
+  `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
+  (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height;
+  on-device meeting transcripts aren't split into turns (Whisper segments abut → `TranscriptNormalizer` sees no gap).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
