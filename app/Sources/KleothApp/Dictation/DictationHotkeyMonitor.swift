@@ -32,6 +32,9 @@ import os
 final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
     /// The chord itself.
     static let chord: NSEvent.ModifierFlags = [.function, .shift]
+    /// Tapped while the chord is held: the dictation goes hands-free
+    /// (`ChordSignal.latchKey`). A modifier types nothing into the target app.
+    static let latchModifier: NSEvent.ModifierFlags = .command
     /// The modifiers that participate in the exact-match test (caps lock /
     /// numeric pad / help deliberately excluded — they are not shortcut keys).
     static let relevantModifiers: NSEvent.ModifierFlags = [.function, .shift, .command, .option, .control]
@@ -54,7 +57,10 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
     /// Decides chord-down / chord-up edges from each `.flagsChanged` snapshot
     /// (debounce, exact match, and the "third modifier released off a
     /// superset" suppression) — pure and tested in KleothCore.
-    private var edges = ChordEdgeDetector(chord: DictationHotkeyMonitor.chord)
+    private var edges = ChordEdgeDetector(
+        chord: DictationHotkeyMonitor.chord,
+        latch: DictationHotkeyMonitor.latchModifier
+    )
 
     private(set) var isRunning = false
     var escapeCancels = false
@@ -129,6 +135,10 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         emit(machine.handle(on ? .externalHandsFreeOn : .externalHandsFreeOff, at: Self.now()))
     }
 
+    func latch() {
+        emit(machine.handle(.externalLatch, at: Self.now()))
+    }
+
     // MARK: Event ingestion
 
     private func ingest(_ event: NSEvent) {
@@ -137,14 +147,16 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
         case .flagsChanged:
             // Derive from THIS event's flags, never from keyCode: order-independent
             // (fn-then-shift or shift-then-fn) and symmetric on release. The
-            // exact match means adding ⌘/⌥/⌃ mid-hold reads as a chord *up* —
+            // exact match means adding ⌥/⌃ mid-hold reads as a chord *up* —
             // NOT the same as `.otherKey`: from `holding` the machine commits
             // (`.ended`, §8.2 #7b by design), from `pressed` it discards the
-            // tap. Releasing that third modifier off fn+shift+⌘ is suppressed
-            // by the detector: fn+shift never moved, so it must not arm.
+            // tap. ⌘ is the latch: the same edge, reported as `.latchKey`, so
+            // a confirmed hold goes hands-free instead of ending (2026-09-24).
+            // Releasing that third modifier off fn+shift+⌘ is suppressed by
+            // the detector: fn+shift never moved, so it must not arm.
             let relevant = event.modifierFlags.intersection(Self.relevantModifiers)
             guard let signal = edges.ingest(relevant) else { return }   // debounce + suppression
-            log.debug("chord \(signal == .chordDown ? "down" : "up", privacy: .public) flags=\(relevant.rawValue, privacy: .public) t=\(now, privacy: .public)")
+            log.debug("chord \(signal == .chordDown ? "down" : (signal == .latchKey ? "latch" : "up"), privacy: .public) flags=\(relevant.rawValue, privacy: .public) t=\(now, privacy: .public)")
             emit(machine.handle(signal, at: now))
         case .keyDown:
             if edges.chordIsDown {

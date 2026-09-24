@@ -48,6 +48,11 @@ protocol DictationHotkeyMonitoring: AnyObject {
     /// session on top of the live one; `.externalHandsFreeOff` walks it back
     /// to idle silently. Neither emits an event.
     func syncHandsFree(_ on: Bool)
+    /// Feeds `.externalLatch` into the machine: the click on the push-to-talk
+    /// capsule asks to keep the held dictation going hands-free. From a
+    /// confirmed hold the machine emits `.latched` (handled like the ⌘ latch)
+    /// and swallows the chord's coming release; anywhere else, nothing.
+    func latch()
 }
 
 // MARK: How views reach the controller

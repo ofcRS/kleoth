@@ -485,6 +485,8 @@ final class DictationController: ObservableObject {
             beginListening(handsFree: false)
         case .toggledOn:
             beginListening(handsFree: true)
+        case .latched:
+            switchToHandsFree()
         case .ended, .toggledOff:
             finishListening()
         case .cancelled(let reason):
@@ -573,6 +575,30 @@ final class DictationController: ObservableObject {
         isSessionActive = true
         pill.show(.listening(handsFree: handsFree))
         startLevelPoll()
+    }
+
+    /// When the last push-to-talk went hands-free, for the double-click guard
+    /// in `stopHandsFreeFromPill()`. Cleared by `endSession()`.
+    private var latchedAt: ContinuousClock.Instant?
+
+    /// `.latched`: a held push-to-talk goes hands-free (⌘ joined the chord, or
+    /// the click on the capsule). The capture and the level poll run on
+    /// untouched — the words already spoken stay in the same clip — only the
+    /// phase and the pill change.
+    ///
+    /// The machine latches only from a confirmed hold, so it is normally in
+    /// step with `.listening(handsFree: false)`. When it is not (the capture
+    /// failed at chord-down, so `.began` found no `.armed` session), it is now
+    /// parked hands-free over nothing and would eat the next press as
+    /// `.toggledOff`: abort it back to idle instead.
+    private func switchToHandsFree() {
+        guard case .listening(handsFree: false) = phase else {
+            monitor.abort()
+            return
+        }
+        phase = .listening(handsFree: true)
+        latchedAt = .now
+        pill.show(.listening(handsFree: true))
     }
 
     /// `.ended` / `.toggledOff`: commit the clip (or drop it when too short).
@@ -670,6 +696,7 @@ final class DictationController: ObservableObject {
     /// The ONLY place the session flags go back down (§2.3).
     private func endSession() {
         phase = .idle
+        latchedAt = nil
         monitor.escapeCancels = false
         isSessionActive = false
         stopLevelPoll()
@@ -1196,6 +1223,12 @@ final class DictationController: ObservableObject {
     /// walked back to idle silently before the clip is committed.
     private func stopHandsFreeFromPill() {
         guard case .listening(handsFree: true) = phase else { return }
+        // A double-click on the push-to-talk capsule: its first click latched
+        // and the second lands on the now hands-free capsule. Ending the
+        // dictation a moment after keeping it going is never what was meant.
+        if let latchedAt, latchedAt.duration(to: .now) < .seconds(DictationDefaults.doubleTapWindow) {
+            return
+        }
         monitor.syncHandsFree(false)
         finishListening()
     }
@@ -1279,6 +1312,12 @@ final class DictationController: ObservableObject {
             startHandsFreeFromPill()
         case .stopHandsFreeDictation:
             stopHandsFreeFromPill()
+        case .switchToHandsFree:
+            // The click on the push-to-talk capsule, fn+shift still held. The
+            // machine decides (a release that got there first wins) and
+            // answers with `.latched`, the same event the ⌘ latch sends.
+            guard case .listening(handsFree: false) = phase else { return }
+            monitor.latch()
         case .selectMicrophone(let id):
             setInputDevice(id)
         case .pasteLastDictation:

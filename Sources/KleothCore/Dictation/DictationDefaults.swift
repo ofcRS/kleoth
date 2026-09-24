@@ -63,6 +63,10 @@ public enum DictationDefaults {
     public static let minimumWordsToPolish = 24
     public static let transcriptionModel = "scribe_v2"
     public static let hotkeyDescription = "fn + shift"
+    /// The key tapped WHILE the chord is held to keep that dictation going
+    /// hands-free (2026-09-24). A modifier on purpose: the hotkey monitor is
+    /// listen-only, so a character key would also be typed into the target app.
+    public static let handsFreeLatchDescription = "⌘"
     /// A chord held shorter than this (with no double-tap) is discarded. Only
     /// has to outlast a reflex tap — the pill already acknowledges the press
     /// at key-down (`.armed`), so this is when the bars appear, not the pill.
