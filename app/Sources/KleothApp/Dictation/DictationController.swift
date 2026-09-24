@@ -587,12 +587,18 @@ final class DictationController: ObservableObject {
     /// phase and the pill change.
     ///
     /// The machine latches only from a confirmed hold, so it is normally in
-    /// step with `.listening(handsFree: false)`. When it is not (the capture
-    /// failed at chord-down, so `.began` found no `.armed` session), it is now
-    /// parked hands-free over nothing and would eat the next press as
-    /// `.toggledOff`: abort it back to idle instead.
+    /// step with `.listening(handsFree: false)`. Already hands-free, machine
+    /// and phase agree and there is nothing to do. Anywhere else (the capture
+    /// failed at chord-down, so `.began` found no `.armed` session) the
+    /// machine is now parked hands-free over nothing and would eat the next
+    /// press as `.toggledOff`: abort it back to idle instead.
     private func switchToHandsFree() {
-        guard case .listening(handsFree: false) = phase else {
+        switch phase {
+        case .listening(handsFree: false):
+            break
+        case .listening(handsFree: true):
+            return
+        case .idle, .armed, .transcribing, .polishing, .inserting:
             monitor.abort()
             return
         }
@@ -1226,7 +1232,9 @@ final class DictationController: ObservableObject {
         // A double-click on the push-to-talk capsule: its first click latched
         // and the second lands on the now hands-free capsule. Ending the
         // dictation a moment after keeping it going is never what was meant.
-        if let latchedAt, latchedAt.duration(to: .now) < .seconds(DictationDefaults.doubleTapWindow) {
+        // The user's own double-click speed can be slower than ours.
+        let doubleClick = max(DictationDefaults.doubleTapWindow, NSEvent.doubleClickInterval)
+        if let latchedAt, latchedAt.duration(to: .now) < .seconds(doubleClick) {
             return
         }
         monitor.syncHandsFree(false)

@@ -244,6 +244,21 @@ import Foundation
         #expect(handsFree.handle(.chordDown, at: t0 + 2) == [.toggledOff])
     }
 
+    @Test func keysWhileStillHeldAfterExternalLatchAreIgnored() {
+        // The documented edge (§10.3 item 16): with fn+shift still down every
+        // key — Esc included — is `otherKey`, and a hands-free session lets
+        // the user type. The dictation goes on; letting go changes nothing.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        _ = machine.handle(.externalLatch, at: t0 + 1)
+        #expect(machine.handle(.otherKey, at: t0 + 1.2) == [])
+        #expect(machine.isCapturing)
+        #expect(machine.handle(.chordUp, at: t0 + 1.5) == [])
+        #expect(machine.isCapturing)
+        #expect(machine.handle(.chordDown, at: t0 + 5) == [.toggledOff])
+    }
+
     @Test func abortAfterExternalLatchSwallowsTheRelease() {
         // Cancelled (pill ✕) while fn+shift are still down: the release must
         // not reach an idle machine as anything.

@@ -282,7 +282,10 @@ final class SandboxDriver: ObservableObject {
             simulateSpeech = true
         case .switchToHandsFree:
             // The app answers through the chord machine's `.latched`; here the
-            // held dictation just goes hands-free on the spot.
+            // held dictation just goes hands-free on the spot. The app's
+            // double-click guard is NOT mirrored: a filmed
+            // `click:center,click:center` stops here, where the app would
+            // ignore the second click.
             log("Keep listening hands-free (the keys can be let go)")
             controller.show(.listening(handsFree: true))
             phase = "hands-free"

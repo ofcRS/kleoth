@@ -440,6 +440,9 @@ struct DictationPillView: View {
             .onChange(of: model.hovered) { _, on in
                 (on ? NSCursor.pointingHand : NSCursor.arrow).set()
             }
+            // The dictation ended under the pointer: the capsule is no longer
+            // a button, so the pointing hand must not outlive the slot.
+            .onDisappear { if model.hovered { NSCursor.arrow.set() } }
             .transition(.opacity)
             .accessibilityHidden(true)
             Waveform(mode: .live(level: model.level), reduceMotion: reduceMotion)
