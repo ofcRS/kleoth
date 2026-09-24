@@ -399,7 +399,10 @@ struct MenuView: View {
                     let shown = Array(controller.recentMeetings.prefix(recentLimit))
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, meeting in
                         Button { openHistory(select: meeting.id) } label: {
-                            RecentMeetingRow(meeting: meeting)
+                            RecentMeetingRow(
+                                meeting: meeting,
+                                isSummarizing: controller.isSummarizingMeeting(meeting.directory)
+                            )
                         }
                         .buttonStyle(.kleothRow)
 
@@ -529,6 +532,9 @@ struct MenuView: View {
 /// lives in Settings → Usage only.
 private struct RecentMeetingRow: View {
     let meeting: RecentMeeting
+    /// Whether the in-flight run is a summary alone (Summarize), so the busy
+    /// label says "Summarizing…" rather than "Transcribing…".
+    let isSummarizing: Bool
     @State private var isHovering = false
 
     var body: some View {
@@ -581,17 +587,17 @@ private struct RecentMeetingRow: View {
     }
 
     /// Trailing accessory: a live spinner while the meeting is queued/being
-    /// transcribed in the background, a "Cloud" badge for cloud-transcribed
-    /// meetings, or an "Untranscribed" chip for audio-only folders. On-device
-    /// rows stay quiet — that's the default, so it needs no badge in this
-    /// compact list.
+    /// transcribed or summarized in the background, a "Cloud" badge for
+    /// cloud-transcribed meetings, or an "Untranscribed" chip for audio-only
+    /// folders. On-device rows stay quiet — that's the default, so it needs no
+    /// badge in this compact list.
     @ViewBuilder
     private var trailing: some View {
         if meeting.isTranscribing {
             HStack(spacing: KleothMetrics.spacingXS) {
                 ProgressView()
                     .controlSize(.mini)
-                Text("Transcribing…")
+                Text(isSummarizing ? "Summarizing…" : "Transcribing…")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
             }

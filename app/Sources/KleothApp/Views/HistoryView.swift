@@ -174,6 +174,7 @@ struct HistoryView: View {
                         MeetingSidebarRow(
                             meeting: meeting,
                             errorMessage: controller.meetingError(for: meeting.directory),
+                            isSummarizing: controller.isSummarizingMeeting(meeting.directory),
                             isRenaming: renamingID == meeting.id,
                             renameDraft: $renameDraft,
                             renameFocus: $renameFocus,
@@ -407,6 +408,9 @@ private struct MeetingSidebarRow: View {
     /// The last failed run's error for this meeting, if any — shows a "Failed"
     /// chip so a reverted row explains itself (full text in the detail pane).
     let errorMessage: String?
+    /// Whether the in-flight run is a summary alone (Summarize), so the busy
+    /// label says "Summarizing…" rather than "Transcribing…".
+    let isSummarizing: Bool
     let isRenaming: Bool
     @Binding var renameDraft: String
     var renameFocus: FocusState<RecentMeeting.ID?>.Binding
@@ -463,7 +467,7 @@ private struct MeetingSidebarRow: View {
             HStack(spacing: KleothMetrics.spacingXS) {
                 ProgressView()
                     .controlSize(.mini)
-                Text("Transcribing…")
+                Text(isSummarizing ? "Summarizing…" : "Transcribing…")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
             }

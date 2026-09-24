@@ -1,15 +1,29 @@
 import Foundation
 
 /// Errors thrown by ``Summarizer``.
+///
+/// Apart from `transcriptTooLong`, each case describes the retry's answer —
+/// the last one — whatever was wrong with the first: an empty first answer
+/// whose retry was cut off ends `.truncated`, an incomplete one whose repair
+/// came back as prose ends `invalidJSON`.
 public enum SummarizerError: Error, Sendable {
     /// The transcript exceeds the single-shot token budget. Map-reduce
     /// summarization is intentionally deferred, so this is surfaced rather
     /// than silently truncating.
     case transcriptTooLong(approxTokens: Int)
-    /// The model produced output that could not be decoded into a
-    /// ``MeetingSummary`` even after one repair attempt. Carries a snippet
-    /// of the offending content.
+    /// The retry's answer could not be decoded into a ``MeetingSummary``: not
+    /// a JSON object, or one whose values are of the wrong type. Carries a
+    /// snippet of it — empty when the retry came back with nothing.
     case invalidJSON(snippet: String)
+    /// The retry's answer ran out of output room before its JSON closed — or,
+    /// after a cut-off first answer, the provider refused the retry's doubled
+    /// budget (HTTP 400/404: above the model's output limit). Nothing partial
+    /// is kept.
+    case truncated
+    /// The retry's answer was a complete JSON object without every part the
+    /// prompt asks for. Keys as the prompt spells them: `tldr`, `overview`,
+    /// `action_items`, `per_speaker_highlights`.
+    case incomplete(missing: [String])
 }
 
 extension SummarizerError: LocalizedError {
@@ -19,7 +33,14 @@ extension SummarizerError: LocalizedError {
         case let .transcriptTooLong(approxTokens):
             return "Transcript is too long to summarize in one pass (~\(approxTokens) tokens)."
         case let .invalidJSON(snippet):
-            return "The model did not return a complete summary. Got: \(snippet)"
+            return snippet.isEmpty
+                ? "The model returned an empty answer."
+                : "The model did not return a complete summary. Got: \(snippet)"
+        case .truncated:
+            return "The summary was cut off: the model ran out of output room before finishing (reasoning models spend part of it thinking). Try again, or use another model."
+        case let .incomplete(missing):
+            let parts = missing.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")
+            return "The summary came back incomplete (no \(parts)). Try again, or use another model."
         }
     }
 }
@@ -29,19 +50,36 @@ extension SummarizerError: LocalizedError {
 public struct Summarizer: Sendable {
     public let client: any ChatCompleting
     public var model: String
+    /// Output tokens the first request asks for; the retry after a cut-off
+    /// answer asks for twice this. Backends with no output cap (the Claude Code
+    /// and Codex CLIs) ignore it — for them the retry's compact instruction is
+    /// what makes the answer fit. Clamped to 1…1,000,000 on every write, so the
+    /// doubling can't overflow and a nonsense budget never reaches a provider.
+    public var maxOutputTokens: Int {
+        didSet { maxOutputTokens = Self.clampedOutputTokens(maxOutputTokens) }
+    }
 
-    public init(client: any ChatCompleting, model: String = ModelCatalog.defaultModel) {
+    public init(client: any ChatCompleting, model: String = ModelCatalog.defaultModel,
+                maxOutputTokens: Int = Summarizer.defaultMaxOutputTokens) {
         self.client = client
         self.model = model
+        // An initializer's writes skip `didSet`, so this one clamps itself.
+        self.maxOutputTokens = Self.clampedOutputTokens(maxOutputTokens)
     }
 
     /// Approximate token-budget ceiling for the user content. Above this we
     /// refuse rather than attempt a doomed single-shot request.
     private static let tokenLimit = 180_000
-    /// Maximum output tokens requested from the model. Generous because the
-    /// `overview` is deliberately detailed multi-paragraph prose (and non-Latin
-    /// scripts tokenize heavier).
-    private static let maxOutputTokens = 8192
+    /// The default ``maxOutputTokens``. Generous because the `overview` is
+    /// deliberately detailed multi-paragraph prose (and non-Latin scripts
+    /// tokenize heavier), and reasoning models spend part of it thinking.
+    public static let defaultMaxOutputTokens = 8192
+
+    /// `tokens` within 1…1,000,000: far above any model's output limit, and
+    /// far enough below `Int.max` for the cut-off retry to double it.
+    private static func clampedOutputTokens(_ tokens: Int) -> Int {
+        min(max(tokens, 1), 1_000_000)
+    }
 
     private static let systemPrompt = """
     You are a meeting summarizer. You receive a diarized transcript with real speaker names and timestamps. Be precise and factual. Do not invent information. If something is ambiguous, say so.
@@ -106,8 +144,18 @@ public struct Summarizer: Sendable {
     }
     """
 
+    /// Appended to the user message of the retry after a cut-off answer: the
+    /// same request, which now fits only if the model writes less.
+    static let compactRetryInstruction = "Your previous answer was cut off before the JSON was complete. Answer again, more compactly — a shorter overview and fewer highlights — in the same language and the same JSON shape."
+
     /// Summarizes the transcript and returns the summary plus the USD cost
-    /// of the completion.
+    /// of the completions.
+    ///
+    /// An answer becomes a summary only when ``assess(_:)`` finds it complete:
+    /// not cut off, decodable, and carrying every part the prompt asks for. A
+    /// first answer short of that gets one retry, shaped by what was wrong with
+    /// it; after the retry anything short of a complete answer throws
+    /// (``SummarizerError``), so a partial summary is never passed off as finished.
     public func summarize(
         transcript: Transcript,
         metadata: MeetingMetadata
@@ -138,27 +186,56 @@ public struct Summarizer: Sendable {
             messages: baseMessages,
             model: model,
             responseFormat: responseFormat,
-            maxTokens: Self.maxOutputTokens
+            maxTokens: maxOutputTokens
         )
 
-        // A `"length"` finish means the output was truncated — even if it happens
-        // to decode leniently (e.g. cut off right after `tldr`), accepting it
-        // would silently ship a gutted summary. Treat it as a failure to repair.
-        let firstTruncated = Self.isTruncated(first.finishReason)
-        if !firstTruncated, let summary = Self.decodeSummary(from: first.content) {
+        // One retry, shaped by what was wrong with the first answer. By default
+        // it is the first request again, unchanged.
+        var retryMessages = baseMessages
+        var retryMaxTokens = maxOutputTokens
+        var retryReasoning: OpenRouterReasoning?
+        var wasCutOff = false
+        switch Self.assess(first) {
+        case let .complete(summary):
             return (summary, first.usage?.cost ?? 0)
-        }
 
-        // One repair retry. For a truncation, replaying the (incomplete) content
-        // only burns more budget at the same cap, so re-ask with a larger cap and
-        // no bad turn; for malformed-but-complete output, feed it back so the
-        // model can fix the shape.
-        let retryMaxTokens = firstTruncated ? Self.maxOutputTokens * 2 : Self.maxOutputTokens
-        let repairMessages: [ChatMessage]
-        if firstTruncated {
-            repairMessages = baseMessages
-        } else {
-            repairMessages = baseMessages + [
+        case let .cutOff(hadText):
+            // Ask again fresh — the original messages plus a request to be more
+            // compact — with twice the room. Replaying the partial text would
+            // give the model more input and the same room, so the retry would
+            // be cut off again.
+            wasCutOff = true
+            retryMessages = [
+                baseMessages[0],
+                ChatMessage(role: "user", content: userContent + "\n\n" + Self.compactRetryInstruction),
+            ]
+            retryMaxTokens = maxOutputTokens * 2
+            // Nothing at all came back: the budget went on reasoning, so ask for
+            // less of it. Only then — an answer with text ran out while writing,
+            // and on Anthropic models `low` would switch thinking on.
+            if !hadText { retryReasoning = .low }
+
+        case .empty:
+            // Ask again unchanged. An empty answer is never replayed: Anthropic's
+            // API and strict OpenAI-compatible upstreams reject an empty
+            // non-final assistant turn with HTTP 400.
+            break
+
+        case let .incomplete(missing):
+            // A complete object without every part: feed it back and name what
+            // is missing, so the model keeps what it wrote and adds the rest.
+            retryMessages = baseMessages + [
+                ChatMessage(role: "assistant", content: first.content),
+                ChatMessage(
+                    role: "user",
+                    content: "Your previous answer is missing: \(missing.joined(separator: ", ")). Return the complete JSON object with every key — no prose, no markdown fences."
+                ),
+            ]
+
+        case .malformed:
+            // Not JSON (or a shape that won't decode): feed it back so the model
+            // can fix the shape.
+            retryMessages = baseMessages + [
                 ChatMessage(role: "assistant", content: first.content),
                 ChatMessage(
                     role: "user",
@@ -167,29 +244,128 @@ public struct Summarizer: Sendable {
             ]
         }
 
-        let retry = try await client.complete(
-            messages: repairMessages,
-            model: model,
-            responseFormat: responseFormat,
-            maxTokens: retryMaxTokens
-        )
+        let retry: ChatCompletion
+        do {
+            retry = try await client.complete(
+                messages: retryMessages,
+                model: model,
+                responseFormat: responseFormat,
+                maxTokens: retryMaxTokens,
+                temperature: nil,
+                reasoning: retryReasoning
+            )
+        } catch let OpenRouterError.httpError(status, _) where wasCutOff && (status == 400 || status == 404) {
+            // The doubled budget is above this model's output limit (and the
+            // client's relaxed retry didn't help): the summary can't fit, which
+            // is what the user needs to hear, not an HTTP error about max_tokens.
+            throw SummarizerError.truncated
+        }
 
         let costUSD = (first.usage?.cost ?? 0) + (retry.usage?.cost ?? 0)
 
-        // Reject a still-truncated retry rather than accept a partial summary —
-        // the pipeline records this as `summaryError` and keeps the transcript.
-        guard !Self.isTruncated(retry.finishReason),
-              let summary = Self.decodeSummary(from: retry.content) else {
+        // Anything short of a complete answer now throws rather than pass for a
+        // summary: the pipeline records it as `summaryError` and keeps the
+        // transcript.
+        switch Self.assess(retry) {
+        case let .complete(summary):
+            return (summary, costUSD)
+        case .cutOff:
+            throw SummarizerError.truncated
+        case let .incomplete(missing):
+            throw SummarizerError.incomplete(missing: missing)
+        case .empty:
+            throw SummarizerError.invalidJSON(snippet: "")
+        case .malformed:
             throw SummarizerError.invalidJSON(snippet: Self.snippet(retry.content))
         }
-
-        return (summary, costUSD)
     }
 
     /// Whether a completion's `finish_reason` indicates a truncated (incomplete)
     /// response — i.e. it hit the output token cap.
     static func isTruncated(_ finishReason: String?) -> Bool {
         finishReason?.lowercased() == "length"
+    }
+
+    // MARK: - Assessing an answer
+
+    /// What ``assess(_:)`` makes of an answer; each kind gets its own retry.
+    enum Assessment {
+        /// Not cut off, decodable, every part present.
+        case complete(MeetingSummary)
+        /// Out of output room before the JSON closed. `hadText == false` —
+        /// nothing at all came back — means the budget went on reasoning.
+        case cutOff(hadText: Bool)
+        /// Nothing came back, and not because of the cap.
+        case empty
+        /// A complete JSON object without some of the parts the prompt asks for.
+        case incomplete(missing: [String])
+        /// Not a JSON object (prose, an array), or one with every part whose
+        /// values won't decode (a wrong type).
+        case malformed
+    }
+
+    /// Classifies a completion for every provider alike. A cut-off shows either
+    /// way: the finish reason `length`, or — because Codex, Claude Code and some
+    /// local servers report `stop` regardless — a JSON object that stops before
+    /// it closes. Any other JSON object is judged by its parts before it is
+    /// decoded, so a missing `tldr` is asked for by name like any other part.
+    static func assess(_ completion: ChatCompletion) -> Assessment {
+        let text = stripCodeFences(completion.content)
+        if isTruncated(completion.finishReason) { return .cutOff(hadText: !text.isEmpty) }
+        if text.isEmpty { return .empty }
+        if isUnterminatedJSONObject(text) { return .cutOff(hadText: true) }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else {
+            return .malformed
+        }
+        let missing = missingParts(in: object)
+        guard missing.isEmpty else { return .incomplete(missing: missing) }
+        guard let summary = decodeSummary(from: text) else { return .malformed }
+        return .complete(summary)
+    }
+
+    /// True when `text` (fences stripped) opens a JSON object and ends before
+    /// closing it — inside a string, an object or an array. A closed object with
+    /// trailing text is not unterminated (it is malformed); text that doesn't
+    /// start with `{` never is.
+    static func isUnterminatedJSONObject(_ text: String) -> Bool {
+        let body = stripCodeFences(text)
+        guard body.unicodeScalars.first == "{" else { return false }
+        var depth = 0, inString = false, escaped = false
+        for scalar in body.unicodeScalars {
+            if inString {
+                if escaped { escaped = false }
+                else if scalar == "\\" { escaped = true }
+                else if scalar == "\"" { inString = false }
+                continue
+            }
+            switch scalar {
+            case "\"": inString = true
+            case "{", "[": depth += 1
+            case "}", "]":
+                depth -= 1
+                if depth == 0 { return false }
+            default: break
+            }
+        }
+        return true
+    }
+
+    /// The prompt's keys this answer object lacks, spelled and ordered as the
+    /// prompt has them. `tldr` must be a non-blank string; each other part is
+    /// present when it exists with a non-null value under a spelling the decoder
+    /// reads (snake_case or camelCase). Lists may be empty and `overview` may be
+    /// blank (a ten-second recording).
+    private static func missingParts(in object: [String: Any]) -> [String] {
+        func present(_ keys: String...) -> Bool {
+            keys.contains { key in object[key].map { !($0 is NSNull) } ?? false }
+        }
+        var missing: [String] = []
+        let tldr = (object["tldr"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if tldr.isEmpty { missing.append("tldr") }
+        if !present("overview") { missing.append("overview") }
+        if !present("action_items", "actionItems") { missing.append("action_items") }
+        if !present("per_speaker_highlights", "perSpeakerHighlights") { missing.append("per_speaker_highlights") }
+        return missing
     }
 
     // MARK: - Prompt construction

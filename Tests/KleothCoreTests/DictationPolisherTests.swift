@@ -287,7 +287,8 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
         #expect(body["model"] as? String == "google/gemini-3.5-flash-lite")
         #expect(body["temperature"] as? Double == 0.2)
         // The default model can think: the polish call caps its reasoning
-        // (latency). The summarizer never sends this key.
+        // (latency). The summarizer sends `reasoning: .low` only on its one retry
+        // after an empty cut-off.
         let reasoning = try #require(body["reasoning"] as? [String: Any])
         #expect(reasoning["effort"] as? String == "minimal")
         #expect(DictationDefaults.reasoningCappedModels.contains(DictationDefaults.polishModel))

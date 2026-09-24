@@ -66,8 +66,11 @@ public enum OpenRouterResponseFormat: Sendable {
 /// runs); `effort: "low"` produced 0 reasoning tokens, 2.3–4.9 s (mean 3.4 s),
 /// with identical, correct output. `{"enabled": false}` is rejected by that
 /// endpoint with 400 "Reasoning is mandatory", and `{"exclude": true}` only
-/// hides the reasoning (155–272 tokens, 6.7–9.4 s). Only the dictation path
-/// sends this; `Summarizer` never does, so its body is unchanged.
+/// hides the reasoning (155–272 tokens, 6.7–9.4 s). The dictation path sends
+/// this for the models it has measured (`DictationDefaults.reasoningCaps`).
+/// `Summarizer` sends `.low` only on its one retry after an answer that came
+/// back empty and cut off (the budget went on reasoning); its first request
+/// never carries it, so that body is unchanged.
 public struct OpenRouterReasoning: Sendable, Equatable {
     /// OpenRouter's normalized effort levels.
     public enum Effort: String, Sendable {
@@ -84,7 +87,8 @@ public struct OpenRouterReasoning: Sendable, Equatable {
         self.exclude = exclude
     }
 
-    /// The setting the dictation polisher uses.
+    /// What `Summarizer` sends on its one retry after an empty cut-off (dictation
+    /// picks its caps per model in `DictationDefaults.reasoningCaps`).
     public static let low = OpenRouterReasoning(effort: .low)
 
     /// The JSON object written under the `reasoning` key.
