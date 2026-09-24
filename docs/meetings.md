@@ -10,8 +10,7 @@ server. It is free and open source (Apache-2.0).
 [Back to the README](../README.md)
 
 <p align="center">
-  <img src="assets/demo-meeting.gif" alt="The History window: a meeting's TL;DR and summary, its action items with owners and due dates, per-speaker highlights, then the next meeting" width="720"><br>
-  <em>Kleoth's real History window over fictional meetings, transcribed on device and summarized by Claude Code.</em>
+  <img src="assets/demo-meeting.gif" alt="The History window: a meeting's TL;DR and summary, its action items with owners and due dates, per-speaker highlights, then the next meeting" width="720">
 </p>
 
 ## How it works

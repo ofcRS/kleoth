@@ -10,8 +10,7 @@ and keeps every dictation as plain JSON on your disk.
 [Back to the README](../README.md)
 
 <p align="center">
-  <img src="assets/demo-dictation.gif" alt="Hold fn+shift and talk; the pill listens, transcribes, cleans up, and the text is pasted into the editor" width="720"><br>
-  <em>Kleoth's real pill, rendered with sample content.</em>
+  <img src="assets/demo-dictation.gif" alt="Hold fn+shift and talk; the pill listens, transcribes, cleans up, and the text is pasted into the editor" width="720">
 </p>
 
 ## How it works

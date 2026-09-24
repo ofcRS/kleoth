@@ -28,9 +28,7 @@ No account. No database. Local-first by design.
 
 <p align="center">
   <img src="docs/assets/demo-dictation.gif" alt="Dictation: hold fn+shift and talk; the pill listens, transcribes, cleans up, and the text is pasted into the editor" width="49%">
-  <img src="docs/assets/demo-screen.gif" alt="Screen recording: click Record in the pill, the pill becomes a toolbar with a timer and audio meters, click Stop, the recording is saved" width="49%"><br>
-  <em>Kleoth's real pill, rendered with sample content; the screen demo skips the region picker
-  (<a href="app/branding-src/demo/make-demos.sh">how</a>).</em>
+  <img src="docs/assets/demo-screen.gif" alt="Screen recording: click Record in the pill, the pill becomes a toolbar with a timer and audio meters, click Stop, the recording is saved" width="49%">
 </p>
 
 ## Dictation: Wispr Flow-style voice typing in any app
@@ -69,9 +67,7 @@ your Mac unless you choose cloud transcription.
   JSON in `~/Kleoth`. Grep it, sync it, delete it.
 
 <p align="center">
-  <img src="docs/assets/demo-meeting.gif" alt="The History window: a meeting's TL;DR and summary, its action items with owners and due dates, per-speaker highlights, then the next meeting" width="820"><br>
-  <em>Kleoth's real History window over fictional meetings, transcribed on device and summarized by
-  Claude Code (<a href="app/branding-src/demo/make-app-demos.sh">how</a>).</em>
+  <img src="docs/assets/demo-meeting.gif" alt="The History window: a meeting's TL;DR and summary, its action items with owners and due dates, per-speaker highlights, then the next meeting" width="820">
 </p>
 
 [More about meetings →](docs/meetings.md)
@@ -86,8 +82,7 @@ a word seeks, double-clicking corrects it. It is a beta — no trimming, sharing
 [More about screen recording →](docs/screen-recording.md)
 
 <p align="center">
-  <img src="docs/assets/demo-viewer.gif" alt="The recordings viewer: a narrated slide recording plays on the left while the transcript on the right highlights each word as it is spoken" width="820"><br>
-  <em>The recordings viewer playing a demo recording; its word timings come from the on-device transcription.</em>
+  <img src="docs/assets/demo-viewer.gif" alt="The recordings viewer: a narrated slide recording plays on the left while the transcript on the right highlights each word as it is spoken" width="820">
 </p>
 
 ## Bring your own AI
@@ -135,7 +130,7 @@ with their own login; the local server and Apple's model never leave the machine
 
 <p align="center">
   <img src="docs/assets/screenshot-detail.png" alt="The History window: a day-grouped meeting list beside a meeting's TL;DR and AI summary" width="900"><br>
-  <em>The History window — searchable, day-grouped meetings with a TL;DR, summary, action items, and per-speaker highlights (demo data).</em>
+  <em>The History window — searchable, day-grouped meetings with a TL;DR, summary, action items, and per-speaker highlights.</em>
 </p>
 
 <p align="center">
