@@ -145,6 +145,9 @@ enum AppConfig {
     /// The summarizer for the current settings, or the `ProviderError` that
     /// says why there is none.
     static func makeSummarizer() async throws -> (Summarizer, ProviderFactory.Selection) {
+        // A demo launch reaches no provider — not a CLI, not a local server —
+        // even from a click on its window.
+        if DemoMode.isOn { throw CancellationError() }
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)
@@ -156,6 +159,7 @@ enum AppConfig {
     /// The dictation polisher for the current settings, or the `ProviderError`
     /// that says why there is none.
     static func makePolisher() async throws -> (DictationPolisher, ProviderFactory.Selection) {
+        if DemoMode.isOn { throw CancellationError() }
         let settings = settings()
         let credentials = credentials()
         let factory = factory(settings: settings, credentials: credentials)

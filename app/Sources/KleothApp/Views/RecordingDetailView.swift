@@ -78,9 +78,12 @@ struct RecordingDetailView: View {
             copied = false
         }
         // `DemoDirector`'s cue to press play, so its film shows the word
-        // highlight moving. Posted only by a `-KleothDemo` launch.
+        // highlight moving. Posted only by a `-KleothDemo` launch, and muted:
+        // the film has no sound, and the narration must not reach the
+        // speakers — or a meeting the real Kleoth is recording.
         .onReceive(NotificationCenter.default.publisher(for: DemoMode.playNotification)) { _ in
             guard DemoMode.isOn, !player.isPlaying else { return }
+            player.player?.isMuted = true
             player.togglePlay()
         }
         .confirmationDialog(

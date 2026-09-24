@@ -48,7 +48,7 @@ func writeDemo(_ frames: [CapturedFrame], kind: DemoKind, to dir: URL) throws ->
 /// `--slides <dir> --length <s> [--marks a,b,c,d]`: the screen demo's slide
 /// window on its own — no pill, no caption — at 30 fps, as the picture of the
 /// demo SCREEN RECORDING that the recordings-viewer film plays back
-/// (`app/branding-src/demo/make-demo-data.sh`). The pill is not in it because
+/// (`app/branding-src/demo/make-demo-data.ts`). The pill is not in it because
 /// a real recording leaves Kleoth's windows out. `marks` are the seconds the
 /// narration turns to the title and then to each bar; the cursor goes there
 /// and that bar is outlined.

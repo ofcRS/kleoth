@@ -28,18 +28,34 @@ final class DemoDirector {
         case still
     }
 
-    private static var current: DemoDirector?
+    /// The file `make-demo-data.ts` leaves in every folder it makes. A folder
+    /// without it — the real `~/Kleoth`, or wherever Settings points — is never
+    /// filmed: its meetings would end up in a public README.
+    static let folderMarker = ".kleoth-demo"
 
-    /// `AppDelegate.applicationDidFinishLaunching` in demo mode.
+    private static var current: DemoDirector?
+    private static var appDelegate: DemoAppDelegate?
+
+    /// `KleothMain` in demo mode: a plain AppKit app — no scenes, no
+    /// `AppDelegate` — whose only job is `start()`.
+    static func launch() {
+        let app = NSApplication.shared
+        let delegate = DemoAppDelegate()
+        appDelegate = delegate
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
+    }
+
     static func start() {
-        // The copy made by make-app-demos.sh runs as `dev.kleoth.demo`. Under the
-        // real id this launch would share the user's defaults and saved state.
-        guard Bundle.main.bundleIdentifier != "dev.kleoth.app" else {
-            return quit("refusing -KleothDemo under dev.kleoth.app — run app/branding-src/demo/make-app-demos.sh")
+        // The copy make-app-demos.sh assembles, with its own defaults, saved
+        // state and privacy grants — never the installed app, never a bare binary.
+        guard Bundle.main.bundleIdentifier == "dev.kleoth.demo" else {
+            return quit("-KleothDemo runs only as dev.kleoth.demo — use app/branding-src/demo/make-app-demos.sh")
         }
         guard let folder = DemoMode.folder,
-              FileManager.default.fileExists(atPath: folder.path) else {
-            return quit("-KleothDemo needs an existing absolute folder")
+              FileManager.default.fileExists(atPath: folder.appendingPathComponent(folderMarker).path) else {
+            return quit("-KleothDemo needs a folder made by make-demo-data.ts (with \(folderMarker))")
         }
         guard let film = DemoMode.filmDirectory else {
             return quit("-KleothDemoFilm needs an absolute folder")
@@ -47,12 +63,13 @@ final class DemoDirector {
         guard let script = DemoMode.script.flatMap(Script.init(rawValue:)) else {
             return quit("-KleothDemoScript must be meeting, viewer or still")
         }
-        guard let recording = RecordingController.shared,
-              let dictation = DictationController.shared,
-              let screen = ScreenRecordingController.shared else {
-            return quit("the controllers were not created")
-        }
+        // The three controllers History reads, built here (each sets its
+        // `shared`): in demo mode no `KleothApp` exists to own them.
+        let recording = RecordingController()
+        let dictation = DictationController()
+        let screen = ScreenRecordingController()
         let director = DemoDirector(script: script, film: film)
+        director.controllers = (recording, dictation, screen)
         current = director
         director.begin(recording: recording, dictation: dictation, screen: screen)
     }
@@ -70,6 +87,7 @@ final class DemoDirector {
 
     private let script: Script
     private let writer: DemoFilmWriter
+    private var controllers: (RecordingController, DictationController, ScreenRecordingController)?
     private var window: NSWindow?
     private var captureTimer: Timer?
     private var started = Date()
@@ -145,6 +163,10 @@ final class DemoDirector {
             contentRect: CGRect(origin: .zero, size: windowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
+        // A hosting view straight in `contentView` of a window whose frame is
+        // set from outside is the pattern CLAUDE.md warns about for the pill's
+        // panel; here it holds because the root's fixed frame IS the window's
+        // size, so SwiftUI never asks for another one.
         let host = NSHostingView(rootView: root)
         // The sidebar toggle, the detail toolbar and the title, as in the
         // app's own History window.
@@ -223,6 +245,9 @@ final class DemoDirector {
 
     private func capture() {
         guard let window else { return }
+        // Obsoleted in the macOS 15 SDK's Swift overlay when the deployment
+        // target is 15+; at the app's 14.4 floor it builds. ScreenCaptureKit's
+        // `SCScreenshotManager` is the replacement if the floor moves.
         // What the window server has for THIS window, obscured or not.
         guard let image = CGWindowListCreateImage(
             .null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]
@@ -250,6 +275,7 @@ final class DemoDirector {
         }
         let clip = scrollView.contentView
         let visible = clip.bounds.height
+        guard visible > 0 else { return Self.report("the detail scroll view has no height") }
         let maxOffset = max(0, document.frame.height - visible)
         var offset: CGFloat = 0
         while true {
@@ -335,6 +361,13 @@ final class DemoDirector {
 
 // MARK: - Window
 
+/// The demo launch's application delegate: `DemoDirector.start()` and nothing else.
+private final class DemoAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { DemoDirector.start() }
+    }
+}
+
 /// Draws as the active window — accent-coloured selection, coloured traffic
 /// lights — while it is never key and the app is never active: a real key
 /// window would take the user's keystrokes. AppKit asks these appearance
@@ -395,8 +428,20 @@ private final class DemoFilmWriter: @unchecked Sendable {
 
     var frameCount: Int { queue.sync { entries.count } }
 
+    /// Frames waiting on `queue`; each holds a Retina capture (~9 MB). Past
+    /// `maxBacklog` a frame is dropped rather than letting memory grow — the
+    /// concat list's real timings keep the film's pace either way.
+    private let backlogLock = NSLock()
+    private var backlog = 0
+    private let maxBacklog = 40
+
     func add(_ window: CGImage, pointSize: CGSize, caption: String, time: TimeInterval) {
+        backlogLock.lock()
+        guard backlog < maxBacklog else { backlogLock.unlock(); return }
+        backlog += 1
+        backlogLock.unlock()
         queue.async { [self] in
+            defer { backlogLock.lock(); backlog -= 1; backlogLock.unlock() }
             // A frame identical to the last one only lengthens it.
             var hasher = Hasher()
             hasher.combine(caption)

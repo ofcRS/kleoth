@@ -30,13 +30,22 @@ const OUT = resolve(outArg);
 const HERE = dirname(new URL(import.meta.url).pathname);
 const ROOT = resolve(HERE, "../../..");
 const REAL = resolve(process.env.HOME ?? "", "Kleoth");
-if (OUT === REAL || OUT.startsWith(REAL + "/")) throw new Error("refusing to write demo data into your real ~/Kleoth");
+if (OUT.toLowerCase() === REAL.toLowerCase() || OUT.toLowerCase().startsWith(REAL.toLowerCase() + "/")) {
+  throw new Error("refusing to write demo data into your real ~/Kleoth");
+}
+// A folder is ours only if it is new, empty, or already carries the marker that
+// make-app-demos.sh and DemoDirector require: never overwrite anything else.
+const MARKER = join(OUT, ".kleoth-demo");
+if (existsSync(OUT) && readdirSync(OUT).length > 0 && !existsSync(MARKER)) {
+  throw new Error(`${OUT} is not empty and was not made by this script (no .kleoth-demo); pick a new folder`);
+}
 
 const RATE = 48000;
 const GAP = 0.45; // seconds between turns
 const scratch = mkdtempSync(join(tmpdir(), "kleoth-demo-data-"));
 process.on("exit", () => rmSync(scratch, { recursive: true, force: true }));
 mkdirSync(OUT, { recursive: true });
+writeFileSync(MARKER, "Demo data from app/branding-src/demo/make-demo-data.ts — fictional, safe to delete.\n");
 
 for (const product of ["localtranscribe", "screenrec", "pillsandbox"]) {
   await $`swift build --package-path ${join(ROOT, "app")} --product ${product}`.quiet();

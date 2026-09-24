@@ -8,12 +8,14 @@ import Foundation
 /// of the app with its own bundle id (`dev.kleoth.demo`), so a demo run has
 /// its own defaults, saved state and privacy grants. This flag is the second
 /// layer, in code. When it is set:
+/// - `KleothMain` never starts `KleothApp`: no menu-bar item, no
+///   `AppDelegate` (so no hotkey, pill, launch sweeps or URL handling); a
+///   plain AppKit app hands off to `DemoDirector`, which films only a folder
+///   `make-demo-data.ts` made;
 /// - `Keychain` reads a fixed in-memory seed and never calls `SecItem*`;
-/// - `AppConfig` points every folder at `<folder>` and hands out no API keys;
-/// - `AppDelegate` installs no hotkey or pill and runs no launch sweep, and
-///   hands the launch to `DemoDirector`;
-/// - there is no menu-bar item, provider detection, model download or
-///   activation-policy change.
+/// - `AppConfig` points every folder at `<folder>`, hands out no API keys and
+///   builds no summarizer or polisher;
+/// - there is no provider detection, model download or activation-policy change.
 ///
 /// Read from the argument domain alone, like `-KleothSimulateFirstRun`, so a
 /// `defaults write` can never leave a real install in demo mode. Nonisolated

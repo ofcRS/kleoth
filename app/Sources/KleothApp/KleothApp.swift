@@ -13,7 +13,9 @@ import SwiftUI
 /// - Note: As a menu-bar `LSUIElement` agent this needs an app bundle with the
 ///   appropriate `Info.plist` and TCC usage descriptions to run; it compiles
 ///   under Command Line Tools but will not fully launch as a bare executable.
-@main
+///
+/// Started by `KleothMain` (`AppMain.swift`), which runs a `-KleothDemo`
+/// launch without any of this.
 struct KleothApp: App {
     @StateObject private var controller = RecordingController()
     @StateObject private var dictation = DictationController()
@@ -21,9 +23,7 @@ struct KleothApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        // A `-KleothDemo` launch has no menu-bar item: nothing of it shows but
-        // the window `DemoDirector` films.
-        MenuBarExtra(isInserted: .constant(!DemoMode.isOn)) {
+        MenuBarExtra {
             MenuView()
                 .environmentObject(controller)
                 .environmentObject(dictation)

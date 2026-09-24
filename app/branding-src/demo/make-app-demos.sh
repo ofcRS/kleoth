@@ -4,13 +4,14 @@
 #   bash app/branding-src/demo/make-app-demos.sh [data-dir]
 #     → docs/assets/demo-meeting.gif, demo-viewer.gif, screenshot-detail.png
 #
-# data-dir is what make-demo-data.sh wrote (a stand-in for ~/Kleoth); without one it
-# runs make-demo-data.sh into a temp folder first. Nothing of yours is read or written:
+# data-dir is what make-demo-data.ts wrote (a stand-in for ~/Kleoth, marked .kleoth-demo); without
+# one it runs make-demo-data.ts into a temp folder first. Nothing of yours is read or written:
 # the films come from a temporary copy of the app, KleothDemo.app, with its own bundle id
 # (dev.kleoth.demo: its own defaults, saved state and privacy grants — none) started with
 # -KleothDemo, which gates the Keychain, the hotkeys, the pill, the launch sweeps and the
-# menu-bar item in code. Its History window films itself from BEHIND your windows and never
-# takes focus; each film runs ~20 s. Needs ffmpeg.
+# menu-bar item in code. Its History window films itself from BEHIND your windows, is launched
+# in the background (open -g) and never takes focus; its playback is muted. Each film runs
+# ~20 s. Needs ffmpeg and bun.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -24,7 +25,9 @@ cleanup() {
   pkill -f "$APP/Contents/MacOS/" 2>/dev/null || true
   [ -d "$APP" ] && "$LSREGISTER" -u "$APP" 2>/dev/null || true
   defaults delete dev.kleoth.demo >/dev/null 2>&1 || true
-  rm -rf "$HOME/Library/Saved Application State/dev.kleoth.demo.savedState"
+  tccutil reset All dev.kleoth.demo >/dev/null 2>&1 || true
+  rm -rf "$HOME/Library/Saved Application State/dev.kleoth.demo.savedState" \
+         "$(getconf DARWIN_USER_CACHE_DIR)dev.kleoth.demo" "$HOME/Library/Caches/dev.kleoth.demo"
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -32,9 +35,11 @@ trap cleanup EXIT
 DATA="${1:-}"
 if [ -z "$DATA" ]; then
   DATA="$WORK/data"
-  bash app/branding-src/demo/make-demo-data.sh "$DATA"
+  bun app/branding-src/demo/make-demo-data.ts "$DATA"
 fi
 DATA="$(cd "$DATA" && pwd)"
+# Only a folder make-demo-data.ts made: never ~/Kleoth, whose meetings would land in the README.
+[ -f "$DATA/.kleoth-demo" ] || { echo "$DATA was not made by make-demo-data.ts (no .kleoth-demo)" >&2; exit 1; }
 
 # --- KleothDemo.app: the app under another identity, with nothing it could ask for ---
 swift build --package-path app --product KleothApp
@@ -58,7 +63,7 @@ codesign --force --sign - "$APP" >/dev/null
 
 film() { # <script> <out dir>
   mkdir -p "$2"
-  open -n -W --stdout "$2/director.log" --stderr "$2/director.log" "$APP" --args \
+  open -g -n -W --stdout "$2/director.log" --stderr "$2/director.log" "$APP" --args \
     -KleothDemo "$DATA" -KleothDemoFilm "$2" -KleothDemoScript "$1"
   cat "$2/director.log"
   [ -f "$2/frames.txt" ] || [ "$1" = still ] || { echo "no film for $1" >&2; exit 1; }
@@ -74,7 +79,10 @@ film meeting "$WORK/meeting"
 film viewer "$WORK/viewer"
 film still "$WORK/still"
 
-encode "$WORK/meeting" docs/assets/demo-meeting.gif
-encode "$WORK/viewer" docs/assets/demo-viewer.gif
+[ -f "$WORK/still/frame-0000.png" ] || { echo "no still" >&2; exit 1; }
+# All three are made before any tracked file changes.
+encode "$WORK/meeting" "$WORK/demo-meeting.gif"
+encode "$WORK/viewer" "$WORK/demo-viewer.gif"
+cp "$WORK/demo-meeting.gif" "$WORK/demo-viewer.gif" docs/assets/
 cp "$WORK/still/frame-0000.png" docs/assets/screenshot-detail.png
 ls -lh docs/assets/demo-meeting.gif docs/assets/demo-viewer.gif docs/assets/screenshot-detail.png

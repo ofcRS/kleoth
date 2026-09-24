@@ -63,14 +63,6 @@ final class AppActivation {
 /// hooks.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // `-KleothDemo`: no hotkey, no pill, no launch sweeps (they would
-        // rename a live recording or trash dictation audio of the REAL
-        // instance), no activation observer. The director takes it from here.
-        if DemoMode.isOn {
-            MainActor.assumeIsolated { DemoDirector.start() }
-            return
-        }
-
         KeyboardShortcuts.onKeyUp(for: .toggleRecording) {
             Task { @MainActor in RecordingController.shared?.handle(.toggle) }
         }
@@ -143,7 +135,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Routes `kleoth://record`, `kleoth://stop`, `kleoth://toggle`, and
     /// `kleoth://summarize-latest`.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard !DemoMode.isOn else { return }
         for url in urls where url.scheme == "kleoth" {
             let verb = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             guard let command = RecordingController.Command(rawValue: verb) else {

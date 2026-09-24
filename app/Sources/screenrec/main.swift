@@ -24,7 +24,7 @@ import KleothCore
 /// `wordTimestamps: true` (the per-word timings the viewer highlights).
 /// `--sidecar` runs both the way the app does after a recording is saved and
 /// writes the `<stem>.json` sidecar the viewer reads — how the README demo's
-/// recording gets real on-device word timings (`make-demo-data.sh`).
+/// recording gets real on-device word timings (`make-demo-data.ts`).
 ///
 /// `--region` is display-local, **top-left-origin points** — the same
 /// convention `SCStreamConfiguration.sourceRect` uses (SCStream.h:269), so a
@@ -477,9 +477,10 @@ private enum Extractor {
 
 // MARK: - Sidecar
 
-/// `--sidecar`: `ScreenRecordingController.runTranscription`'s on-device path,
-/// step for step — extract the audio, `LocalTranscriber` with word timings,
-/// the same record fields — then `ScreenRecordingStore.saveRecord`.
+/// `--sidecar`: `ScreenRecordingController.runTranscription`'s on-device path
+/// — extract the audio, `LocalTranscriber` with word timings, the same record
+/// fields — then `ScreenRecordingStore.saveRecord`. Unlike the app it always
+/// writes a fresh record (plus `--title`), for a movie that has none.
 private enum Sidecar {
     static func run(movie: URL, title: String?, language: String?) async -> Bool {
         guard FileManager.default.fileExists(atPath: movie.path) else {
@@ -496,7 +497,10 @@ private enum Sidecar {
         do {
             try? FileManager.default.removeItem(at: audio)
             try await RecordingAudioExtractor.extractAudio(from: movie, to: audio)
-            let transcriber = LocalTranscriber(language: language, wordTimestamps: true)
+            // The app's normalization: empty or "auto" is nil (detect).
+            let pinned = language?.trimmingCharacters(in: .whitespaces).lowercased()
+            let transcriber = LocalTranscriber(
+                language: (pinned?.isEmpty ?? true) || pinned == "auto" ? nil : pinned, wordTimestamps: true)
             let options = ScribeOptions()
             let response = try await transcriber.transcribe(fileURL: audio, options: options)
             var record = ScreenRecordingRecord()
