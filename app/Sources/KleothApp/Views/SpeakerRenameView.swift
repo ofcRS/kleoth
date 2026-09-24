@@ -48,7 +48,11 @@ struct SpeakerRenameView: View {
                     save()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(speakerIds.isEmpty)
+                // Also while a run owns the meeting — `kleoth://summarize-latest`
+                // or its intent can start one with this sheet open. The
+                // controller would refuse the save, and `save()` closing the
+                // sheet would then drop the user's edits.
+                .disabled(speakerIds.isEmpty || controller.isProcessingMeeting(meetingDir))
             }
         }
         .padding()

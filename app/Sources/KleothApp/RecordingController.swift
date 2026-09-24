@@ -97,6 +97,17 @@ public final class RecordingController: ObservableObject {
     @Published public var meetingsHistoryRequest: Int = 0
     @Published public var consentAcknowledged: Bool = false
 
+    /// Bumped by `start()` each time it refuses because the recording-consent
+    /// notice was never acknowledged. The refusal's `statusMessage` shows only
+    /// in the popover: the global hotkey and `kleoth://record|toggle` have no
+    /// view of their own, and the Start Recording intent's dialog can say why
+    /// but offers nothing to acknowledge. So the always-mounted menu-bar label
+    /// observes this counter and brings the "Before you record" window
+    /// forward — this controller has no SwiftUI environment to open it from.
+    /// A counter rather than a flag, so a repeat refusal (the hotkey pressed
+    /// again) brings an already-open window back to the front.
+    @Published public private(set) var consentRequest: Int = 0
+
     /// The user's display name, used to label their own voice (`speaker_0`) in
     /// every transcript and summary instead of the generic "You". Captured during
     /// first-run onboarding and editable there; empty means fall back to "You".
@@ -119,14 +130,24 @@ public final class RecordingController: ObservableObject {
     /// folder simply resurfaces as "Untranscribed" on next launch.
     @Published public private(set) var processingPaths: Set<String> = []
 
+    /// The subset of `processingPaths` whose run is `summarize(_:)` alone, by
+    /// standardized path; views read it through `isSummarizingMeeting(_:)`.
+    /// It exists so the detail pane's progress banner never echoes another
+    /// meeting's status line: Summarize runs outside the pipeline queue, so a
+    /// pipeline job on another meeting may own `statusMessage` (and the upload
+    /// bar's `transcriptionProgress`) meanwhile. The banner — and the list
+    /// rows' busy label — say "Summarizing…" for these instead.
+    @Published private var summarizingPaths: Set<String> = []
+
     /// The most recent processing failure per meeting folder, keyed by
     /// standardized path. `statusMessage` lives only in the popover header, so
     /// without this a failed background run just flips its row back to
     /// "Untranscribed" with no visible explanation anywhere the user is
     /// actually looking (History window / detail pane). Written by every
-    /// transcription/summarization failure path via `reportMeetingError`;
-    /// cleared when a new attempt on that folder starts, on explicit dismiss,
-    /// and when the folder is trashed. In-memory only, like `processingPaths`.
+    /// transcription/summarization failure path via `reportMeetingError` or
+    /// `reportSummaryFailure`; cleared when a new attempt on that folder
+    /// starts, on explicit dismiss, and when the folder is trashed. In-memory
+    /// only, like `processingPaths`.
     @Published public private(set) var meetingErrors: [String: String] = [:]
 
     /// Whether Kleoth has full calendar access, enabling meetings to be named
@@ -243,14 +264,18 @@ public final class RecordingController: ObservableObject {
         // Overlay any user-edited values stored in the Keychain.
         self.credentials = Self.mergeCredentialsFromKeychain(credentials)
         self.settings = Self.mergeSettingsFromKeychain(settings)
-        self.consentAcknowledged = (Keychain.get(Keychain.Account.consentAcknowledged) == "true")
+        // `-KleothSimulateFirstRun YES` reads both first-run facts as "not
+        // done" for this launch: the two Keychain reads below are skipped.
+        let simulatingFirstRun = Self.simulatesFirstRun
+        self.consentAcknowledged = !simulatingFirstRun
+            && Keychain.get(Keychain.Account.consentAcknowledged) == "true"
         self.userName = Keychain.get(Keychain.Account.userName) ?? ""
         // Onboard only a fresh install. An existing user who has already
         // acknowledged consent has clearly been through the app before, so they
         // must NEVER see the first-run flow even though they predate the
         // `onboarding_completed` flag (which didn't exist when they installed).
-        self.needsOnboarding =
-            Keychain.get(Keychain.Account.onboardingCompleted) != "true" && !consentAcknowledged
+        self.needsOnboarding = simulatingFirstRun
+            || (Keychain.get(Keychain.Account.onboardingCompleted) != "true" && !consentAcknowledged)
         loadRecentMeetings()
         startWatchingOutputDir()
         Task { await refreshProviderStatus() }
@@ -259,6 +284,29 @@ public final class RecordingController: ObservableObject {
         // Fetch the on-device transcription model in the background so a meeting
         // never waits on (or times out during) a ~600 MB first-run download.
         Task { await prewarmTranscriptionModel() }
+    }
+
+    /// Whether this launch was started with `-KleothSimulateFirstRun YES`
+    /// (`1` and `true` work too), e.g. `pkill -x Kleoth; open -a Kleoth --args
+    /// -KleothSimulateFirstRun YES` — quit Kleoth first: `--args` reaches only
+    /// a new process. Consent and onboarding then read as not done, so the
+    /// first-run flows — the welcome window, Skip, the consent card, the
+    /// "Before you record" window — can be exercised on a Mac that consented
+    /// long ago, short of a second macOS account.
+    ///
+    /// Launch-only by construction: it is read from the argument domain alone,
+    /// never through `UserDefaults.standard.bool(forKey:)`, which would also
+    /// honour a value left behind by `defaults write`. It writes nothing — the
+    /// stored consent and onboarding values stay as they are. (Acknowledging
+    /// consent or finishing onboarding during such a launch still saves, as
+    /// those actions always do.) The provider-pick migration in
+    /// `AppConfig.mergeSettingsFromKeychain` still reads the real values: it is
+    /// a data migration, not a first-run flow.
+    private static var simulatesFirstRun: Bool {
+        let value = UserDefaults.standard
+            .volatileDomain(forName: UserDefaults.argumentDomain)["KleothSimulateFirstRun"]
+        return (value as? Bool) == true
+            || (value as? String).map { ["yes", "1", "true"].contains($0.lowercased()) } == true
     }
 
     // MARK: - Calendar auto-naming (opt-in)
@@ -335,14 +383,66 @@ public final class RecordingController: ObservableObject {
         }
     }
 
-    /// Summarizes the most recent meeting in place using the configured
-    /// OpenRouter model. (For the free path, use the `summarize-meeting` skill.)
-    public func summarizeLatestMeeting() async {
-        guard let latest = recentMeetings.first else {
-            statusMessage = "No meeting to summarize yet."
-            return
+    /// Summarizes the newest meeting in place (`kleoth://summarize-latest` and
+    /// its intent), and only ever that one. A Stop → Summarize Latest Shortcut
+    /// runs while the meeting it just stopped is still processing or
+    /// untranscribed; falling back to an older meeting would re-summarize that
+    /// one — a paid call that replaces its summary. A thin wrapper, so every
+    /// summary retry runs the one code path in `summarize(_:)`.
+    ///
+    /// While recording, the newest meeting is the one being recorded (the list
+    /// leaves it out until it stops): "The newest meeting isn't transcribed
+    /// yet." Otherwise the list is reloaded first, so the choice never rests
+    /// on a stale scan. No meeting at all: "No meeting to summarize yet." A
+    /// newest meeting that is queued or running is left alone — `summarize(_:)`
+    /// would refuse it anyway. One without a transcript (not `isProcessed`)
+    /// gets "The newest meeting isn't transcribed yet." in the status line
+    /// only: nothing failed, so nothing is pinned on the meeting. Anything else
+    /// is summarized.
+    ///
+    /// Returns the outcome for the intent's dialog, as `stop()` does: the
+    /// message set above, or `summarize(_:)`'s own status. A meeting still
+    /// queued or running returns "The newest meeting is still being
+    /// processed." and leaves the status line alone: it may be showing that
+    /// run's progress, which the detail pane's banner echoes. The dialog can't
+    /// just read the line — after a Stop it would often answer "Idle".
+    @discardableResult
+    public func summarizeLatestMeeting() async -> String {
+        guard !isRecording else {
+            statusMessage = "The newest meeting isn't transcribed yet."
+            return statusMessage
         }
-        let dir = latest.directory
+        loadRecentMeetings()
+        guard let newest = recentMeetings.first else {
+            statusMessage = "No meeting to summarize yet."
+            return statusMessage
+        }
+        guard !isProcessingMeeting(newest.directory) else {
+            return "The newest meeting is still being processed."
+        }
+        guard newest.isProcessed else {
+            statusMessage = "The newest meeting isn't transcribed yet."
+            return statusMessage
+        }
+        await summarize(newest)
+        return statusMessage
+    }
+
+    /// Summarizes one transcribed meeting in place with the current summary
+    /// provider — the detail pane's Summarize button and summarize-latest.
+    ///
+    /// Runs outside the pipeline queue: it runs no WhisperKit, so it has no
+    /// reason to wait behind a transcription. The transcript is left alone.
+    /// Success saves `summary.json` / `summary.md` and adopts the model's title
+    /// for a placeholder title; the previous failure card was already cleared
+    /// by `markProcessing`. Any failure — a provider that can't be resolved
+    /// included — writes nothing (a summary already on disk stays) and pins
+    /// "Summary failed: …" on the meeting (the error card and the History
+    /// row's "Failed" chip), not only in the popover — unless another run owns
+    /// the folder by then (it claimed it while the provider resolved), which
+    /// leaves the failure to the popover.
+    public func summarize(_ meeting: RecentMeeting) async {
+        let dir = meeting.directory
         guard !isProcessingMeeting(dir) else { return }  // already queued or running
 
         let summarizer: Summarizer
@@ -350,17 +450,27 @@ public final class RecordingController: ObservableObject {
         do {
             (summarizer, selection) = try await AppConfig.makeSummarizer()
         } catch {
-            statusMessage = error.localizedDescription
+            // The user asked for THIS meeting's summary, so the refusal shows
+            // on it (card + Failed chip), where they acted — not only in the
+            // popover. Unless another run claimed the folder while the provider
+            // resolved: that run supersedes this attempt (the re-check below
+            // drops it the same way) and owns the card, so this failure goes
+            // to the popover only.
+            reportMeetingError(
+                "Summary failed: \(error.localizedDescription)",
+                in: isProcessingMeeting(dir) ? nil : dir
+            )
             return
         }
         // Resolving the provider suspended, so the guard above is stale: re-check
         // before claiming the folder or two rapid triggers (`kleoth://summarize-latest`
-        // twice, a Shortcut fired twice) would both summarize and both rewrite it.
-        // This guard and `markProcessing` run in one main-actor turn, so nothing
-        // can slip between them.
+        // twice, a Shortcut fired twice, a double-clicked Summarize) would both
+        // summarize and both rewrite it. This guard and `markProcessing` run in
+        // one main-actor turn, so nothing can slip between them.
         guard !isProcessingMeeting(dir) else { return }
         markProcessing(dir)
-        statusMessage = "Summarizing latest meeting…"
+        summarizingPaths.insert(dir.standardizedFileURL.path)
+        statusMessage = "Summarizing…"
         let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
         do {
             let transcript = try store.loadTranscript(in: dir)
@@ -401,8 +511,9 @@ public final class RecordingController: ObservableObject {
             contentRevision &+= 1
             statusMessage = "Summarized \"\(meta.title)\"."
         } catch {
-            reportMeetingError("Summarize failed: \(error.localizedDescription)", in: dir)
+            reportMeetingError("Summary failed: \(error.localizedDescription)", in: dir)
         }
+        summarizingPaths.remove(dir.standardizedFileURL.path)
         unmarkProcessing(dir)
     }
 
@@ -603,11 +714,18 @@ public final class RecordingController: ObservableObject {
     /// `Recorder`, writing audio into a fresh per-session directory under the
     /// configured output directory. Errors are surfaced into `statusMessage`
     /// rather than thrown, so the UI never crashes.
+    ///
+    /// The consent guard lives here and nowhere else. A refusal also bumps
+    /// `consentRequest`, which brings up the "Before you record" window, so
+    /// every start path — the hotkey, `kleoth://`, the intent, and any new one
+    /// — gets a visible refusal without checking consent itself.
     public func start() async {
+        // No `await` until `isRecording = true`: the consent window's double-click safety needs it.
         guard !isRecording else { return }
 
         guard consentAcknowledged else {
             statusMessage = "Acknowledge the recording consent notice first."
+            consentRequest &+= 1
             return
         }
 
@@ -760,6 +878,13 @@ public final class RecordingController: ObservableObject {
     /// Applies a `SpeakerMap` to the transcript stored in `meetingDir`, then
     /// re-renders and re-saves the meeting artifacts in place.
     public func rename(meetingDir: URL, map: SpeakerMap) {
+        // A Summarize or pipeline run on this folder rewrites the same files.
+        guard !isProcessingMeeting(meetingDir) else {
+            let title = loadMetadata(in: meetingDir).title
+            let work = isSummarizingMeeting(meetingDir) ? "summarizing" : "transcribing"
+            statusMessage = "\"\(title)\" is still \(work) — rename its speakers when it finishes."
+            return
+        }
         do {
             let store = MeetingStore(baseDir: meetingDir.deletingLastPathComponent())
             let transcript = try store.loadTranscript(in: meetingDir)
@@ -782,13 +907,15 @@ public final class RecordingController: ObservableObject {
                 includeTranscript: true
             )
 
-            // Reuse the meeting's existing directory, saving in place.
+            // Reuse the meeting's existing directory, saving in place. No
+            // summary.md for a transcript-only meeting: other readers (Raycast)
+            // take its existence to mean the meeting has a summary.
             try store.save(
                 in: meetingDir,
                 raw: nil,
                 transcript: renamed,
                 summary: renamedSummary,
-                summaryMarkdown: markdown,
+                summaryMarkdown: renamedSummary == nil ? nil : markdown,
                 speakerMap: map,
                 metadata: metadata
             )
@@ -955,6 +1082,14 @@ public final class RecordingController: ObservableObject {
         processingPaths.contains(dir.standardizedFileURL.path)
     }
 
+    /// Whether this meeting's in-flight run is a summary alone
+    /// (`summarize(_:)`), not a transcription — so its progress surfaces say
+    /// "Summarizing…" instead of echoing another meeting's status line. See
+    /// `summarizingPaths`.
+    func isSummarizingMeeting(_ dir: URL) -> Bool {
+        summarizingPaths.contains(dir.standardizedFileURL.path)
+    }
+
     /// The last failure reported for this meeting folder, if any — drives the
     /// detail view's error card and the History row's "Failed" chip.
     public func meetingError(for dir: URL) -> String? {
@@ -985,6 +1120,18 @@ public final class RecordingController: ObservableObject {
         log.notice("no summarizer: \(error.localizedDescription, privacy: .public)")
         guard settings.providerSettings.pick != nil else { return }
         reportMeetingError("Summary skipped: \(error.localizedDescription)", in: dir)
+    }
+
+    /// A pipeline run that saved its transcript but whose summary failed. The
+    /// popover line keeps the run's own prefix (`statusPrefix`); the meeting
+    /// gets "Summary failed: …" — the detail pane's error card and the History
+    /// row's "Failed" chip — because the popover line is overwritten by the
+    /// next status, and "No summary yet" alone reads as never tried.
+    /// `unmarkProcessing` leaves `meetingErrors` alone, so the card outlives
+    /// the run; only the next attempt's `markProcessing` clears it.
+    private func reportSummaryFailure(_ message: String, statusPrefix: String, in dir: URL) {
+        statusMessage = "\(statusPrefix) — summary failed: \(message)"
+        meetingErrors[dir.standardizedFileURL.path] = "Summary failed: \(message)"
     }
 
     /// Marks a folder as queued/processing and refreshes the list so its row
@@ -1102,7 +1249,13 @@ public final class RecordingController: ObservableObject {
             if let meetingDir { unmarkProcessing(meetingDir) } else { loadRecentMeetings() }
             contentRevision &+= 1
             if let summaryError = result.summaryError {
-                statusMessage = "Transcribed \"\(title)\" — summary skipped (\(summaryError))"
+                // The result's folder, not `meetingDir`: an import whose folder
+                // could not be made up front saved into one the pipeline derived.
+                reportSummaryFailure(
+                    summaryError,
+                    statusPrefix: "Transcribed \"\(title)\"",
+                    in: result.meetingDir
+                )
             } else {
                 statusMessage = "Saved \"\(title)\"."
             }
@@ -1283,7 +1436,11 @@ public final class RecordingController: ObservableObject {
             contentRevision &+= 1
             transcriptionProgress = nil
             if let summaryError = result.summaryError {
-                statusMessage = "Fully transcribed \"\(metadata.title)\" — summary skipped (\(summaryError))"
+                reportSummaryFailure(
+                    summaryError,
+                    statusPrefix: "Fully transcribed \"\(metadata.title)\"",
+                    in: result.meetingDir
+                )
             } else {
                 statusMessage = "Fully transcribed \"\(metadata.title)\"."
             }
@@ -1442,7 +1599,11 @@ public final class RecordingController: ObservableObject {
             unmarkProcessing(dir)
             contentRevision &+= 1
             if let summaryError = result.summaryError {
-                statusMessage = "Transcribed \"\(metadata.title)\" on-device — summary skipped (\(summaryError))"
+                reportSummaryFailure(
+                    summaryError,
+                    statusPrefix: "Transcribed \"\(metadata.title)\" on-device",
+                    in: result.meetingDir
+                )
             } else {
                 statusMessage = "Transcribed \"\(metadata.title)\" on-device."
             }

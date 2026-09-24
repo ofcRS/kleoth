@@ -59,8 +59,10 @@ struct SummarizeLatestIntent: AppIntent {
         guard let controller = RecordingController.shared else {
             return .result(dialog: "Kleoth isn't ready yet.")
         }
-        await controller.summarizeLatestMeeting()
-        return .result(dialog: IntentDialog(stringLiteral: controller.statusMessage))
+        // The returned outcome, not `statusMessage`: a meeting still being
+        // processed leaves the status line to its own run's progress.
+        let outcome = await controller.summarizeLatestMeeting()
+        return .result(dialog: IntentDialog(stringLiteral: outcome))
     }
 }
 

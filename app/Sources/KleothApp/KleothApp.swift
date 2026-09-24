@@ -37,7 +37,8 @@ struct KleothApp: App {
                 // pill can be on a display the user is not looking at (§2.3).
                 isRecording: controller.isRecording || screenRecording.isActive,
                 needsOnboarding: controller.needsOnboarding,
-                historyRequest: dictation.dictationsHistoryRequest
+                historyRequest: dictation.dictationsHistoryRequest,
+                consentRequest: controller.consentRequest
             )
         }
         .menuBarExtraStyle(.window)
@@ -63,6 +64,16 @@ struct KleothApp: App {
         .defaultSize(width: 560, height: 600)
         .windowResizability(.contentSize)
 
+        // Recording consent for a start refused away from the popover (the
+        // global hotkey, `kleoth://record|toggle`, the Start Recording intent):
+        // the menu-bar label opens it on `RecordingController.consentRequest`.
+        // Sized by its content, like onboarding.
+        Window("Before you record", id: "kleoth-consent") {
+            ConsentView(startsRecording: true)
+                .environmentObject(controller)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             SettingsView()
                 .environmentObject(controller)
@@ -81,7 +92,9 @@ struct KleothApp: App {
 /// view mounted at launch it has the live SwiftUI environment that
 /// `@Environment(\.openWindow)` requires (`App.init` and the `AppDelegate` don't),
 /// so its `.task` opens the welcome window once, after a short beat, when this is
-/// a fresh install.
+/// a fresh install (and the consent window, when a refusal came before it
+/// mounted). For the same reason it opens windows that controllers ask for
+/// through request counters (`historyRequest`, `consentRequest`).
 private struct KleothMenuBarLabel: View {
     let isRecording: Bool
     let needsOnboarding: Bool
@@ -89,17 +102,39 @@ private struct KleothMenuBarLabel: View {
     /// "Dictation history…" needs a window opened from a controller that has
     /// no SwiftUI environment, and this label always has one.
     let historyRequest: Int
+    /// `RecordingController.consentRequest` — bumped when `start()` refuses
+    /// for missing consent. The hotkey, `kleoth://` links and the Start intent
+    /// have no view of their own to show that refusal in.
+    let consentRequest: Int
+
+    /// The last `consentRequest` a consent window was opened for, so no
+    /// refusal is answered twice. `.task` runs each time this label appears —
+    /// nothing guarantees that is once a launch — and a re-run must not bring
+    /// back a window the user already closed. Static rather than `@State`, so
+    /// a re-mount can't reset it either (the `HistoryRouting` idiom).
+    @MainActor private static var answeredConsentRequest = 0
 
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         icon
             .task {
-                guard needsOnboarding else { return }
+                // SwiftUI `onChange` never fires for the value a view MOUNTS
+                // with, so a consent refusal from before this label existed —
+                // a `kleoth://record` link or the Start intent that launched
+                // Kleoth — never reaches `onChange(of: consentRequest)` below.
+                // The mount value catches it: a count above the last one
+                // answered is a refusal no window has shown yet.
+                let consentPending = consentRequest > Self.answeredConsentRequest
+                guard needsOnboarding || consentPending else { return }
                 // A brief beat lets the menu-bar item settle and the scene graph
                 // finish mounting before we present a window, so the welcome
                 // window reliably comes to the front on first launch.
                 try? await Task.sleep(for: .milliseconds(500))
+                // Consent first, so a fresh install's welcome window opens on
+                // top of it: onboarding asks for consent too, and the consent
+                // window closes by itself once a recording starts.
+                if consentPending { openConsentWindow(for: consentRequest) }
                 guard needsOnboarding else { return }
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openWindow(id: "kleoth-onboarding")
@@ -110,6 +145,20 @@ private struct KleothMenuBarLabel: View {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openWindow(id: "kleoth-history")
             }
+            .onChange(of: consentRequest) { _, request in openConsentWindow(for: request) }
+    }
+
+    /// Brings the "Before you record" window forward for refusal number
+    /// `request` — one that arrives while this label is mounted (`onChange`)
+    /// or one from before it mounted (`.task`) — unless a window was already
+    /// opened for it. `ConsentView(startsRecording: true)` takes it from there:
+    /// it acknowledges, starts, and closes once the recording runs. A repeat
+    /// refusal carries a new count, so an open window comes back to the front.
+    private func openConsentWindow(for request: Int) {
+        guard request > Self.answeredConsentRequest else { return }
+        Self.answeredConsentRequest = request
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        openWindow(id: "kleoth-consent")
     }
 
     @ViewBuilder

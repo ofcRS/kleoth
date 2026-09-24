@@ -348,11 +348,12 @@ public struct MeetingStore {
     /// `speakers.json` (so a rename like You→Anna survives re-transcription —
     /// the pipeline re-applies the map and `writeDefaultSpeakerMapIfNeeded`
     /// never clobbers an existing one). `meta.json` is KEPT, with its
-    /// transcript-derived fields (tier/model/language/cost) stripped while the
-    /// identity fields (title/date/startedAt/participants/consent) survive, so
-    /// the title outlives a re-transcription. Removals go to the Trash by
-    /// default (recoverable, matching row deletes); pass `trash: false` to
-    /// delete outright. Idempotent — a second call is a clean no-op.
+    /// transcript-derived fields (tier/model/summary provider/language/cost)
+    /// stripped while the identity fields (title/date/startedAt/participants/
+    /// consent) survive, so the title outlives a re-transcription. Removals go
+    /// to the Trash by default (recoverable, matching row deletes); pass
+    /// `trash: false` to delete outright. Idempotent — a second call is a clean
+    /// no-op.
     public func removeTranscription(in dir: URL, trash: Bool = true) throws {
         let fm = FileManager.default
         var doomed = Self.variantArtifacts.map { dir.appendingPathComponent($0) }
@@ -370,6 +371,7 @@ public struct MeetingStore {
         var metadata = try loadMetadata(in: dir)
         metadata.transcriptTier = nil
         metadata.model = nil
+        metadata.summaryProvider = nil
         metadata.languageCode = nil
         metadata.cost = nil
         let data = try Self.makeEncoder().encode(metadata)

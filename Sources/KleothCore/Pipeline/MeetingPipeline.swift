@@ -21,7 +21,8 @@ public struct MeetingPipeline {
     ///    transcript carries real names through summarization and rendering.
     /// 4. If `summarize` is requested and a summarizer is configured, produce a
     ///    `MeetingSummary`.
-    /// 5. Render Markdown and persist all artifacts.
+    /// 5. Render Markdown and persist all artifacts. The saved metadata keeps
+    ///    `model` and `summaryProvider` only when this run wrote a summary.
     public func run(
         audioFile: URL,
         metadata: MeetingMetadata,
@@ -80,6 +81,12 @@ public struct MeetingPipeline {
 
         var finalMetadata = metadata
         finalMetadata.cost = cost
+        // `summaryProvider` documents the provider that produced `summary.json`
+        // (and `model` its model), so a run that wrote none must not name one.
+        if summary == nil {
+            finalMetadata.model = nil
+            finalMetadata.summaryProvider = nil
+        }
 
         // Adopt the model's title only when the current one is an auto-generated
         // placeholder — a calendar- or user-supplied title is always kept. Done

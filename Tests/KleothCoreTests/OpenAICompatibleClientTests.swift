@@ -102,6 +102,23 @@ import Foundation
         #expect(format["type"] as? String == "json_object")
     }
 
+    /// Lock: a reasoning model that spends the whole output budget thinking
+    /// answers `"content": null` with `"finish_reason": "length"`. That reaches
+    /// the summarizer as an empty cut-off completion (its cue to retry with
+    /// `reasoning: low`), not as `noContent`, which would fail the summary
+    /// before the retry could run.
+    @Test func nullContentWithLengthIsAnEmptyCompletion() async throws {
+        let transport = MockTransport(
+            json: #"{ "choices": [ { "message": { "role": "assistant", "content": null }, "finish_reason": "length" } ], "usage": { "prompt_tokens": 3, "completion_tokens": 10 } }"#)
+        let client = OpenAICompatibleClient(
+            baseURL: URL(string: "http://localhost:11434/v1")!, apiKey: nil, transport: transport)
+        let completion = try await client.complete(
+            messages: [ChatMessage(role: "user", content: "x")], model: "m",
+            responseFormat: .jsonObject, maxTokens: 10)
+        #expect(completion.content == "")
+        #expect(completion.finishReason == "length")
+    }
+
     @Test func providerErrorMessagesAreReadable() {
         #expect(ProviderError.notSignedIn(tool: "Claude Code").errorDescription
                 == "Claude Code is not signed in. Open a terminal, run `claude`, and sign in.")

@@ -52,7 +52,8 @@ public protocol ChatCompleting: Sendable {
 }
 
 public extension ChatCompleting {
-    /// The summarizer's call shape: no temperature, no reasoning cap.
+    /// The summarizer's first request: no temperature, no reasoning cap (its one
+    /// retry after an empty cut-off sends `reasoning: .low`).
     func complete(
         messages: [ChatMessage],
         model: String,

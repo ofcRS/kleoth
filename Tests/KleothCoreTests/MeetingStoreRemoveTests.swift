@@ -35,7 +35,8 @@ import Foundation
             model: "google/gemini-3-flash-preview",
             languageCode: "ru",
             cost: CostBreakdown(transcriptionUSD: 0.22, summaryUSD: 0.02, audioDurationSecs: 60),
-            transcriptTier: TranscriptTier.sotaScribe
+            transcriptTier: TranscriptTier.sotaScribe,
+            summaryProvider: "openrouter"
         )
         let summary = MeetingSummary(tldr: "Tldr.")
         let markdown = MarkdownRenderer.render(
@@ -102,6 +103,7 @@ import Foundation
         #expect(metadata.consentAcknowledged)
         #expect(metadata.transcriptTier == nil)
         #expect(metadata.model == nil)
+        #expect(metadata.summaryProvider == nil)
         #expect(metadata.languageCode == nil)
         #expect(metadata.cost == nil)
     }

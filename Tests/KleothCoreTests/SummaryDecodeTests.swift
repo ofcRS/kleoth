@@ -296,9 +296,9 @@ import Foundation
         #expect(transport.callCount == 2)
     }
 
-    /// If the retry is also truncated, fail loudly (so the pipeline records a
-    /// `summaryError` and keeps the transcript) rather than shipping a partial
-    /// summary as if it were complete.
+    /// If the retry is also truncated, fail loudly with `.truncated` (so the
+    /// pipeline records a `summaryError` and keeps the transcript) rather than
+    /// shipping a partial summary as if it were complete.
     @Test func summarizeThrowsWhenTruncationPersists() async {
         let truncated = Self.completionEnvelope(
             content: "{ \"tldr\": \"partial\" }",
@@ -309,10 +309,10 @@ import Foundation
 
         do {
             _ = try await summarizer.summarize(transcript: transcript(), metadata: metadata())
-            Issue.record("Expected SummarizerError.invalidJSON on persistent truncation")
+            Issue.record("Expected SummarizerError.truncated on persistent truncation")
         } catch let error as SummarizerError {
-            guard case .invalidJSON = error else {
-                Issue.record("Expected .invalidJSON, got \(error)")
+            guard case .truncated = error else {
+                Issue.record("Expected .truncated, got \(error)")
                 return
             }
             #expect(transport.callCount == 2)

@@ -177,6 +177,9 @@ struct Summarize: AsyncParsableCommand {
     @Option(name: .long, help: "AI provider: openrouter, local, claude-code or codex. Defaults to settings / auto-detection.")
     var provider: String?
 
+    @Option(name: .long, help: "Output-token budget for the summary (default \(Summarizer.defaultMaxOutputTokens); a cut-off retry doubles it).")
+    var maxOutputTokens: Int?
+
     @Option(name: .long, help: "Output directory for the meeting (defaults to settings).")
     var out: String?
 
@@ -184,6 +187,11 @@ struct Summarize: AsyncParsableCommand {
     var noTranscript: Bool = false
 
     func run() async throws {
+        // Checked before any provider is detected or called. The ceiling keeps
+        // the cut-off retry's doubled budget far from overflow.
+        if let maxOutputTokens, !(1...1_000_000).contains(maxOutputTokens) {
+            throw fail("--max-output-tokens must be between 1 and 1000000.")
+        }
         let credentials = Credentials.resolve(projectDir: currentDirectoryURL())
         let settings = Settings.load()
         var pick: AIProvider?
@@ -206,7 +214,8 @@ struct Summarize: AsyncParsableCommand {
         let resolvedModel = model ?? selection.model
         let baseDir = resolveOutputDir(out)
         let store = MeetingStore(baseDir: baseDir)
-        let summarizer = try factory.summarizer(for: .init(provider: selection.provider, model: resolvedModel, fellThroughFrom: nil))
+        var summarizer = try factory.summarizer(for: .init(provider: selection.provider, model: resolvedModel, fellThroughFrom: nil))
+        if let maxOutputTokens { summarizer.maxOutputTokens = maxOutputTokens }
         printError("Using \(selection.provider.displayName) · \(resolvedModel.isEmpty ? "default model" : resolvedModel)")
 
         let inputURL = URL(fileURLWithPath: input)

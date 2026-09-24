@@ -42,7 +42,7 @@ struct MeetingDetailView: View {
             }
 
             // Live progress while THIS (already-transcribed) meeting is being
-            // upgraded with ElevenLabs Scribe or re-summarized: a determinate bar
+            // upgraded with ElevenLabs Scribe or summarized: a determinate bar
             // during the audio upload, indeterminate while Scribe works server-side.
             // Keyed to this meeting's folder — other meetings processing in the
             // background don't banner here.
@@ -124,9 +124,9 @@ struct MeetingDetailView: View {
 
     /// Metadata header for the meeting, in a Kleoth content card: the prominent
     /// title and a wrapping row of metadata chips (date · time, duration, model,
-    /// color-coded tier badge, and a "No summary yet" hint). Deliberately
-    /// money-free — per-meeting costs stay in `meta.json`, and account usage
-    /// lives in Settings → Usage.
+    /// color-coded tier badge, and a "No summary yet" hint — with a Summarize
+    /// button on a transcribed meeting). Deliberately money-free — per-meeting
+    /// costs stay in `meta.json`, and account usage lives in Settings → Usage.
     private var headerCard: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
             Text(meeting.title)
@@ -151,7 +151,9 @@ struct MeetingDetailView: View {
             if let size = MeetingFormat.fileSize(meeting.sizeBytes) {
                 KleothPill(size, systemImage: "internaldrive")
             }
-            if let model = metadata?.model, !model.isEmpty {
+            // The model that wrote the summary, so only beside one: `meta.json`
+            // from an older failed run still names the model that failed.
+            if summary != nil, let model = metadata?.model, !model.isEmpty {
                 KleothPill(model, systemImage: "sparkles")
             }
             if let tier = metadata?.transcriptTier {
@@ -163,7 +165,45 @@ struct MeetingDetailView: View {
             }
             if summary == nil {
                 KleothPill("No summary yet", systemImage: "doc.text", tint: KleothPalette.pendingTint)
+                // Transcribed but not summarized — never tried, or the last try
+                // failed (its card sits below). Without this the only retries
+                // are transcribing again with the other engine, summarize-latest
+                // (the newest meeting only) or the CLI. An untranscribed meeting
+                // offers its Transcribe buttons instead.
+                if transcript != nil {
+                    summarizeButton
+                }
             }
+        }
+    }
+
+    /// Summarizes this meeting in place on the current summary provider.
+    private var summarizeButton: some View {
+        let availability = summarizeAvailability
+        return Button("Summarize") {
+            Task { await controller.summarize(meeting) }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(!availability.isEnabled)
+        .help(availability.help)
+    }
+
+    /// Whether Summarize can run now, and its tooltip. Disabled while this
+    /// meeting is busy, and when no provider resolves for summaries — the
+    /// tooltip then gives the provider's reason instead of a click that can
+    /// only fail. A `nil` status means detection hasn't finished yet: stay
+    /// enabled, since `summarize(_:)` resolves the provider itself and pins a
+    /// failure to resolve on this meeting's card.
+    private var summarizeAvailability: (isEnabled: Bool, help: String) {
+        let isBusy = controller.isProcessingMeeting(meeting.directory)
+        switch controller.providerStatus?.summary {
+        case let .failure(error)?:
+            return (false, error.localizedDescription)
+        case let .success(selection)?:
+            return (!isBusy, "Summarize with \(selection.provider.displayName)")
+        case nil:
+            return (!isBusy, "Summarize")
         }
     }
 
@@ -204,14 +244,15 @@ struct MeetingDetailView: View {
 
     // MARK: - Transcription progress
 
-    /// Progress banner for an in-flight SOTA transcription / re-summarization:
-    /// a determinate bar during the multipart upload (`transcriptionProgress`),
-    /// otherwise an indeterminate spinner while Scribe transcribes server-side.
-    /// Mirrors the popover's status line so progress reads consistently.
+    /// Progress banner for an in-flight SOTA transcription / summary: a
+    /// determinate bar during the multipart upload (`transcriptionProgress`),
+    /// otherwise an indeterminate spinner while Scribe transcribes server-side
+    /// or the summary runs. Mirrors the popover's status line so progress reads
+    /// consistently.
     private var transcriptionProgressBanner: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
             HStack(spacing: KleothMetrics.spacingS) {
-                if controller.transcriptionProgress == nil {
+                if bannerUploadProgress == nil {
                     ProgressView().controlSize(.small)
                 }
                 Text(bannerText)
@@ -220,7 +261,7 @@ struct MeetingDetailView: View {
                     .lineLimit(2)
                 Spacer(minLength: 0)
             }
-            if let progress = controller.transcriptionProgress {
+            if let progress = bannerUploadProgress {
                 ProgressView(value: progress)
             }
         }
@@ -228,10 +269,20 @@ struct MeetingDetailView: View {
         .kleothCard(padding: KleothMetrics.spacingM)
     }
 
-    /// The banner's caption: the live status when one is being reported, or a
-    /// generic "Transcribing…" while this meeting waits its turn in the queue
-    /// (the shared status may read "Idle" then).
+    /// The upload fraction for the banner's determinate bar. Never for a
+    /// summary-only run: it uploads nothing, so the shared
+    /// `transcriptionProgress` then belongs to another meeting's cloud upload.
+    private var bannerUploadProgress: Double? {
+        controller.isSummarizingMeeting(meeting.directory) ? nil : controller.transcriptionProgress
+    }
+
+    /// The banner's caption: "Summarizing…" for a summary-only run — it runs
+    /// outside the pipeline queue, so the shared status line may belong to a
+    /// pipeline job on another meeting — else the live status when one is
+    /// being reported, or a generic "Transcribing…" while this meeting waits
+    /// its turn in the queue (the shared status may read "Idle" then).
     private var bannerText: String {
+        if controller.isSummarizingMeeting(meeting.directory) { return "Summarizing…" }
         let trimmed = controller.statusMessage.trimmingCharacters(in: .whitespaces)
         return trimmed.lowercased() == "idle" ? "Transcribing…" : trimmed
     }
@@ -386,7 +437,10 @@ struct MeetingDetailView: View {
             Button { showRename = true } label: {
                 Label("Rename speakers", systemImage: "person.2")
             }
-            .disabled(transcript == nil || (transcript?.utterances.isEmpty ?? true))
+            // Not while a run owns the folder: a Summarize or pipeline run
+            // rewrites the same files, and the rename would race it.
+            .disabled(transcript == nil || (transcript?.utterances.isEmpty ?? true)
+                      || controller.isProcessingMeeting(meeting.directory))
             .help("Assign names to the detected speakers")
             // Each engine's action shows only while NO variant from that engine
             // exists anywhere (active or archived) — once both exist, the tier
