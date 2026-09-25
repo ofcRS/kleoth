@@ -496,7 +496,17 @@ struct SettingsView: View {
                 .disabled(isRefreshingModels)
             }
         } footer: {
-            captionFooter("Models available under your OpenRouter data policy. The default runs locally-friendly Gemini Flash; pick any provider that fits your privacy and cost.")
+            captionFooter(summarizationFooterText)
+        }
+    }
+
+    /// Names the provider summaries resolve to, so the model control above it
+    /// never looks like OpenRouter's when another provider is in charge.
+    private var summarizationFooterText: String {
+        switch resolvedProvider(.summary) ?? .openRouter {
+        case .openRouter: "The models your OpenRouter account's data policy allows. Choose the provider in Accounts."
+        case .localServer: "Summaries run on your local server. Choose the provider in Accounts."
+        case let provider: "Summaries run on \(provider.displayName). Choose the provider in Accounts."
         }
     }
 
@@ -730,7 +740,7 @@ struct SettingsView: View {
         } header: {
             Text("Shortcuts")
         } footer: {
-            captionFooter("Also available as Shortcuts / Spotlight actions and via kleoth:// URLs.")
+            captionFooter("Scripts and launchers can do the same with kleoth://toggle.")
         }
     }
 
