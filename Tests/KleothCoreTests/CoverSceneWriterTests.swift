@@ -88,7 +88,10 @@ import Testing
         }
         // A meeting about photos must not leak them into the metaphor (the
         // dry run's "a fox … saving its photos for later").
-        #expect(prompt.contains("never these words in the scene, even when the meeting is about them"))
+        #expect(prompt.contains("Never these words in the scene, even when the meeting is about them."))
+        // The metaphor bullet describes the shape of an idea, not nouns to
+        // copy: listed example objects came back in every dry-run scene.
+        #expect(prompt.contains("do not repeat a stock image"))
         // The animals and the sensitivity rule stay.
         #expect(prompt.contains("cute animal characters"))
         #expect(prompt.contains("When unsure: true."))

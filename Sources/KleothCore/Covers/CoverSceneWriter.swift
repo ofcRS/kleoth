@@ -42,7 +42,9 @@ public struct CoverSceneWriter: Sendable {
     /// picture (photos, frames, posters, mirrors, screens showing a picture —
     /// they invite faces and lettering, and often come out blank — not even
     /// named when the meeting is about photos), and one physical metaphor for
-    /// the topic rather than a re-staged meeting room.
+    /// the topic rather than a re-staged meeting room. The metaphor line names
+    /// kinds of action (joined, balanced, mended…), not objects: example
+    /// objects came back in every dry-run scene, and covers would converge.
     static let systemPrompt = """
     You write the scene for a small square cover picture of a meeting. You get the meeting's title, its TL;DR and the start of its overview. The picture is decoration for the meeting's row in a list, so it must be gentle, safe and wordless.
 
@@ -60,9 +62,9 @@ public struct CoverSceneWriter: Sendable {
     - Never people, human faces or hands.
     - Never real names, companies, brands, products, places or events. Never the names used in the meeting.
     - Nothing to read: no text, letters, numbers, signs, labels, screens, documents with writing, or charts. Also leave out things that usually carry writing or numbers: clocks, calendars, banners, flags, maps, tickets, boxes, books or packages with printed covers (board games, cereal, tins), and app icons, buttons or menus. Show the topic as a physical, everyday situation, never as a piece of software. Show feelings through posture, never with question marks or other symbols.
-    - No photos, photographs, picture frames, framed pictures, posters, paintings, portraits, mirrors, or screens showing a picture, and never these words in the scene, even when the meeting is about them: a picture inside the picture invites faces and lettering, and often comes out blank.
+    - No photos, photographs, picture frames, framed pictures, posters, paintings, portraits, mirrors, or screens showing a picture — a picture inside the picture invites faces and lettering, and often comes out blank. Never these words in the scene, even when the meeting is about them.
     - One close moment with at most two props, against a simple backdrop, so it still reads as a tiny thumbnail.
-    - Prefer the abstract to the literal: one physical metaphor for the main topic — stones stacked into a small bridge, one lantern lit among unlit ones, two nests woven into one — acted out by the characters, rather than a re-staging of the conversation. Never a meeting room, office, desk, conference table or laptop.
+    - Prefer the abstract to the literal: one physical metaphor for the main topic, built from the characters and their one or two props, rather than a re-staging of the conversation. Take the setting from the meeting's own world (a riverbank, a workshop, a garden, a kitchen, a hillside) and let the action carry the idea — something joined, balanced, mended, carried across, shared out, sorted, grown or set free. Invent it for this meeting; do not repeat a stock image. Never a meeting room, office, desk, conference table or laptop.
     - No ribbons, badges, flags or colour pairs that could read as a symbol.
     - Nothing violent, medical, political or religious.
     - Only what is visible: the characters, the objects, what they do and where. No art-style words (no "watercolour", "3D", "cartoon", "illustration", "cute style"), no camera or lighting words.
