@@ -33,9 +33,13 @@ server. It is free and open source (Apache-2.0).
 4. **Summarize.** A TL;DR, an overview, action items and per-speaker highlights, written in the
    meeting's own language. The summary runs right after each transcription, on your AI provider:
    Claude Code, Codex, a local Ollama or LM Studio server, or OpenRouter. On Automatic, the
-   default, that is the first one Kleoth finds (see [AI providers](ai-providers.md)). From the next
-   release, a summary is saved only when it is complete. One that comes back cut off or with a
-   section missing is retried once, and otherwise reported as failed, never saved half-empty.
+   default, that is the first one Kleoth finds (see [AI providers](ai-providers.md)). A summary is
+   saved only when it is complete. One that comes back cut off or with a section missing is
+   retried once. If it's still incomplete, the meeting shows "Summary failed" with the reason and
+   a **Summarize** button to try again. It is never saved half-empty.
+5. **A cover, if you want one.** Off by default. With covers on, each summarized meeting gets a
+   small picture of cute animals or everyday objects acting out what it was about. See
+   [Meeting covers](../README.md#meeting-covers).
 
 ## Your meeting is a folder
 
@@ -46,10 +50,11 @@ server. It is free and open source (Apache-2.0).
   summary.json · summary.md             the summary
   speakers.json                         speaker_0 / speaker_1 → names
   meta.json                             duration, engine, timestamps, consent
+  cover.jpg · cover.json                the cover and how it was drawn (if covers are on)
 ```
 
 Grep it, sync it with anything, open it in Obsidian, delete it. The app is a view over the
-directory. The `kleoth` CLI (`transcribe`, `summarize`, `rename`, `render`) works on the same
+directory. The `kleoth` CLI (`transcribe`, `summarize`, `rename`, `render`, `illustrate`) works on the same
 folders, and so do the Raycast extension and the `kleoth://` URL scheme.
 
 ## Compared with hosted meeting recorders
@@ -72,6 +77,9 @@ folders, and so do the Raycast extension and the `kleoth://` URL scheme.
   that is the first one found (local server, Claude Code, Codex, OpenRouter). With no local server
   running and the Claude Code or Codex CLI signed in, that means Anthropic's or OpenAI's servers,
   under your account. To keep transcripts on the Mac, pick a local server in Settings → Accounts.
+- **Covers**, if you turn them on: your AI provider writes a one-sentence scene from the summary,
+  and only that scene goes to the image engine you pick: to OpenAI through Codex, or to
+  OpenRouter. A local image server keeps it on your Mac.
 
 ## Consent
 
