@@ -1534,6 +1534,8 @@ Both new keys are readable from `~/.config/kleoth/config.json` too (`Settings.lo
 
 Since 2026-09-23 a row also carries `audio_file_name`, `transcription_error` and `transcription_seconds`, and a pending row (transcription failed or stopped; audio kept) has empty texts and `insert_method: "none"` — `2026-09-23-dictation-retry.md` §4.1.
 
+Since 2026-09-24 a row also carries `field_context` (how the text already in the focused field was used: `cursor`, `merged`, `appended`, `replaced`, `reference` or `selection_changed`; null without field context), `replaced_text` (the selection a merge replaced; `merged` rows only) and `context_seconds` (how long the read at release took, or its budget when it timed out; null when no read was attempted) — `2026-09-24-dictation-context.md` §3.3, §4.1. The text around the cursor is never stored.
+
 Required on decode: `id`, `timestamp`, `raw_text`, `polished_text`; everything else optional/defaulted. `insert_method` absent **or unknown** (e.g. a value written by a newer build) → `paste` — the lenient `init(from:)` decodes it as a `String` and maps through `DictationInsertMethod(rawValue:) ?? .paste`, because a plain `Codable` enum throws on an unknown string and would make the entire day file undecodable. `language` is always Scribe's `language_code` (ISO-639-3); the polisher's BCP-47 `language` is never written. Oldest-first within the day. The folder never appears as a meeting: `loadRecentMeetings` skips directories without audio.
 
 ### 6.4 `~/.config/kleoth/dictionary.json`
