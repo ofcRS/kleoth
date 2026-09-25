@@ -247,7 +247,6 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
 - Demo films (2026-09-25, merged PR #7; no captions under the GIFs by choice): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
   `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
-  (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height;
-  on-device meeting transcripts aren't split into turns (Whisper segments abut → `TranscriptNormalizer` sees no gap).
+  (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
