@@ -1,0 +1,11 @@
+# The demo screen recording: the Q4 roadmap slide from demo-screen.gif, narrated.
+# One line per sentence. The first four turn the cursor to the title, then to each bar.
+when: 0 11:45
+voice: Samantha
+title: Q4 roadmap walkthrough
+
+Here's a quick look at where the Q4 roadmap stands.
+Onboarding is almost done, around eighty percent, and it ships in two weeks.
+Billing is about halfway. The new invoices are in review, so it lands in November.
+Mobile is the one at risk. We're at thirty percent, and I'd like to move two people over from billing.
+Let me know what you think before Friday.

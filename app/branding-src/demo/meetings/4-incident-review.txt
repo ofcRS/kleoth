@@ -1,0 +1,17 @@
+when: -1 11:00
+you: Samantha
+them: Rishi | Rishi
+
+YOU: Okay, let's go through Tuesday's sync outage. Rishi, can you walk us through the timeline?
+THEM: Sure. At two forty in the afternoon, we deployed the new database driver. About ten minutes later, sync requests started timing out. We rolled back at three twenty five, and everything recovered within five minutes.
+YOU: So roughly forty five minutes where changes weren't syncing. Did anyone lose data?
+THEM: No. The apps queued their changes and sent them after the rollback. We checked the logs, and every queued change arrived.
+YOU: That's a relief. What was the root cause?
+THEM: The new driver opens a connection for every request, instead of using the pool. Under normal traffic that's fine, but at peak we ran out of connections.
+YOU: Why didn't we see it in staging?
+THEM: Staging gets about one percent of production traffic, so we never hit the limit.
+YOU: Okay. What do we change?
+THEM: Three things. Add an alert on the connection count, run a load test before any database change, and fix the driver config so it uses the pool.
+YOU: Agreed. Can you own the driver fix? I'll set up the alert, and let's ask Mei to add the load test to the deploy checklist.
+THEM: Yes. I'll have the fix up for review by Thursday.
+YOU: Thanks, Rishi. I'll write the summary for the status page.

@@ -47,7 +47,7 @@ Hold **fn+shift** anywhere on the Mac, speak, release → Kleoth records the mic
 | Pill position storage | `UserDefaults` key `dev.kleoth.dictation.pillPlacement` (JSON `PillPlacement`) | Rewritten on every drag; the Keychain blob is a once-per-launch credential read. |
 | Re-press mid-pipeline | Refuse with a 1 s warning (pipeline) — i.e. "ignore, but say so" | Superseding destroys committed speech; queueing double-pastes non-deterministically. Esc is the escape hatch. |
 | Esc | Cancels a live session (hands-free listening or in-flight pipeline). During push-to-talk any key (incl. Esc) while the chord is held already cancels via `.otherKey`. | Monitor reads only `keyCode == 53` and only while `escapeCancels` is set by the controller. |
-| Secure input | Checked twice: at `armed` (don't even record) and inside `TextInserter` (clipboard-only fallback if focus moved mid-session) | Turns a silent no-op into an explanation. |
+| Secure input | Checked twice: at `armed` (don't even record) and inside `TextInserter` (clipboard-only fallback if focus moved mid-session). The flag is session-wide — ANY app sets it, often a background browser, not the focused field — so both refusals name the holder (`kCGSSessionSecureInputPID` → `NSRunningApplication`) | Turns a silent no-op into an explanation the user can act on. |
 | Accessibility grant without relaunch | Reinstall monitors on grant (didBecomeActive + 1 Hz poll while Settings/pill prompt visible); Settings copy adds "if the hotkey stays dead, relaunch Kleoth" | Monitors installed while untrusted never fire; CGEvent posting may also need a relaunch — covered by copy + manual test. |
 | Hotkey probe | No separate `hotkeyprobe` target; the monitor logs every chord transition via `os.Logger` (`dev.kleoth` / `DictationHotkey`) so `log stream` IS the probe | Accessibility is bundle-scoped; a bare SwiftPM binary can't be trusted anyway. |
 | Pipeline probe | `dictate` executable target (headless record → prep → Scribe → polish, no paste) | Mirrors `taptest`/`localtranscribe`; the only way to exercise capture + network without UI. |
@@ -136,6 +136,9 @@ Package: app/ (macOS 14.4)
     │                       handsFreeArming ──chordUp──▶ handsFree ──chordDown → .toggledOff──▶ handsFreeEnding ──chordUp──▶ idle
     │                                                       ▲ otherKey ignored (user may type)
     └──── abort (Esc / disable / capture error) from any capturing state → blocked (handsFree → idle: keys already up), emits .cancelled(.external)
+
+   holding ──latchKey (⌘ added) → .latched──▶ handsFree            (2026-09-24, §10.3 item 16)
+   holding ──externalLatch (pill click) → .latched──▶ handsFreeArming
 ```
 
 **DictationController (app):**
@@ -148,6 +151,8 @@ Package: app/ (macOS 14.4)
  armed      | .began / .toggledOn               | escapeCancels = true; isSessionActive = true;  | listening
             |                                   | pill .listening(handsFree:); start level poll  |
  armed      | .cancelled(_)                     | capture.cancel(); (pill stays hidden)          | idle
+ listening  | .latched (from push-to-talk only) | pill .listening(handsFree: true); capture and  | listening
+            |                                   | poll untouched (§10.3 item 16)                 | (handsFree)
  listening  | .ended / .toggledOff              | stop poll; capture.stop(min 0.5)               | transcribing
             |                                   |   nil → pill.dismiss(); endSession()           | idle
  listening  | .cancelled(_) / .escapePressed    | capture.cancel(); pill.dismiss(); endSession() | idle
@@ -651,10 +656,10 @@ enum DictationPillState: Equatable, Sendable {
 enum DictationPillFault: Equatable, Sendable {
     case missingElevenLabsKey
     case needsAccessibility
-    case secureInput
+    case secureInput(holder: String?)
     case message(String)
     var text: String { get }                 // "Add an ElevenLabs key to dictate" / "Kleoth needs Accessibility access" /
-                                             // "The focused field blocks dictation" / message
+                                             // "<holder> has secure input on — dictation blocked" / message
     var action: DictationPillAction? { get } // .openSettings / .openAccessibilitySettings / nil / nil
 }
 
@@ -712,7 +717,7 @@ struct DictationTarget: Sendable, Equatable {
 enum TextInsertionError: Error, LocalizedError, Equatable {
     case emptyText
     case accessibilityNotTrusted   // text left on the clipboard
-    case secureInputActive         // text left on the clipboard
+    case secureInputActive(holder: String?)  // text left on the clipboard
     case eventCreationFailed       // text left on the clipboard
     var textLeftOnClipboard: Bool { get }   // self != .emptyText
 }
@@ -875,7 +880,8 @@ struct PasteboardSnapshot: Sendable {
 // `IsSecureEventInputEnabled()` (InsertionEnvironment) are Carbon symbols, not AppKit.
 enum InsertionEnvironment {
     static var isAccessibilityTrusted: Bool
-    static var isSecureInputActive: Bool                       // IsSecureEventInputEnabled()
+    static var isSecureInputActive: Bool                       // IsSecureEventInputEnabled() — session-wide
+    static var secureInputHolder: NSRunningApplication?        // who holds it; nil when off or not a running app
 }
 extension NSPasteboard.PasteboardType {
     static let transient      // "org.nspasteboard.TransientType"
@@ -964,11 +970,16 @@ Not touched: `app/bundle/Info.plist` (Accessibility has no usage-description key
 | any capturing except handsFree | abort | `[.cancelled(.external)]` | blocked |
 | handsFree | abort | `[.cancelled(.external)]` | idle (the keys are already up — no release to swallow; the next press must arm, not `.toggledOff`) |
 | non-capturing | abort | `[]` | blocked if chord down, else idle |
+| holding | latchKey | `[.latched]` | handsFree (the detector has already read the chord as up — no release follows) |
+| pressed | latchKey, now−since ≥ minHold | `[.began, .latched]` (missed timer) | handsFree |
+| every other state | latchKey | exactly what `chordUp` does there | (as `chordUp`) |
+| holding | externalLatch | `[.latched]` | handsFreeArming (fn+shift still down; their release settles silently in handsFree) |
+| every other state | externalLatch | `[]` | (same) |
 | anything else | — | `[]` | (same) |
 
 `deadline` = `since + minHold` in pressed, `until` in tapWindow, nil otherwise. Note `.toggledOn` is preceded by `.armed` in the same array so the controller's "armed starts the mic" rule holds for both modes.
 
-**What counts as "chord down" is decided by the monitor, not the machine:** the five real modifiers (`fn, shift, ⌘, ⌥, ⌃`) must equal exactly `[.function, .shift]` (caps lock ignored). fn+shift+⌘ / +⌥ / +⌃ therefore never reach the machine as `chordDown` — no capture starts, the host app gets its shortcut — and a modifier added mid-hold is a `chordUp`. This is a monitor-level rule, so it has no machine test; it is covered by the §7 row and §8.2 #7b.
+**What counts as "chord down" is decided by the monitor, not the machine:** the five real modifiers (`fn, shift, ⌘, ⌥, ⌃`) must equal exactly `[.function, .shift]` (caps lock ignored). fn+shift+⌘ / +⌥ / +⌃ therefore never reach the machine as `chordDown` — no capture starts, the host app gets its shortcut — and a modifier added mid-hold is a `chordUp`. This is a monitor-level rule, so it has no machine test; it is covered by the §7 row and §8.2 #7b. (Since 2026-09-24 the rule lives in `ChordEdgeDetector`, tested in KleothCore, and one modifier is special: exactly fn+shift+⌘ straight from fn+shift is `latchKey`, not `chordUp` — §10.3 item 16.)
 
 **Monitor sketch:**
 
@@ -1022,14 +1033,16 @@ final class DictationHotkeyMonitor: DictationHotkeyMonitoring {
             // fn+shift+⌘ / +⌥ / +⌃ are NOT the chord — they are someone's real shortcut — so they
             // never arm the mic. Adding a modifier mid-hold reads as chordUp — NOT the same as
             // `.otherKey`: from `holding` the machine commits (.ended, §8.2 #7b by design), from
-            // `pressed` it discards (.tooShort). Releasing that third modifier off fn+shift+⌘ is
+            // `pressed` it discards (.tooShort). (Since 2026-09-24 ⌘ is the latch: the same edge,
+            // reported as `.latchKey`, so a confirmed hold goes hands-free — §10.3 item 16.)
+            // Releasing that third modifier off fn+shift+⌘ is
             // SUPPRESSED (`ChordEdgeDetector`, KleothCore, tested): fn+shift never moved, so it is
             // not a chordDown — otherwise it would arm, or from tapWindow start hands-free. (A
             // superset test would start a capture on fn+shift+⌘ and rely on the following keyDown
             // to cancel it — and a bare 0.5 s hold of fn+shift+⌘ would have become a dictation.)
             let relevant = event.modifierFlags.intersection(Self.relevantModifiers)   // [.function, .shift, .command, .option, .control]
             guard let signal = edges.ingest(relevant) else { return }   // debounce + superset-release suppression
-            log.debug("chord \(signal == .chordDown ? "down" : "up") flags=\(relevant.rawValue) t=\(now)")
+            log.debug("chord \(signal == .chordDown ? "down" : (signal == .latchKey ? "latch" : "up")) flags=\(relevant.rawValue) t=\(now)")
             emit(machine.handle(signal, at: now))
         case .keyDown:
             // Only the FACT of a keypress while the chord is held (fn+shift+arrow is
@@ -1566,10 +1579,10 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 | No ElevenLabs key | `armed` preflight | pill `.failed(.missingElevenLabsKey)` + "Open Settings"; nothing recorded | — |
 | Mic denied | `armed` preflight / `DictationCapture.start` | pill `.failed(.message("Kleoth needs microphone access…"))` | — |
 | No input device / engine failure | `DictationCapture.start` | pill `.failed(.message(…))` | — |
-| Secure input active at start | `armed` preflight | pill `.failed(.secureInput)` "The focused field blocks dictation"; nothing recorded | — |
+| Secure input active at start | `armed` preflight | pill `.failed(.secureInput(holder:))` "Dia has secure input on — dictation blocked" (no holder: "Secure input is on — dictation blocked"); nothing recorded | — |
 | Tap < 0.3 s, no double-tap | machine `.cancelled(.tooShort)` | nothing (no pill, no network) | — |
 | Another key while chord held (fn+shift+arrow) | monitor `.otherKey` | nothing; host app receives the shortcut | — |
-| fn+shift+⌘ / +⌥ / +⌃ pressed (someone's real shortcut) | monitor exact-match chord test | never arms — no capture, no pill; the host app receives the shortcut. Adding the extra modifier mid-hold reads as chord-up (→ discarded tap or a normal `.ended`) | — |
+| fn+shift+⌘ / +⌥ / +⌃ pressed (someone's real shortcut) | monitor exact-match chord test | never arms — no capture, no pill; the host app receives the shortcut. Adding the extra modifier mid-hold reads as chord-up (→ discarded tap or a normal `.ended`) — except ⌘ from a confirmed hold, which switches to hands-free (§10.3 item 16) | — |
 | Audio preparation failed (`mixToMono` decode/format/allocation throw) | `run()` prepare `catch` | pill `.failed(.message("Couldn't prepare the audio (…)"))`, sticky; nothing uploaded | — |
 | Esc during listening / pipeline | monitor `.escapePressed` | pill hides; nothing pasted; temp deleted | — |
 | Clip < 0.5 s | `capture.stop` → nil | pill hides silently | — |
@@ -1583,7 +1596,7 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 | `installTap` raises (format mismatch after an idle device switch) | `DictationCapture.start` via `catchingObjCExceptions` | `.failed(.message("Couldn't start the microphone (…format mismatch…)"))`, no spend, no log row — and no crash | — |
 | Polish translated the text (model's `language` ≠ Scribe's, both resolvable by `Summarizer.languageName`) | `DictationPolisher` translation guard | raw text pasted; `.warning("Polish changed the language — pasted the raw transcript.")` | ✓ `used_raw_fallback`, `fallback_reason` |
 | Accessibility revoked between start and paste | `TextInserter` | text left on clipboard (unmarked); `.warning("Kleoth needs Accessibility access to paste. Text copied — press ⌘V.")` | ✓ `insert_method: clipboard` |
-| Secure input at paste time (focus moved to a password field) | `TextInserter` | text left on clipboard; `.warning("Secure input is on … Text copied — press ⌘V.")` | ✓ `clipboard` |
+| Secure input at paste time (focus moved to a password field, or another app took the lock) | `TextInserter` | text left on clipboard; `.warning("<holder> has secure input on. Text copied — press ⌘V.")` | ✓ `clipboard` |
 | `CGEvent` creation failed | `TextInserter` | text left on clipboard; warning | ✓ `clipboard` |
 | User copied during the 0.5 s window | restore task `changeCount` guard | their copy wins; snapshot dropped silently | ✓ |
 | Previous clipboard > 24 MB | `PasteboardSnapshot` | not restored; dictated text stays on clipboard | ✓ |
@@ -1635,7 +1648,7 @@ Hotkey / permission:
 5. Hold ~2 s in TextEdit → pill after ~0.3 s → release → listening → transcribing → polishing → done → text in TextEdit; prior clipboard content restored (`pbpaste`).
 6. Double-tap → hands-free pill stays; single tap ends; a third tap starts a fresh session.
 7. fn+shift+← with the caret mid-line → line selected, no dictation, no pill.
-7b. Hold fn+shift+⌘ for 1 s, release → nothing (no pill, no temp file, no log line saying "chord down"). Hold fn+shift ~1 s then add ⌘ → the dictation ends normally at the ⌘ press (transcribes what was said).
+7b. Hold fn+shift+⌘ for 1 s, release → nothing (no pill, no temp file, no log line saying "chord down"). Hold fn+shift ~1 s then add ⌥ → the dictation ends normally at the ⌥ press (transcribes what was said). Adding ⌘ instead switches to hands-free (§10.3 item 16).
 7c. Press fn+shift+⌘ (⌘ first, then fn+shift), release ⌘ FIRST while keeping fn+shift down, then release fn+shift → nothing: no pill, no capture, no "chord down" line (the superset-release edge is suppressed). Repeat with fn+shift first, then ⌘, then ⌘ released first → the short tap may log `.cancelled(.tooShort)` but releasing ⌘ must NOT log "chord down" / start a hands-free session.
 8b. Double-tap into hands-free → Esc → a single fn+shift hold must arm immediately (pill on the FIRST press, not the second). Repeat with the pill ✕ instead of Esc. Then double-tap twice while a dictation is transcribing → the first press after the pipeline settles arms (the machine was aborted at the refusal).
 8. Esc mid-listening (hands-free) and mid-transcribing → pill hides, nothing pasted, temp dir empty.
@@ -1790,3 +1803,10 @@ Everything else raised by the memos (glass vs material, statusBar level, Esc sem
 15. **Terminal mode removed — terminals are `compose` (2026-09-07).** The user reported that long dictations were "not polished any more": a 255-word prompt came back as one unbroken paragraph with the spoken self-correction ("users, emails, applications — not in this sequence, but users, applications, emails") left in place. The day file showed the polish HAD run (`google/gemini-3.5-flash-lite`, 2.3 s, no fallback) and had only removed two "Yeah."s and fixed two mishearings — exactly what the `terminal` mode asked for (light touch, one line, keep the speaker's words). Every affected row was Ghostty: the user's main dictation target is Claude Code running inside Ghostty, i.e. an AI prompt box that happens to live in a terminal, which the bundle-id classifier cannot tell from a shell. The user's call: "I'm not going to dictate the shell prompt anyway… I don't need it." So the mode is gone rather than special-cased: `AppStyle` is `compose`/`chat` only, the six terminal bundle ids moved into `knownComposeBundleIds`, the MODES section and the two terminal few-shots left the system prompt (the Russian one stays as a compose example — short input, one paragraph, GitHub cased), and the plain-text / one-line / never-a-command rules went with it. Checklist item 14 ("Terminal / Slack / Mail → three visibly different formats") is now two formats: Terminal and Mail restructure alike, Slack stays light. Not kept: a per-app override in Settings and window-title sniffing for Claude Code — both were offered and declined as unnecessary.
 
 
+16. **Going hands-free mid-hold (2026-09-24).** The user: "when I start holding the dictation key… I am not sure whether it will be long dictation or a short one. Once I start dictating, I cannot do anything to switch from this ongoing dictation into the hands-free dictation." Two triggers, both the user's pick: **tap ⌘ while fn+shift is held**, or **click the push-to-talk capsule**. Either one keeps the SAME capture going (no gap, nothing re-recorded) as a hands-free session: the keys can be let go, and it ends like any hands-free dictation (tap fn+shift or click the capsule to finish, Esc or ✕ to cancel). Only a confirmed hold switches — ⌘ inside `minHold` is still somebody's fn+shift+⌘ shortcut (a short tap), and ⌥/⌃ added mid-hold still end the dictation (§8.2 #7b now names ⌥). Space, the usual key in other dictation apps, was rejected: the monitor is listen-only (why: the NSEvent paragraph above), so a character key would also be typed into the target app; a modifier types nothing.
+    - **Monitor/detector.** `ChordEdgeDetector(chord:latch:)`, `latch` = `DictationHotkeyMonitor.latchModifier` (`.command`): when the held chord becomes exactly fn+shift+⌘ it returns `.latchKey` instead of `.chordUp`. It is the same edge — `chordIsDown` goes false, so the ⌘ release, a second ⌘ tap and the eventual fn/shift release are all silent.
+    - **Machine.** `latchKey`: `holding` → `handsFree` + `[.latched]`; `pressed` past `minHold` (missed timer) → `[.began, .latched]`; anywhere else it is `chordUp`. `externalLatch` (the click; keys still down): `holding` → `handsFreeArming` + `[.latched]`, whose `chordUp` settles in `handsFree` silently; a no-op elsewhere, so a release that reached the machine first wins over the click. Both land in states a double-tap already reaches, so `.toggledOff`, `otherKey` and `abort` apply unchanged (an abort after a click latch is `blocked` until the keys come up; after a ⌘ latch it is `idle`).
+    - **Controller.** `.latched` → `switchToHandsFree()`: `phase = .listening(handsFree: true)`, the pill follows; the capture and the level poll are untouched. Already hands-free it does nothing; in any other phase (the capture failed at chord-down) it aborts the machine instead, which would otherwise sit hands-free over nothing and eat the next press. The pill's new `DictationPillAction.switchToHandsFree` calls `monitor.latch()` (→ `externalLatch`) and lets the machine answer. A click on the hands-free capsule within `max(doubleTapWindow, NSEvent.doubleClickInterval)` of a latch is ignored: a double-click on the push-to-talk capsule would otherwise latch and stop at once.
+    - **Pill.** Both listening kinds carry the leading 10 pt slot, so the switch never reshapes the bar: push-to-talk shows a faint lock (35% ink) that lights up under the pointer (pointing-hand cursor; tooltip "Listening — click or tap ⌘ to go hands-free"), hands-free keeps the accent dot → stop glyph. The lock stays upright on side edges. Filmed in `pillsandbox` on the bottom and right edges, with a real synthesized click (`click:center`).
+    - **Known edge.** After a click latch, Esc does nothing until fn+shift are let go: while the chord is down every key is `otherKey`, which hands-free ignores (the user may type). After a ⌘ latch the detector has already read the chord as up, so Esc works at once.
+    - **Tests.** 9 machine tests (`latchKey*`, `externalLatch*`, `keysWhileStillHeldAfterExternalLatchAreIgnored`, `abortAfter*Latch*`) and 3 detector tests (⌘ vs ⌥, ⌘ with another modifier, no latch from a superset). **Manual checklist** (the real hotkey cannot be driven from the agent shell): (a) hold fn+shift, speak, tap ⌘, let go, keep speaking, tap fn+shift → one paste with all the words; (b) the same with a click on the capsule instead of ⌘, then a click to finish; (c) ⌘ latch, then Esc with the keys still down → cancelled, nothing pasted, the next press arms; (d) hold, add ⌥ → ends normally; (e) quick fn+shift+⌘ shortcut (all three within 0.2 s) → no dictation (the armed hop sinks back).

@@ -12,7 +12,8 @@
 #      notarized and stapled — Gatekeeper-clean on any Mac.
 #   2. Default — the local "Kleoth Self-Signed" identity (falling back to
 #      ad-hoc). Installs fine on THIS Mac; on other Macs Gatekeeper blocks the
-#      first launch until right-click → Open (no Developer ID to verify).
+#      first launch until the user allows it (no Developer ID to verify):
+#      Privacy & Security → Open Anyway on macOS 15+, right-click → Open on 14.
 #
 # PKG was considered and rejected: per the distribution research, a DMG is the
 # normal vehicle for a menu-bar app; PKG only earns its keep for enterprise/MDM.
@@ -50,8 +51,8 @@ cp -R "$APP" "$STAGE/Kleoth.app"
 ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/Read Me.txt" <<'EOF'
-Kleoth — local-first meeting recorder
-=====================================
+Kleoth — local-first voice, meetings and screen capture
+=======================================================
 
 Install: drag Kleoth.app onto the Applications folder, then launch it from
 Applications. Kleoth lives in the menu bar (the lyre icon).
@@ -59,19 +60,21 @@ Applications. Kleoth lives in the menu bar (the lyre icon).
 Requirements: macOS 14.4 or later, Apple Silicon recommended.
 
 First launch:
-• If macOS says the app is from an unidentified developer, right-click
-  Kleoth.app and choose "Open" (needed once; this build is not notarized).
+• This build is not notarized, so macOS blocks the first launch. Allow it
+  once. macOS 15 or later: click Done, then System Settings → Privacy &
+  Security → Open Anyway. macOS 14: right-click Kleoth.app → Open.
 • Kleoth will ask for Microphone and System Audio Recording permission —
   both are needed to capture you AND the other meeting participants.
 • If a Keychain dialog appears, click "Always Allow" (asked at most once).
 • The on-device transcription model (~600 MB) downloads on first use, then
   everything transcribes offline.
 
-Your data: every meeting is written as plain files (audio, transcript.md,
-summary.md, JSON) to ~/Kleoth — yours to keep, grep, or sync.
+Your data: meetings, dictations and screen recordings are plain files
+(audio, video, Markdown, JSON) in ~/Kleoth — yours to keep, grep, or sync.
 
-Optional: add an ElevenLabs key (cloud transcription) and/or an OpenRouter
-key (summaries) in Settings.
+Optional: an ElevenLabs key (dictation, cloud transcription) in Settings →
+Accounts. Summaries and dictation clean-up use the AI you already have —
+Claude Code, Codex, Ollama / LM Studio, OpenRouter or Apple on-device.
 EOF
 
 # ----------------------------------------------------------------- 4. build DMG
@@ -126,7 +129,7 @@ hdiutil verify "$OUT_DMG" -quiet && echo "    image checksum OK"
 if spctl --assess --type open --context context:primary-signature "$OUT_DMG" 2>/dev/null; then
     echo "    Gatekeeper: ACCEPTED (notarized)"
 else
-    echo "    Gatekeeper: not notarized — other Macs need right-click → Open (expected for the self-signed tier)"
+    echo "    Gatekeeper: not notarized — other Macs must allow the first launch (expected for the self-signed tier)"
 fi
 
 SIZE="$(du -h "$OUT_DMG" | cut -f1 | tr -d ' ')"

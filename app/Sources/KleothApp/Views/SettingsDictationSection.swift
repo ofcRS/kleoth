@@ -57,7 +57,7 @@ struct SettingsDictationSection: View {
                 Text(DictationDefaults.hotkeyDescription)
                     .monospaced()
             }
-            .help("Hold fn+shift and speak. Double-tap for hands-free; tap once to stop. Needs Apple's built-in keyboard — fn is a hardware signal.")
+            .help("Hold fn+shift and speak. Double-tap for hands-free — or, while holding, tap ⌘ or click the pill to keep going hands-free; tap once to stop. Needs Apple's built-in keyboard — fn is a hardware signal.")
 
             accessibilityRow
 
@@ -96,7 +96,7 @@ struct SettingsDictationSection: View {
         } header: {
             Text("Dictation")
         } footer: {
-            captionFooter("Hold fn+shift anywhere and speak; release and Kleoth pastes polished text into the app you're in. Double-tap to keep it listening hands-free. Audio is uploaded to ElevenLabs to transcribe and the text goes to the AI provider chosen in Settings → Accounts to clean up — the audio is deleted right after, and only the text is kept in ~/Kleoth/dictations. \(contextFooter)")
+            captionFooter("Hold fn+shift anywhere and speak; release and Kleoth pastes polished text into the app you're in. Double-tap to keep it listening hands-free, or tap ⌘ while holding to switch a dictation that ran long. Audio is uploaded to ElevenLabs to transcribe and the text goes to the AI provider chosen in Settings → Accounts to clean up — the audio is deleted right after, and only the text is kept in ~/Kleoth/dictations. \(contextFooter)")
         }
     }
 

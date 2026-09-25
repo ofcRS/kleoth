@@ -1,7 +1,8 @@
 # Kleoth
 
+<!-- positioning:start — generated from marketing/positioning.json by `bun marketing/sync.ts apply`; edit the JSON, not this block -->
 <p align="center">
-  <img src="docs/assets/hero.png" alt="Kleoth — local-first, bot-free meeting recorder for macOS" width="830">
+  <img src="docs/assets/hero.png" alt="Kleoth — Local-first voice, meetings and screen capture for macOS" width="830">
 </p>
 
 [![Release](https://img.shields.io/github/v/release/ofcRS/kleoth)](https://github.com/ofcRS/kleoth/releases/latest)
@@ -10,57 +11,115 @@
 [![Swift 6](https://img.shields.io/badge/swift-6-orange)](https://www.swift.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**A local-first, bot-free meeting recorder for macOS.** Kleoth captures your microphone and the
-other participants' system audio directly on your Mac, transcribes it **on-device** with Whisper,
-and writes plain Markdown/JSON files you own. No bot ever joins your call. Nothing leaves your
-machine unless you explicitly ask it to.
+**Local-first voice, meetings and screen capture for macOS.**
+
+Kleoth is an open-source Mac app for **system-wide dictation**, **bot-free meeting recording** and **screen recording with transcripts**. What it records and transcribes are plain files in `~/Kleoth` that you own; transcription can stay on your Mac, and the AI steps run on whatever you already use.
+
+- **[Dictate anywhere](docs/dictation.md).** Hold fn+shift, speak, let go: cleaned-up text lands in whatever app has focus — an editor, a terminal, an AI chat, mail. Wispr Flow-style voice typing with a personal dictionary and a searchable history. Speech-to-text runs on ElevenLabs Scribe with your own key.
+- **[Record meetings without a bot](docs/meetings.md).** Your mic and the call's audio (Zoom, Meet, Teams, anything that plays sound), recorded on your Mac with nobody joining the call. Transcribed on device with Whisper, summarized in the meeting's own language, saved as Markdown and JSON. A local, open-source alternative to Granola, and a bot-free one to Otter, Fireflies and tl;dv.
+- **[Record your screen](docs/screen-recording.md) (beta).** A display or a region, with system audio and your mic, as a small MP4. Transcribed on device afterwards; the viewer highlights each word as it is spoken. Loom-style, but nothing is uploaded. No trimming, sharing or export yet.
+
+**Bring your own AI — or none.** Summaries and dictation clean-up run on whatever you already use: Claude Code, Codex, a local Ollama or LM Studio server, OpenRouter, or Apple's on-device model. Kleoth doesn't sell you another AI subscription. [Which providers, and what each needs →](docs/ai-providers.md)
+
+No account. No database. Local-first by design.
+<!-- positioning:end -->
 
 > *kleos* (Greek κλέος) — "that which is heard." From the Proto-Indo-European root \*ḱlew‑, "to hear."
 
-Kleoth is an open-source alternative to hosted meeting recorders (tl;dv, Fireflies, Otter). Instead
-of inviting a bot into your call and uploading everything to a SaaS, it records both sides locally
-and keeps the transcript and summary as files in `~/Kleoth`.
+<p align="center">
+  <img src="docs/assets/demo-dictation.gif" alt="Dictation: hold fn+shift and talk; the pill listens, transcribes, cleans up, and the text is pasted into the editor" width="49%">
+  <img src="docs/assets/demo-screen.gif" alt="Screen recording: click Record in the pill, the pill becomes a toolbar with a timer and audio meters, click Stop, the recording is saved" width="49%">
+</p>
 
-- **Free & private by default** — transcription runs on the Apple Neural Engine via
-  [WhisperKit](https://github.com/argmaxinc/WhisperKit). No account, no API key, no upload.
-- **Multilingual, automatic** — Whisper auto-detects the spoken language (English, Russian, and
-  dozens more). You can also pin a language in Settings.
-- **You vs. Them, for free** — your mic and the system audio are recorded as separate channels, so
-  speaker separation ("You" / "Them") is exact, with no diarization guesswork.
-- **Optional cloud upgrade, per meeting** — one click sends a meeting to
-  [ElevenLabs Scribe](https://elevenlabs.io) for state-of-the-art transcription, using *your* key.
-- **Optional AI summaries** — TL;DR, overview, action items, and per-speaker highlights via
-  [OpenRouter](https://openrouter.ai) (any model), using *your* key. The summary is written in the
-  meeting's own language.
-- **Your data, your files** — every meeting is a folder of audio + `transcript.md` + `summary.md` +
-  JSON in `~/Kleoth`. Grep it, sync it, delete it. There is no database and no lock-in.
-- **Dictation anywhere (opt-in)** — hold **fn+shift**, speak, release: Kleoth transcribes the
-  utterance (ElevenLabs Scribe, your key), cleans it up with one short LLM pass (fillers gone, never
-  translated), and pastes it into whatever app has focus. It fits the text already there: speak a
-  correction or an addition over a selection and the two come back as one piece in its place (one
-  ⌘Z undoes it); at the cursor, your words continue the sentence around them. Double-tap for
-  hands-free. History in `~/Kleoth/dictations/`; a personal dictionary biases recognition toward
-  your names and jargon. A dictation that pastes keeps no audio. One that can't be transcribed
-  (Scribe timed out twice, no network) is never lost: its audio waits in History, and the pill's
-  **Retry** — or History's "Try again", in the cloud or on this Mac — transcribes it later.
-- **Screen recording, Loom-style** — hover the pill (or pick "Record screen…" in the popover),
-  drag a region or take the whole display, and Kleoth records it with system audio **and** your
-  microphone as one small H.264 MP4 (about 22 MB per minute) in `~/Kleoth/screen-recordings/`. A
-  live toolbar shows the elapsed time and both audio levels; only its Stop button stops. Each
-  recording is transcribed on device afterwards and opens in a viewer with the transcript beside the
-  video: the spoken word is highlighted, clicking a word seeks, double-clicking edits it. The viewer
-  is a proof of concept — no trimming, sharing or export yet.
+## Dictation: Wispr Flow-style voice typing in any app
+
+Hold **fn+shift**, speak, let go: Kleoth transcribes what you said, cleans it up with one short
+language-model pass (fillers and false starts gone, never translated) and pastes it into whatever
+app has focus. If you know Wispr Flow or Superwhisper, it is the same hold-to-talk idea. Double-tap
+for hands-free, or tap ⌘ (or click the pill) when a hold runs long. It fits the text already there:
+speak a correction over a selection and the two come back as one piece in its place (one ⌘Z undoes
+it); at the cursor, your words continue the sentence. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
+would have typed — paragraphs, a list where you listed things; a quick chat message is pasted as
+heard. A personal dictionary biases recognition toward your names and jargon, and every dictation
+lands in a searchable history.
+
+Speech-to-text runs on [ElevenLabs Scribe](https://elevenlabs.io) with your own key; the clean-up
+runs on your AI provider. [More about dictation →](docs/dictation.md)
+
+## Meetings: a local alternative to Granola, a bot-free one to Otter, Fireflies and tl;dv
+
+Kleoth records your microphone and the call's audio directly on your Mac — Zoom, Google Meet,
+Teams, a browser tab, anything that plays sound. No bot joins the call, and the audio stays on
+your Mac unless you choose cloud transcription.
+
+- **Transcribed on device** by Whisper ([WhisperKit](https://github.com/argmaxinc/WhisperKit) on the
+  Apple Neural Engine). No account, no API key. The language is detected automatically — English,
+  Russian and dozens more — or pinned in Settings.
+- **You vs. Them, exactly** — your mic and the system audio are separate channels, so who said what
+  needs no diarization guesswork.
+- **Cloud transcription when it matters** — one click sends a meeting to ElevenLabs Scribe, with
+  your key; the on-device version is kept alongside.
+- **Summaries in the meeting's language** — TL;DR, overview, action items and per-speaker
+  highlights, written after each transcription by your AI provider (on Automatic, the first one
+  Kleoth finds — see [Bring your own AI](#bring-your-own-ai)).
+- **Files, not a database** — every meeting is a folder of audio, `transcript.md`, `summary.md` and
+  JSON in `~/Kleoth`. Grep it, sync it, delete it.
+
+<p align="center">
+  <img src="docs/assets/demo-meeting.gif" alt="The History window: a meeting's TL;DR and summary, its action items with owners and due dates, per-speaker highlights, then the next meeting" width="820">
+</p>
+
+[More about meetings →](docs/meetings.md)
+
+## Screen recording: Loom-style, local (beta)
+
+Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on), drag
+a region or take the whole display, and Kleoth records it with system audio **and** your microphone as one small H.264 MP4 (about 22 MB
+per minute) in `~/Kleoth/screen-recordings/`. Each recording is transcribed on device afterwards
+and opens in a viewer with the transcript beside the video: the spoken word is highlighted, clicking
+a word seeks, double-clicking corrects it. It is a beta — no trimming, sharing or export yet.
+[More about screen recording →](docs/screen-recording.md)
+
+<p align="center">
+  <img src="docs/assets/demo-viewer.gif" alt="The recordings viewer: a narrated slide recording plays on the left while the transcript on the right highlights each word as it is spoken" width="820">
+</p>
+
+## Bring your own AI
+
+Kleoth doesn't sell you another AI subscription. Summaries and dictation clean-up need a language
+model, and Kleoth uses whatever you already have, in this order, unless you pick one in
+Settings → Accounts:
+
+| Provider | What it needs | Summaries | Dictation |
+|---|---|---|---|
+| Local server (Ollama, LM Studio, any OpenAI-compatible URL) | the server running, default `http://localhost:11434/v1` | ✓ | ✓ |
+| Claude Code | the `claude` CLI installed and signed in | ✓ | ✓ (slow — several seconds per cleanup) |
+| Codex | the `codex` CLI installed and signed in | ✓ | — |
+| OpenRouter | an API key | ✓ | ✓ |
+| Apple on-device | macOS 26 with Apple Intelligence on | — | ✓ |
+
+Speech-to-text is separate from all of these: Whisper runs on device for meetings and screen
+recordings, and [ElevenLabs Scribe](https://elevenlabs.io), with your key, transcribes dictation
+and anything you send to the cloud. More in [docs/ai-providers.md](docs/ai-providers.md),
+including the one Ollama setting long meetings need. Only OpenRouter and Claude Code also get the
+text you're dictating into; a local server and Apple's model clean up your words alone.
+
+Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
+with their own login; the local server and Apple's model never leave the machine.
+
+**If Kleoth is useful to you, starring the repo helps other Mac users find it.** ⭐
 
 ## Requirements
 
 - **macOS 14.4 or later.** Apple Silicon recommended (the on-device model runs on the Neural Engine).
 - **~600 MB one-time download** for the Whisper model on first transcription, then fully offline.
-- API keys are **optional** — only needed for the cloud transcription and AI-summary features.
+- API keys are **optional**. An ElevenLabs key is needed for dictation and cloud transcription;
+  summaries can run on a provider that needs no key at all (see [Bring your own AI](#bring-your-own-ai)).
 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/assets/screenshot-detail.png" alt="The History window: a day-grouped meeting list beside a full transcript and AI summary" width="900"><br>
+  <img src="docs/assets/screenshot-detail.png" alt="The History window: a day-grouped meeting list beside a meeting's TL;DR and AI summary" width="900"><br>
   <em>The History window — searchable, day-grouped meetings with a TL;DR, summary, action items, and per-speaker highlights.</em>
 </p>
 
@@ -69,33 +128,27 @@ and keeps the transcript and summary as files in `~/Kleoth`.
   <em>The menu-bar popover — start a recording and reach recent meetings.</em>
 </p>
 
-<!-- TODO: screenshot — first-run onboarding (Settings → Show Welcome Window) -->
-
 ## Install
 
-**[⬇ Download Kleoth-0.4.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.4.0/Kleoth-0.4.0.dmg)**
-(13.7 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.4.0/Kleoth-0.4.0.dmg.sha256))
+<!-- release:start — generated from app/bundle/Info.plist + app/dist by `bun marketing/sync.ts apply` -->
+**[⬇ Download Kleoth-0.5.0.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.5.0/Kleoth-0.5.0.dmg)**
+(7.8 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.5.0/Kleoth-0.5.0.dmg.sha256))
 — or browse all [Releases](../../releases).
+<!-- release:end -->
 
 Open the DMG and drag **Kleoth.app** onto the **Applications** folder. Kleoth lives in the menu bar
 (the lyre icon).
 
-### First launch (current builds are self-signed)
+### First launch
 
-Until Kleoth ships notarized builds, macOS Gatekeeper will warn that it is from an unidentified
-developer. This is expected — the app is signed, just not yet with an Apple-issued Developer ID.
+Kleoth isn't notarized yet, so macOS blocks the first launch with a warning. Allow it once:
 
-1. In **Applications**, **right-click Kleoth.app → Open** (don't double-click the first time).
-2. In the dialog, click **Open** again. macOS remembers the choice; subsequent launches are normal.
+- **macOS 15 or later:** open Kleoth and click **Done** on the warning. Then go to **System Settings →
+  Privacy & Security**, click **Open Anyway** next to Kleoth, and confirm.
+- **macOS 14:** in **Applications**, right-click **Kleoth.app → Open**, then click **Open** in the
+  dialog.
 
-This step exists only because notarization requires an Apple Developer Program membership (planned —
-see [Roadmap](#roadmap)). The build is otherwise complete and signed.
-
-<!-- Once notarized + a Homebrew tap exists:
-```sh
-brew install --cask kleoth
-```
--->
+macOS remembers the choice.
 
 ## Permissions Kleoth requests, and why
 
@@ -108,72 +161,69 @@ brew install --cask kleoth
 | Accessibility *(optional)* | Dictation only: watch for the fn+shift chord system-wide, send the ⌘V that pastes the dictated text, and read the selection and the text around the cursor in the field you dictate into ([what is read](#data--privacy)). | When you turn dictation on in Settings. |
 | Screen Recording *(optional)* | Screen recording only: capture the display or region you picked. Kleoth's own pill and picker are never in the frame. | The first time you start a screen recording. |
 
-Everything except the microphone and system-audio grants is optional. Kleoth never uploads audio
-unless you trigger the cloud transcription action yourself.
+Everything except the microphone and system-audio grants is optional. The only place Kleoth sends
+audio is ElevenLabs Scribe, with your key: each dictation, and a meeting or recording you choose to
+transcribe in the cloud.
 
 ## Quick start
 
-1. Open Kleoth from the menu bar and click **Start Recording** (or use the global hotkey).
-2. Have your meeting. The menu-bar icon shows you're recording.
-3. Click **Stop**. The recording moves into your meeting list and transcribes in the background
-   on-device — you can start another recording immediately.
-4. When it finishes, open the meeting to read the transcript and (if you've added an OpenRouter key)
-   the summary. The same content is on disk at `~/Kleoth/meeting-<timestamp>/` as `transcript.md` and
-   `summary.md`.
+The first launch opens a short welcome window: your name, recording consent, microphone and
+system-audio access, and the speech-model download. After that, Kleoth lives in the menu bar (the
+lyre).
 
-That's it — no key required for steps 1–4.
+- **Record a meeting.** Click the lyre → **Start Recording**, and **Stop Recording** when the call
+  ends. Open the meeting and click **Transcribe** (free, on device), or turn on automatic
+  transcription in Settings → Meetings. If an AI provider is available, the summary follows.
+  Everything is also on disk in `~/Kleoth/meeting-<timestamp>/`.
+- **Dictate.** Turn on dictation in Settings → Dictation, allow Accessibility, and add an
+  ElevenLabs key in Settings → Accounts. Then hold **fn+shift** in any app, speak, and let go.
+- **Record your screen.** Click the lyre → **Record screen…**, drag a region or press Return for
+  the whole display, and click **Stop** in the pill's toolbar. The recording is transcribed on
+  device and opens from History → Recordings.
 
-## Configuration
+Meetings and screen recordings need no API key.
 
-Open **Settings** from the menu bar. Everything here is optional:
+## Settings
 
-- **ElevenLabs API key** — enables the per-meeting **"Fully transcribe"** (Cloud) action. The key
-  needs the `speech_to_text` permission.
-- **OpenRouter API key** — enables AI summaries and the dictation clean-up pass. Note: if your
-  OpenRouter account blocks providers that may train on your data, choose a no-train model (e.g.
-  `z-ai/*`, `deepseek/*`, `google/*`, `meta-llama/*`); accounts that enforce Zero Data Retention
-  will also find `google/*` blocked (404 `zdr-violation-by-account`) — the default `z-ai/glm-5.3-flash`
-  works under both guardrails; relax them at openrouter.ai/settings/privacy to use Gemini.
-- **Summary model** — any OpenRouter model slug. Default: `z-ai/glm-5.3-flash`.
-- **Transcription language** — *Auto* (detect per meeting) or pin a specific language.
-- **Dictation** — enable hold-to-talk (fn+shift), pick the polish model (default
-  `google/gemini-3.5-flash-lite`, the fastest correct one measured — ~0.9 s; if your account blocks
-  Google the polish falls through to `z-ai/glm-5.3-flash`), edit your personal dictionary (one term per line; the first 100 are
-  sent with each dictation), reset the pill position. Needs an ElevenLabs key; without an
-  OpenRouter key the raw transcript is pasted as-is. **Use the text you're dictating into** (on by
-  default) lets the cleanup see your selection and the text around the cursor — see
-  [Data & privacy](#data--privacy) for what is read and sent.
+Open **Settings** from the menu bar. Everything in it is optional:
 
-Keys are stored in the macOS Keychain and are **never** printed or committed.
+- **Meetings** — the on-device model, the transcription language (auto-detected, or pinned),
+  automatic transcription after recording, the summary model, naming meetings after your
+  calendar event, and [meeting covers](#meeting-covers) (off by default).
+- **Dictation** — hold-to-talk on or off, the clean-up model, whether short dictations and chat
+  messages are cleaned up too, **Use the text you're dictating into** (on by default; see
+  [Data & privacy](#data--privacy) for what is read and sent), your personal dictionary, and
+  resetting the pill's position. Without an AI provider, the raw transcript is pasted as-is.
+- **Screen Recording** — the Screen Recording permission, and ways to start a recording or open
+  your recordings.
+- **Microphone** — one input for meetings, dictation and screen recordings; Automatic follows the
+  system input.
+- **Accounts** — which AI provider runs summaries and clean-up (Automatic, or one you pick), a local
+  server's URL, your ElevenLabs and OpenRouter keys, and usage. The ElevenLabs key needs the
+  `speech_to_text` permission.
+- **General** — the output folder (`~/Kleoth`), the start/stop recording hotkey, and the welcome
+  window.
 
-## Bring your own AI
+Keys are stored in the macOS Keychain.
 
-Summaries and dictation cleanup need a language model. Kleoth uses whatever you already have,
-in this order, unless you pick one in Settings → Accounts:
+### Meeting covers
 
-| Provider | What it needs | Summaries | Dictation |
-|---|---|---|---|
-| Local server (Ollama, LM Studio, any OpenAI-compatible URL) | the server running, default `http://localhost:11434/v1` | ✓ | ✓ |
-| Claude Code | the `claude` CLI installed and signed in | ✓ | ✓ (slow — several seconds per cleanup) |
-| Codex | the `codex` CLI installed and signed in | ✓ | — |
-| OpenRouter | an API key | ✓ | ✓ |
-| Apple on-device | macOS 26 with Apple Intelligence on | — | ✓ |
+Off by default. Turn covers on in Settings → Meetings → Covers and each summarized meeting gets a
+small square picture on its History row and in its header: cute animals or everyday objects acting
+out what the meeting was about, as Animation, Illustration, Sketch or Clay. Your AI provider first
+writes a one-sentence scene from the meeting's title, TL;DR and the start of its overview — no
+names, quotes or transcript — and only that scene goes to the image engine. A meeting that looks
+personal (health, performance, pay, hiring, legal matters, family) gets no picture.
 
-Codex only summarizes (no dictation cleanup path); Apple's on-device model only cleans up
-dictation and needs macOS 26 with Apple Intelligence turned on in System Settings. Only OpenRouter
-and Claude Code also get the text you're dictating into; a local server and Apple's model clean up
-your words alone, so a selection that would be merged stays and the dictation is added after it.
+| Engine | What it needs | What leaves your Mac |
+|---|---|---|
+| Local server | Ollama with an image model pulled (default `x/flux2-klein`) | nothing |
+| Codex | the `codex` CLI installed and signed in | the scene, to OpenAI over your ChatGPT login — about a minute per cover, within your plan's limits |
+| OpenRouter | an API key | the scene — each cover is billed to your OpenRouter account |
 
-**Long meetings on Ollama** need a larger context than Ollama's default, which can be as small as
-4096 tokens: start the server with `OLLAMA_CONTEXT_LENGTH` set to 32768 or more
-(`OLLAMA_CONTEXT_LENGTH=32768 ollama serve`; for the Ollama app, run
-`launchctl setenv OLLAMA_CONTEXT_LENGTH 32768` and restart it). Ollama's OpenAI-compatible
-endpoint (the `/v1` URL Kleoth uses) has no way to set the context size per request, and an
-over-long prompt is reportedly cut from the start without an error — the summary may then cover
-only the end of the meeting.
-
-Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
-with their own login; the local server and Apple's model never leave the machine.
+The summary itself goes only to the provider that already summarized the transcript. Click a
+cover for **New Cover** or **Remove Cover**; select older meetings and choose **Draw Covers** to
+give them one.
 
 ## CLI
 
@@ -182,42 +232,43 @@ summary → Markdown), independent of the app:
 
 ```sh
 swift run kleoth transcribe meeting.m4a   # ElevenLabs Scribe; diarized; saves the meeting
-swift run kleoth summarize  <dir|file>    # transcribe (if needed) + AI summary  (--model <slug>)
+swift run kleoth summarize  <dir|file>    # transcribe (if needed) + AI summary  (--provider, --model)
 swift run kleoth rename     <dir>         # assign real names to speaker_0 / speaker_1 …
 swift run kleoth render     <dir>         # re-render summary.md from summary.json (no API calls)
+swift run kleoth illustrate <dir>...      # draw a cover for summarized meetings (--engine, --style, --dry-run)
 ```
 
-Run `swift run kleoth <subcommand> --help` for flags. The CLI resolves keys from environment
-variables (`ELEVEN_API_KEY`, `OPENROUTER_API_KEY`), a local `.env`, or
+`summarize` runs on the same providers as the app: `--provider claude-code`, `codex`, `local` or
+`openrouter`. Run `swift run kleoth <subcommand> --help` for flags. The CLI resolves keys from
+environment variables (`ELEVEN_API_KEY`, `OPENROUTER_API_KEY`), a local `.env`, or
 `~/.config/kleoth/config.json`.
-
-`kleoth summarize --max-output-tokens <n>` sets the summary's output-token budget (default 8192;
-an answer cut off at that limit is retried once with twice the budget). It applies to OpenRouter
-and local servers only — the Claude Code and Codex CLIs take no output cap.
-
-> **Free summaries in Claude Code:** the `summarize-meeting` project skill produces the same
-> `summary.json` / `summary.md` using your Claude Code session — no OpenRouter key, zero API cost.
-> Just ask it to summarize a meeting folder.
 
 ## Integrations
 
 - **Raycast extension** — `integrations/raycast-extension/`. Toggle/Start/Stop Recording, Search
   Meetings (open/copy summary, transcript, and paths), and Latest Summary. Import with
   `npm install && npm run dev` in that directory.
-- **Shortcuts / App Intents** — Start/Stop/Toggle recording as app intents (see
-  `app/Sources/KleothApp`). Note: SwiftPM builds don't run Apple's App Intents metadata extractor, so
-  intents may not auto-surface in Spotlight; the URL scheme and hotkey work regardless.
 - **`kleoth://` URL scheme** — `kleoth://record`, `kleoth://stop`, `kleoth://toggle`,
   `kleoth://summarize-latest`. Callable from `open`, scripts, Raycast, etc.
-- **Global hotkey** — bind a system-wide shortcut for toggle-recording in Settings.
+- **Global hotkey** — bind a system-wide shortcut to start and stop recording in Settings → General.
 
 ## Data & privacy
 
-By default, **nothing leaves your machine.** Transcription is on-device; summaries and cloud
-transcription only run when you opt in. Summaries and dictation cleanup need no API key at all when
-you point them at Claude Code, Codex, a local server (Ollama, LM Studio) or Apple's on-device model
-(see [Bring your own AI](#bring-your-own-ai)) — nothing is ever sent anywhere you did not sign up
-for yourself.
+**Recording and on-device transcription never leave your Mac**, and nothing ever goes to a Kleoth
+server — there isn't one. What does leave, and when:
+
+- **Audio** goes only to ElevenLabs Scribe, with your key: each dictation, and a meeting or
+  recording you choose to transcribe in the cloud.
+- **Transcripts** go to your AI provider: a meeting's, for its summary, right after it is
+  transcribed; a dictation's, for clean-up. On **Automatic** (the default) that is the first
+  provider Kleoth finds — local server, Claude Code, Codex, OpenRouter, Apple — so with no local
+  server running and the Claude Code or Codex CLI signed in, your transcripts go to Anthropic or
+  OpenAI under your account.
+  To keep them on your Mac, pick a local server (Ollama, LM Studio) or, for dictation, Apple's
+  on-device model in Settings → Accounts (see [Bring your own AI](#bring-your-own-ai)).
+- **Meeting covers** (off by default): a one-sentence scene written from the summary goes to the image
+  engine you pick — to OpenAI through Codex, or to OpenRouter; a local server keeps it on your Mac. See
+  [Meeting covers](#meeting-covers).
 
 Each meeting is one self-contained folder, `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`:
 
@@ -227,6 +278,7 @@ transcript.json · transcript.md       # the transcript (raw + rendered)
 summary.json   · summary.md           # the AI summary (if generated)
 speakers.json                         # speaker_0 / speaker_1 → display names (You / Them)
 meta.json                             # metadata: duration, tier, timestamps, consent
+cover.jpg · cover.json                # the meeting's cover and how it was drawn (if covers are on)
 ```
 
 Dictations are text: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished text, the
@@ -292,16 +344,18 @@ in [`docs/RELEASING.md`](docs/RELEASING.md).
 
 Two SwiftPM packages. **Package 1** (repo root, macOS 13) is `KleothCore` — models, networking
 seam, transcription (ElevenLabs Scribe client + the engine-agnostic `Transcriber` protocol),
-summarization (OpenRouter client), rendering, speaker mapping, storage, and the meeting pipeline —
-plus the `kleoth` CLI. **Package 2** (`app/`, macOS 14.4) is the `KleothApp` SwiftUI menu-bar agent
-and `KleothCapture` (Core Audio process-tap for system audio, AVAudioEngine for the mic, and the
-`LocalTranscriber` built on WhisperKit). The only non-Apple core dependency is
-`swift-argument-parser`; the app adds WhisperKit and KeyboardShortcuts.
+summaries and dictation clean-up behind one provider seam (OpenRouter, a local OpenAI-compatible
+server, the Claude Code and Codex CLIs), rendering, speaker mapping, storage, and the meeting
+pipeline — plus the `kleoth` CLI. **Package 2** (`app/`, macOS 14.4) is the `KleothApp` SwiftUI
+menu-bar agent, the pill (`KleothPillUI`), and `KleothCapture` (Core Audio process tap for system
+audio, AVAudioEngine for the mic, ScreenCaptureKit for screen recording, and the
+`LocalTranscriber` built on WhisperKit). Apple's on-device model is an app-only provider. The only
+non-Apple core dependency is `swift-argument-parser`; the app adds WhisperKit and
+KeyboardShortcuts.
 
 ## Roadmap
 
-- **Notarized builds** — Gatekeeper-clean install (needs Apple Developer Program enrollment). The
-  signing/notarization pipeline is already wired in `app/make-dmg.sh`, pending the certificate.
+- **Notarized builds** — a Gatekeeper-clean install, with no first-launch warning.
 - **Homebrew cask** — `brew install --cask kleoth` once releases are notarized.
 - **Sparkle auto-update.**
 - **Whisper model-size picker** — trade accuracy for speed/size.

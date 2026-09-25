@@ -82,9 +82,10 @@ final class TextInserter: TextInserting {
             throw TextInsertionError.accessibilityNotTrusted
         }
         guard !InsertionEnvironment.isSecureInputActive else {
-            log.error("Secure input active at paste time — leaving text on the clipboard.")
+            let holder = InsertionEnvironment.secureInputHolder
+            log.error("Secure input held by \(holder?.bundleIdentifier ?? "unknown", privacy: .public) at paste time — leaving text on the clipboard.")
             writeUnmarked(text)
-            throw TextInsertionError.secureInputActive
+            throw TextInsertionError.secureInputActive(holder: holder?.localizedName)
         }
 
         // The snapshot is read off the main actor under a wall-clock budget:

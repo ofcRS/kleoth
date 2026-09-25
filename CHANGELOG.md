@@ -23,6 +23,24 @@ All notable changes to Kleoth are documented here. The format is based on
   managers (1Password, Bitwarden, Passwords, Keychain Access) are never read. The text around the
   cursor is never stored. It's on by default; turn off **Use the text you're dictating into** in
   Settings → Dictation to read nothing (stored as `dictation_context`: `"false"`).
+
+### Fixed
+
+- **Telegram Desktop messages were restructured like prompts.** Kleoth knew Telegram for macOS and
+  Telegram Desktop's Linux id, but not its Mac one, so long messages got an editor's full rework.
+  Telegram Desktop now gets the light touch of the other messengers: pasted as heard at the cursor
+  (unless "Also clean up short dictations and chat messages" is on), and a merged selection keeps
+  its wording and your voice.
+
+## [0.5.0] — 2026-09-25
+
+### Added
+
+- **Go hands-free in the middle of a dictation.** Started holding fn+shift and it's turning into a
+  long one? Tap ⌘ while you hold, or click the pill: the same dictation keeps listening, you can let
+  go of the keys, and it ends like any hands-free dictation (tap fn+shift or click the pill; Esc
+  cancels). Nothing said so far is lost. While you hold, the pill shows a faint lock where the
+  hands-free dot goes. Adding ⌥ or ⌃ mid-hold still ends the dictation as before; only ⌘ changed.
 - **A dictation is never lost to a failed transcription.** When Scribe can't transcribe a
   dictation — it timed out twice, the network dropped, the key was rejected — the audio is kept
   and the pill says so: "Timed out — saved to History", with a **Retry** button that sends the
@@ -33,6 +51,21 @@ All notable changes to Kleoth are documented here. The format is based on
   (the free on-device engine, when Scribe keeps failing) and copies the text to the clipboard when
   it's ready; **Show Audio in Finder** reaches the clip. Deleting the row moves its audio to the
   Trash. Once a dictation is transcribed its audio is deleted — dictations that paste keep none.
+- **Meeting covers (opt-in).** A summarized meeting can get a small square picture — cute animals
+  or everyday objects acting out what the meeting was about — on its History row and in its
+  header. It is off by default: Settings → Meetings → Covers turns it on by picking an engine, a
+  local image server (Ollama), Codex on your ChatGPT plan, or OpenRouter. The style is Animation,
+  Illustration, Sketch or Clay, or Automatic to match the meeting's mood. Your AI provider writes a
+  one-sentence scene from the title, the TL;DR and the start of the overview — no names, quotes or
+  transcript — and only that scene goes to the image engine. The cover is drawn once, right after
+  the meeting's first summary (or only when you ask), and saved in the meeting folder as
+  `cover.jpg`, next to `cover.json`, which records how it was drawn. A meeting that looks personal
+  — health, a performance review, pay, hiring, legal matters, family — gets no picture. Click a
+  cover for **New Cover** (another idea, in any style; the old picture goes to the Trash) or
+  **Remove Cover** (the picture goes to the Trash, and that meeting is never drawn again unless
+  you ask); select older meetings and choose **Draw Covers** to give them one. What OpenRouter
+  covers cost shows as one row in Accounts → Usage. `kleoth illustrate <dir>...` draws covers from
+  the command line; `--dry-run` prints the scene and the image prompt without drawing.
 - **`kleoth summarize --max-output-tokens <n>`.** Sets the summary's output-token budget (1 to
   1000000, default 8192); an answer cut off at that limit is retried once with twice the budget.
   It applies to OpenRouter and local servers — the Claude Code and Codex CLIs take no output cap.
@@ -41,13 +74,20 @@ All notable changes to Kleoth are documented here. The format is based on
   never been done, for that launch only, so the first-run flows can be checked on a Mac that
   finished them long ago. The flag stores nothing.
 
+### Changed
+
+- **First launch on macOS 15 and later.** macOS 15 removed right-click → Open for apps that
+  aren't notarized. The DMG's Read Me and the Homebrew cask now give the step that works: click
+  Done, then System Settings → Privacy & Security → **Open Anyway**. Right-click → Open still works
+  on macOS 14.
+
 ### Fixed
 
-- **Telegram Desktop messages were restructured like prompts.** Kleoth knew Telegram for macOS and
-  Telegram Desktop's Linux id, but not its Mac one, so long messages got an editor's full rework.
-  Telegram Desktop now gets the light touch of the other messengers: pasted as heard at the cursor
-  (unless "Also clean up short dictations and chat messages" is on), and a merged selection keeps
-  its wording and your voice.
+- **"The focused field blocks dictation" when it didn't.** Secure input is a lock any app can
+  hold, and a browser can keep it after you leave its password field — so dictation into Slack
+  was refused because a browser in the background still held it. The pill now names the app holding
+  it ("Dia has secure input on — dictation blocked"), so you know what to close or click out of.
+  The paste-time warning names it too.
 - **Long dictations timing out.** Scribe got a flat 25 s whatever the length of the clip, and
   dictations of a minute or more ran out of time when the service was slow. The budget now grows
   with the clip (25 s plus half its length, up to 2 minutes), and a timeout or network error gets
@@ -86,6 +126,10 @@ All notable changes to Kleoth are documented here. The format is based on
   click). A small **Before you record** window now comes forward with the popover's consent
   notice. **I understand — start recording** acknowledges and starts, and the window closes once
   the recording runs — or stays and shows why the start failed. **Not now** records nothing.
+- **Two Settings footers that weren't true.** Meetings → Summarization called Gemini Flash the
+  default (it's GLM on OpenRouter); it now names the provider your summaries run on. General →
+  Shortcuts promised Shortcuts and Spotlight actions, which these builds don't surface; it now
+  points at `kleoth://toggle`.
 
 ## [0.4.0] — 2026-09-20
 

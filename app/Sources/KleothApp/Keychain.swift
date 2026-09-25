@@ -81,6 +81,20 @@ public enum Keychain {
         public static let localServerKey = "local_server_key"
         /// JSON map of per-provider, per-task models (`ProviderSettings.modelsJSON`).
         public static let aiModels = "ai_models"
+        /// The meeting-cover engine: a `CoverEngine` raw value, or `"off"`
+        /// (`CoverEngine.offValue`) for Off — the default, and never written
+        /// empty, which would delete the key. New key: NOT in `legacyAccounts`.
+        public static let coverEngine = "cover_engine"
+        /// `"false"` draws covers only when asked for in History; anything
+        /// else (or absent) draws one after each summary. New key: NOT in
+        /// `legacyAccounts`.
+        public static let coverAutomatic = "cover_automatic"
+        /// A `CoverStyle` raw value, or `"auto"` for Automatic (the scene step
+        /// picks by mood). New key: NOT in `legacyAccounts`.
+        public static let coverStyle = "cover_style"
+        /// JSON map of per-engine image models (`CoverSettings.modelsJSON`).
+        /// New key: NOT in `legacyAccounts`.
+        public static let coverModels = "cover_models"
     }
 
     /// Every legacy per-value account, for the one-time migration.
@@ -194,6 +208,14 @@ public enum Keychain {
     private static func loadLocked() throws -> [String: String] {
         if let cache { return cache }
 
+        // A demo launch never reads the real item: it starts from a fixed seed
+        // and its writes stay in memory (`writeLocked`).
+        if DemoMode.isOn {
+            let seed = DemoMode.keychainSeed
+            cache = seed
+            return seed
+        }
+
         if let data = try readItemData(account: consolidatedAccount) {
             guard let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
                 // Corrupted blob: fall back to migration (which also rebuilds
@@ -215,6 +237,10 @@ public enum Keychain {
     /// Persists the dictionary to the consolidated item and refreshes the cache.
     /// Assumes `lock` is held.
     private static func writeLocked(_ values: [String: String]) throws {
+        if DemoMode.isOn {
+            cache = values
+            return
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(values) else {
@@ -272,6 +298,9 @@ public enum Keychain {
     /// exist; any other failure throws (so callers can tell "absent" from
     /// "denied").
     private static func readItemData(account: String) throws -> Data? {
+        // Every `SecItem*` call goes through these three functions; a demo
+        // launch makes none, even from a path the gates above missed.
+        if DemoMode.isOn { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -296,6 +325,7 @@ public enum Keychain {
 
     /// Creates or updates one keychain item with the given raw data.
     private static func upsertItemData(_ data: Data, account: String) throws {
+        if DemoMode.isOn { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -322,6 +352,7 @@ public enum Keychain {
 
     /// Deletes one keychain item, ignoring failures (missing item, etc.).
     private static func deleteItem(account: String) {
+        if DemoMode.isOn { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

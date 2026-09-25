@@ -145,6 +145,145 @@ import Foundation
         #expect(machine.handle(.chordDown, at: t0 + 2) == [.armed])
     }
 
+    // MARK: Latch — push-to-talk switched to hands-free mid-hold (2026-09-24)
+
+    @Test func latchKeyWhileHoldingSwitchesToHandsFree() {
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        // ⌘ joined the held chord: the same capture keeps going, hands-free.
+        #expect(machine.handle(.latchKey, at: t0 + 2) == [.latched])
+        #expect(machine.isCapturing)
+        #expect(machine.deadline == nil)
+        // The detector already read the chord as over, so no release follows;
+        // the next press ends the session like any hands-free one…
+        #expect(machine.handle(.chordDown, at: t0 + 10) == [.toggledOff])
+        // …and its release does not arm.
+        #expect(machine.handle(.chordUp, at: t0 + 10.1) == [])
+        #expect(machine.isCapturing == false)
+    }
+
+    @Test func latchKeyWhilePressedIsAShortTap() {
+        // ⌘ inside `minHold` is somebody's fn+shift+⌘ shortcut, not a latch:
+        // exactly what a `.chordUp` does there today.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        let latch = t0 + 0.05
+        #expect(machine.handle(.latchKey, at: latch) == [.cancelled(.tooShort)])
+        #expect(machine.deadline == latch + tapWindow)
+        #expect(machine.isCapturing == false)
+    }
+
+    @Test func latchKeyAfterAMissedDeadlineBeginsThenLatches() {
+        // The hold timer never fired (busy run loop) but the hold was real —
+        // the same rescue `.chordUp` gets, ending hands-free instead.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: 0)
+        #expect(machine.handle(.latchKey, at: minHold) == [.began, .latched])
+        #expect(machine.isCapturing)
+        #expect(machine.deadline == nil)
+        #expect(machine.handle(.chordDown, at: 5) == [.toggledOff])
+    }
+
+    @Test func latchKeyOutsideAHoldIsAChordUp() {
+        // The second tap of a double-tap is still down: ⌘ reads as its release.
+        var arming = DictationChordMachine()
+        _ = arming.handle(.chordDown, at: t0)
+        _ = arming.handle(.chordUp, at: t0 + 0.1)
+        _ = arming.handle(.chordDown, at: t0 + 0.2)                // handsFreeArming
+        #expect(arming.handle(.latchKey, at: t0 + 0.3) == [])
+        #expect(arming.isCapturing)                                // handsFree
+        #expect(arming.handle(.chordDown, at: t0 + 5) == [.toggledOff])
+        // The ending tap is still down: ⌘ reads as its release → idle.
+        #expect(arming.handle(.latchKey, at: t0 + 5.1) == [])
+        #expect(arming.isCapturing == false)
+        #expect(arming.handle(.chordDown, at: t0 + 6) == [.armed])
+
+        // A cancelled chord still down: ⌘ reads as the swallowed release.
+        var blocked = DictationChordMachine()
+        _ = blocked.handle(.chordDown, at: t0)
+        _ = blocked.handle(.otherKey, at: t0 + 0.05)
+        #expect(blocked.handle(.latchKey, at: t0 + 0.1) == [])
+        #expect(blocked.handle(.chordDown, at: t0 + 1) == [.armed])
+    }
+
+    @Test func externalLatchWhileHoldingSwitchesAndTheReleaseIsSilent() {
+        // The click on the push-to-talk capsule: fn+shift are still down.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        #expect(machine.handle(.externalLatch, at: t0 + 2) == [.latched])
+        #expect(machine.isCapturing)
+        #expect(machine.deadline == nil)
+        // Letting go is not the end of the dictation any more…
+        #expect(machine.handle(.chordUp, at: t0 + 2.5) == [])
+        #expect(machine.isCapturing)
+        // …the next press is.
+        #expect(machine.handle(.chordDown, at: t0 + 10) == [.toggledOff])
+        #expect(machine.handle(.chordUp, at: t0 + 10.1) == [])
+        #expect(machine.isCapturing == false)
+    }
+
+    @Test func externalLatchOutsideAHoldIsANoOp() {
+        var idle = DictationChordMachine()
+        #expect(idle.handle(.externalLatch, at: t0) == [])
+        #expect(idle.isCapturing == false)
+
+        // Still under `minHold` (the pill is `.armed`, not listening): the hold
+        // deadline is untouched and the chord confirms as usual.
+        var pressed = DictationChordMachine()
+        _ = pressed.handle(.chordDown, at: t0)
+        #expect(pressed.handle(.externalLatch, at: t0 + 0.05) == [])
+        #expect(pressed.deadline == t0 + minHold)
+        #expect(pressed.handle(.deadline, at: t0 + minHold) == [.began])
+
+        // Already hands-free: nothing to switch.
+        var handsFree = DictationChordMachine()
+        _ = handsFree.handle(.externalHandsFreeOn, at: t0)
+        #expect(handsFree.handle(.externalLatch, at: t0 + 1) == [])
+        #expect(handsFree.handle(.chordDown, at: t0 + 2) == [.toggledOff])
+    }
+
+    @Test func keysWhileStillHeldAfterExternalLatchAreIgnored() {
+        // The documented edge (§10.3 item 16): with fn+shift still down every
+        // key — Esc included — is `otherKey`, and a hands-free session lets
+        // the user type. The dictation goes on; letting go changes nothing.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        _ = machine.handle(.externalLatch, at: t0 + 1)
+        #expect(machine.handle(.otherKey, at: t0 + 1.2) == [])
+        #expect(machine.isCapturing)
+        #expect(machine.handle(.chordUp, at: t0 + 1.5) == [])
+        #expect(machine.isCapturing)
+        #expect(machine.handle(.chordDown, at: t0 + 5) == [.toggledOff])
+    }
+
+    @Test func abortAfterExternalLatchSwallowsTheRelease() {
+        // Cancelled (pill ✕) while fn+shift are still down: the release must
+        // not reach an idle machine as anything.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        _ = machine.handle(.externalLatch, at: t0 + 1)
+        #expect(machine.handle(.abort, at: t0 + 1.5) == [.cancelled(.external)])
+        #expect(machine.isCapturing == false)
+        #expect(machine.handle(.chordUp, at: t0 + 2) == [])
+        #expect(machine.handle(.chordDown, at: t0 + 3) == [.armed])
+    }
+
+    @Test func abortAfterLatchKeyReturnsToIdle() {
+        // Esc after a ⌘ latch: the detector already read the chord as over,
+        // so there is no release to swallow — the next press arms.
+        var machine = DictationChordMachine()
+        _ = machine.handle(.chordDown, at: t0)
+        _ = machine.handle(.deadline, at: t0 + minHold)
+        _ = machine.handle(.latchKey, at: t0 + 1)
+        #expect(machine.handle(.abort, at: t0 + 1.5) == [.cancelled(.external)])
+        #expect(machine.isCapturing == false)
+        #expect(machine.handle(.chordDown, at: t0 + 3) == [.armed])
+    }
+
     // MARK: otherKey
 
     @Test func otherKeyWhilePressedCancelsAndBlocksUntilRelease() {

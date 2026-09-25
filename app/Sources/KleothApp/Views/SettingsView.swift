@@ -80,11 +80,26 @@ struct SettingsView: View {
 
     /// Provider-reported account usage — the ONLY place money appears in the
     /// app. Both numbers come live from the providers (ElevenLabs subscription
-    /// credits, OpenRouter credit balance); Kleoth keeps no tally of its own.
+    /// credits, OpenRouter credit balance); the covers row is the one tally
+    /// Kleoth keeps itself (`coverTally`).
     @State private var elevenUsage: ElevenLabsUsage?
     @State private var openRouterCredits: OpenRouterCredits?
     @State private var usageError: String?
     @State private var isLoadingUsage = false
+    /// Covers drawn in the last 30 days that cost something, added up from
+    /// each meeting's `cover.json`. Kleoth's only tally of its own (spec
+    /// §3.6): OpenRouter's per-model spend needs a management key.
+    @State private var coverTally: CoverTally?
+
+    /// Meeting covers (`SettingsCoversSection`): the engine ("off" or a
+    /// `CoverEngine` raw value), the automatic toggle, the style ("auto" or a
+    /// `CoverStyle` raw value) and the picked engine's image-model override.
+    /// Here rather than in the section so `commitAll()` can flush an
+    /// unsubmitted model edit.
+    @State private var coverEngine: String = CoverEngine.offValue
+    @State private var coverAutomatic: Bool = true
+    @State private var coverStyle: String = "auto"
+    @State private var coverModel: String = ""
 
     /// Provider prefixes that 404 under this account's no-train data policy (see
     /// CLAUDE.md). A stored default with one of these prefixes (e.g. the obsolete
@@ -245,6 +260,12 @@ struct SettingsView: View {
         case .meetings:
             localModelSection
             summarizationSection
+            SettingsCoversSection(
+                coverEngine: $coverEngine,
+                coverAutomatic: $coverAutomatic,
+                coverStyle: $coverStyle,
+                coverModel: $coverModel
+            )
             calendarSection
             historySection("Open Meetings", target: .meetings)
         case .dictation:
@@ -475,13 +496,24 @@ struct SettingsView: View {
                 .disabled(isRefreshingModels)
             }
         } footer: {
-            captionFooter("Models available under your OpenRouter data policy. The default runs locally-friendly Gemini Flash; pick any provider that fits your privacy and cost.")
+            captionFooter(summarizationFooterText)
+        }
+    }
+
+    /// Names the provider summaries resolve to, so the model control above it
+    /// never looks like OpenRouter's when another provider is in charge.
+    private var summarizationFooterText: String {
+        switch resolvedProvider(.summary) ?? .openRouter {
+        case .openRouter: "The models your OpenRouter account's data policy allows. Choose the provider in Accounts."
+        case .localServer: "Summaries run on your local server. Choose the provider in Accounts."
+        case let provider: "Summaries run on \(provider.displayName). Choose the provider in Accounts."
         }
     }
 
     /// Account usage as reported live by the providers — deliberately the only
-    /// money surface in the app. Nothing here is computed by Kleoth: ElevenLabs
-    /// reports its billing-cycle credit quota, OpenRouter its credit balance.
+    /// money surface in the app. ElevenLabs reports its billing-cycle credit
+    /// quota, OpenRouter its credit balance; the one number Kleoth computes is
+    /// the covers row, a sum of what OpenRouter reported for each cover.
     private var usageSection: some View {
         Section {
             if !hasUsageKeys {
@@ -494,6 +526,9 @@ struct SettingsView: View {
                 }
                 if let credits = openRouterCredits {
                     openRouterUsageRow(credits)
+                }
+                if let tally = coverTally, tally.covers > 0, tally.cost > 0 {
+                    coversUsageRow(tally)
                 }
                 if isLoadingUsage && elevenUsage == nil && openRouterCredits == nil {
                     HStack(spacing: KleothMetrics.spacingS) {
@@ -530,7 +565,7 @@ struct SettingsView: View {
                 .disabled(isLoadingUsage || !hasUsageKeys)
             }
         } footer: {
-            captionFooter("Account-wide numbers reported live by ElevenLabs and OpenRouter — Kleoth keeps no tally of its own.")
+            captionFooter("Account-wide numbers reported live by ElevenLabs and OpenRouter; the covers row adds up what OpenRouter reported for each cover.")
         }
     }
 
@@ -578,6 +613,20 @@ struct SettingsView: View {
         .padding(.vertical, KleothMetrics.spacingXS)
     }
 
+    /// "Meeting covers · $0.41 in the last 30 days (12 covers)". Only covers
+    /// that cost something are counted, so Codex and local-server covers never
+    /// show here; the caller hides the row when the window's total is zero.
+    private func coversUsageRow(_ tally: CoverTally) -> some View {
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingXS) {
+            Text("Meeting covers")
+                .font(.callout.weight(.medium))
+            Text("\(Self.money(tally.cost)) in the last 30 days (\(tally.covers) cover\(tally.covers == 1 ? "" : "s"))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, KleothMetrics.spacingXS)
+    }
+
     /// Whether any provider key is available to fetch usage with.
     private var hasUsageKeys: Bool {
         !elevenLabsKey.trimmingCharacters(in: .whitespaces).isEmpty
@@ -588,6 +637,14 @@ struct SettingsView: View {
     /// failing (offline, revoked key) doesn't hide the other; errors surface as
     /// a quiet caption. Keys go only into request headers and are never logged.
     private func refreshUsage() async {
+        // The covers tally is local, cheap and synchronous (one small
+        // `cover.json` read per meeting), so it runs ahead of the key guard.
+        // Its row still shows only beside the provider rows: covers cost money
+        // only on OpenRouter, which needs a key anyway.
+        coverTally = CoverStore().tally(
+            meetingDirs: controller.recentMeetings.map(\.directory),
+            since: Date().addingTimeInterval(-30 * 86_400)
+        )
         guard hasUsageKeys else { return }
         isLoadingUsage = true
         defer { isLoadingUsage = false }
@@ -683,7 +740,7 @@ struct SettingsView: View {
         } header: {
             Text("Shortcuts")
         } footer: {
-            captionFooter("Also available as Shortcuts / Spotlight actions and via kleoth:// URLs.")
+            captionFooter("Scripts and launchers can do the same with kleoth://toggle.")
         }
     }
 
@@ -826,6 +883,15 @@ struct SettingsView: View {
         localServerURL = controller.settings.providerSettings.localServerURL.absoluteString
         localServerKey = controller.settings.providerSettings.localServerKey ?? ""
         syncProviderModels()
+        // Meeting covers. The model field shows the stored override, never the
+        // engine's default (that is its placeholder): `commitAll()` writes the
+        // field only when it differs from the override, so an untouched field
+        // writes nothing.
+        let covers = controller.settings.coverSettings
+        coverEngine = covers.engineStorageValue
+        coverAutomatic = covers.automatic
+        coverStyle = covers.styleStorageValue
+        coverModel = covers.engine.map { covers.models[$0] ?? "" } ?? ""
 
         // Migrate a stored model whose provider 404s under this account's
         // no-train policy (e.g. the obsolete "openai/gpt-4.1-mini") or that has
@@ -879,6 +945,14 @@ struct SettingsView: View {
         controller.updateLocalServerKey(localServerKey)
         commitProviderModel(summaryProviderModel, for: .summary)
         commitProviderModel(dictationProviderModel, for: .dictation)
+        // The cover pickers commit when operated; the image-model field only on
+        // Return. Compared trimmed, as `CoverSettings.settingModel` stores it,
+        // so a stray space is not an edit.
+        if let engine = CoverEngine(rawValue: coverEngine), engine.takesModel,
+           coverModel.trimmingCharacters(in: .whitespacesAndNewlines)
+               != (controller.settings.coverSettings.models[engine] ?? "") {
+            controller.updateCoverModel(coverModel, for: engine)
+        }
         dictation.setDictationModel(dictationModel)
         // Flushes whatever the dictionary editor's 0.5 s debounce hasn't written —
         // but only if the user actually edited it (see `loadedDictionaryText`).

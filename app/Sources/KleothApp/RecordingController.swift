@@ -39,6 +39,16 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
     /// True while this meeting is queued for or undergoing background processing
     /// (transcribe/summarize) — rows show a progress spinner instead of status chips.
     public var isTranscribing: Bool
+    /// Whether `summary.json` exists. A cover's scene is written from the
+    /// summary, never the transcript, so this gates drawing one.
+    public var hasSummary: Bool
+    /// The meeting's cover picture (`CoverStore.imageURL(in:)`: `cover.jpg`,
+    /// else `cover.png`); nil when there is none.
+    public var coverImageURL: URL?
+    /// That picture's modification date. A New Cover keeps the same URL, so
+    /// this is the field that changes the value — and with it
+    /// `onChange(of: recentMeetings)` and the thumbnail cache key.
+    public var coverModifiedAt: Date?
 
     public init(
         title: String,
@@ -50,7 +60,10 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         transcriptTier: String? = nil,
         isProcessed: Bool = true,
         hasMetadata: Bool = true,
-        isTranscribing: Bool = false
+        isTranscribing: Bool = false,
+        hasSummary: Bool = false,
+        coverImageURL: URL? = nil,
+        coverModifiedAt: Date? = nil
     ) {
         self.title = title
         self.date = date
@@ -62,6 +75,9 @@ public struct RecentMeeting: Identifiable, Sendable, Hashable {
         self.isProcessed = isProcessed
         self.hasMetadata = hasMetadata
         self.isTranscribing = isTranscribing
+        self.hasSummary = hasSummary
+        self.coverImageURL = coverImageURL
+        self.coverModifiedAt = coverModifiedAt
     }
 }
 
@@ -225,6 +241,10 @@ public final class RecordingController: ObservableObject {
     /// alive while letting any number of meetings queue up behind it.
     private var pipelineQueueTail: Task<Void, Never>?
 
+    /// Finds each listed meeting's cover picture and summary
+    /// (`loadRecentMeetings`) — the same checks `CoverController` draws by.
+    private let coverStore = CoverStore()
+
     private let log = Logger(subsystem: "dev.kleoth", category: "RecordingController")
 
     /// Credentials and settings are resolved lazily and refreshed from the
@@ -246,6 +266,9 @@ public final class RecordingController: ObservableObject {
     /// unconditional assignment would invalidate every observer (the menu-bar
     /// label, the popover, History) five times a minute for an identical value.
     public func refreshProviderStatus() async {
+        // Detection spawns `claude`/`codex` and probes a local server; a demo
+        // launch shows finished meetings and needs none of it.
+        guard !DemoMode.isOn else { return }
         let status = await AppConfig.providerStatus()
         // The Settings `.task` poll is cancelled on a page switch or when the
         // window closes — possibly mid-probe, and a cancelled probe reports
@@ -509,6 +532,7 @@ public final class RecordingController: ObservableObject {
                 metadata: meta
             )
             contentRevision &+= 1
+            CoverController.shared?.summaryWritten(in: dir)
             statusMessage = "Summarized \"\(meta.title)\"."
         } catch {
             reportMeetingError("Summary failed: \(error.localizedDescription)", in: dir)
@@ -680,6 +704,46 @@ public final class RecordingController: ObservableObject {
     public func updateAutoTranscribe(_ enabled: Bool) {
         Keychain.set(enabled ? "true" : "false", Keychain.Account.autoTranscribe)
         settings.autoTranscribe = enabled
+    }
+
+    // Meeting covers. None of these calls `providerSettingsChanged()`: the
+    // scene step rides on the summary provider, and no cover setting changes
+    // how that resolves. Each ends with `CoverController.settingsChanged()`,
+    // so the cover surfaces follow the stored value.
+
+    /// Persists the cover engine (nil = Off). Off is stored as the non-empty
+    /// sentinel `"off"` — an empty Keychain write deletes the key, and a
+    /// deleted key would let a `config.json` engine back in (the
+    /// `updateAIProvider` lesson).
+    public func updateCoverEngine(_ engine: CoverEngine?) {
+        settings.coverSettings.engine = engine
+        Keychain.set(settings.coverSettings.engineStorageValue, Keychain.Account.coverEngine)
+        // Off cancels every queued and running cover (§3.2) BEFORE the views
+        // learn it is Off, so none of them shows Off while a job still runs.
+        if engine == nil { CoverController.shared?.cancelAll() }
+        CoverController.shared?.settingsChanged()
+    }
+
+    /// Persists whether a cover is drawn right after each summary is saved.
+    public func updateCoverAutomatic(_ enabled: Bool) {
+        Keychain.set(enabled ? "true" : "false", Keychain.Account.coverAutomatic)
+        settings.coverSettings.automatic = enabled
+        CoverController.shared?.settingsChanged()
+    }
+
+    /// Persists the cover style (nil = Automatic, stored as `"auto"`).
+    public func updateCoverStyle(_ style: CoverStyle?) {
+        settings.coverSettings.style = style
+        Keychain.set(settings.coverSettings.styleStorageValue, Keychain.Account.coverStyle)
+        CoverController.shared?.settingsChanged()
+    }
+
+    /// Persists the image model for `engine` (empty = the engine's default).
+    public func updateCoverModel(_ model: String, for engine: CoverEngine) {
+        settings.coverSettings = settings.coverSettings.settingModel(model, for: engine)
+        // "{}" when empty: a non-empty write keeps the key.
+        Keychain.set(settings.coverSettings.modelsJSON, Keychain.Account.coverModels)
+        CoverController.shared?.settingsChanged()
     }
 
     /// Normalizes a stored/selected language value into a Whisper code or `nil`
@@ -958,6 +1022,7 @@ public final class RecordingController: ObservableObject {
                 if selectedMeetingID == meeting.id { selectedMeetingID = nil }
                 invalidateFolderSize(dir)
                 clearMeetingError(for: dir)
+                CoverController.shared?.forget(dir)
                 trashedTitles.append(meeting.title)
             } catch {
                 failure = error.localizedDescription
@@ -1248,6 +1313,7 @@ public final class RecordingController: ObservableObject {
             // audio probed for duration).
             if let meetingDir { unmarkProcessing(meetingDir) } else { loadRecentMeetings() }
             contentRevision &+= 1
+            if result.summary != nil { CoverController.shared?.summaryWritten(in: result.meetingDir) }
             if let summaryError = result.summaryError {
                 // The result's folder, not `meetingDir`: an import whose folder
                 // could not be made up front saved into one the pipeline derived.
@@ -1434,6 +1500,7 @@ public final class RecordingController: ObservableObject {
             }
             unmarkProcessing(dir)
             contentRevision &+= 1
+            if result.summary != nil { CoverController.shared?.summaryWritten(in: result.meetingDir) }
             transcriptionProgress = nil
             if let summaryError = result.summaryError {
                 reportSummaryFailure(
@@ -1598,6 +1665,7 @@ public final class RecordingController: ObservableObject {
             }
             unmarkProcessing(dir)
             contentRevision &+= 1
+            if result.summary != nil { CoverController.shared?.summaryWritten(in: result.meetingDir) }
             if let summaryError = result.summaryError {
                 reportSummaryFailure(
                     summaryError,
@@ -1680,7 +1748,7 @@ public final class RecordingController: ObservableObject {
     /// a ~600 MB download mid-processing. Best-effort: failures are logged and
     /// swallowed (the transcribe path retries, also via a background session).
     public func prewarmTranscriptionModel() async {
-        guard modelDownloadProgress == nil else { return }
+        guard !DemoMode.isOn, modelDownloadProgress == nil else { return }
         modelDownloadProgress = 0
         do {
             try await LocalTranscriber.downloadModel { [weak self] frac in
@@ -1719,6 +1787,13 @@ public final class RecordingController: ObservableObject {
             let metaURL = dir.appendingPathComponent("meta.json")
             // Queued/in-flight background processing → the row spins.
             let processing = processingPaths.contains(dir.standardizedFileURL.path)
+            // The cover picture and its mtime: two `stat`s per folder (three
+            // for a `cover.png`). The mtime makes a redrawn cover (same URL)
+            // a changed row.
+            let coverURL = coverStore.imageURL(in: dir)
+            let coverModified = coverURL.flatMap {
+                (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            }
 
             if fm.fileExists(atPath: metaURL.path) {
                 let metadata = loadMetadata(in: dir)
@@ -1746,7 +1821,10 @@ public final class RecordingController: ObservableObject {
                     transcriptTier: hasTranscript ? metadata.transcriptTier : nil,
                     isProcessed: hasTranscript,
                     hasMetadata: true,
-                    isTranscribing: processing
+                    isTranscribing: processing,
+                    hasSummary: coverStore.hasSummary(in: dir),
+                    coverImageURL: coverURL,
+                    coverModifiedAt: coverModified
                 )
                 return (meeting, started ?? modified)
             }
@@ -1772,7 +1850,10 @@ public final class RecordingController: ObservableObject {
                 transcriptTier: nil,
                 isProcessed: false,
                 hasMetadata: false,
-                isTranscribing: processing
+                isTranscribing: processing,
+                hasSummary: false,
+                coverImageURL: coverURL,
+                coverModifiedAt: coverModified
             )
             return (meeting, started ?? modified)
         }
@@ -1837,6 +1918,15 @@ public final class RecordingController: ObservableObject {
         let key = dir.standardizedFileURL.path
         sizeCache.removeValue(forKey: key)
         sizeEpoch[key, default: 0] += 1
+    }
+
+    /// A cover was installed, skipped or removed inside `dir`. The
+    /// output-folder watcher sees only the top level, so nothing else reloads
+    /// the row; the folder's size changed too.
+    func coverChanged(in dir: URL) {
+        invalidateFolderSize(dir)
+        loadRecentMeetings()
+        contentRevision &+= 1
     }
 
     /// Total allocated size of everything inside a meeting folder, recursively —
