@@ -7,6 +7,7 @@ import KleothCore
 /// the summary or file paths, rename speakers, delete).
 struct MeetingDetailView: View {
     @EnvironmentObject private var controller: RecordingController
+    @EnvironmentObject private var covers: CoverController
 
     let meeting: RecentMeeting
 
@@ -125,17 +126,27 @@ struct MeetingDetailView: View {
     /// Metadata header for the meeting, in a Kleoth content card: the prominent
     /// title and a wrapping row of metadata chips (date · time, duration, model,
     /// color-coded tier badge, and a "No summary yet" hint — with a Summarize
-    /// button on a transcribed meeting). Deliberately money-free — per-meeting
+    /// button on a transcribed meeting). With Covers on, the 112 pt cover tile
+    /// and its menu sit on the trailing side. Deliberately money-free — per-meeting
     /// costs stay in `meta.json`, and account usage lives in Settings → Usage.
     private var headerCard: some View {
-        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
-            Text(meeting.title)
-                .font(.title2.weight(.semibold))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(alignment: .top, spacing: KleothMetrics.spacingL) {
+            VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+                Text(meeting.title)
+                    .font(.title2.weight(.semibold))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            metaChipRow
+                metaChipRow
+            }
+            if covers.engine != nil {
+                Spacer(minLength: 0)
+                // `summary` is this view's loaded state, not the list's
+                // `hasSummary`: a summary that just landed enables Draw Cover
+                // on the same `contentRevision` reload that shows it.
+                MeetingCoverMenu(meeting: meeting, hasSummary: summary != nil, size: 112)
+            }
         }
         .kleothCard()
     }
