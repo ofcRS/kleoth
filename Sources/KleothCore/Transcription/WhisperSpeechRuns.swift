@@ -12,6 +12,11 @@ import Foundation
 /// aligned words into runs of continuous speech, a new run at each word that
 /// begins after a pause. A run keeps Whisper's own text for its words, so
 /// "5%" and "что-то" read as they did in the segment.
+///
+/// A cut needs a word with a leading space. Languages written without spaces
+/// (zh, ja, th, lo, my, yue) come from WhisperKit with none, so a segment in
+/// one of them is never cut: it stays one entry, timed by its first word's
+/// start and its latest word end.
 public enum WhisperSpeechRuns {
     /// One word as WhisperKit aligned it. `text` is `WordTiming.word` as is:
     /// a leading space starts a new word; a token without one ("%", "-то")
@@ -30,12 +35,12 @@ public enum WhisperSpeechRuns {
 
     /// One segment's aligned words → one entry per run of continuous speech.
     ///
-    /// A run ends where the next word starts after the previous one ended and
+    /// A run ends where the next word starts after the latest end so far and
     /// begins a new word; a pause before a continuation token never cuts a
     /// word in two. A run's text is its words' raw texts concatenated and
-    /// cleaned (`WhisperText.clean`); its start and end are its first word's
-    /// start and last word's end. A run with no letter or digit in it (a lone
-    /// "." aligned into the silence after the audio) is dropped.
+    /// cleaned (`WhisperText.clean`); its start is its first word's start, its
+    /// end the latest end among its words. A run with no letter or digit in it
+    /// (a lone "." aligned into the silence after the audio) is dropped.
     public static func entries(from words: [Word]) -> [ScribeWord] {
         var entries: [ScribeWord] = []
         var text = ""
@@ -63,7 +68,9 @@ public enum WhisperSpeechRuns {
             if afterPause && beginsWord { flush() }
             if start == nil { start = word.start }
             text += word.text
-            end = word.end
+            // The latest end so far: WhisperKit's long-word truncation moves a
+            // word's start and end on their own, so a later word can end first.
+            end = max(end, word.end)
         }
         flush()
         return entries

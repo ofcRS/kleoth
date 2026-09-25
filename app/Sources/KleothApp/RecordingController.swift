@@ -1249,7 +1249,9 @@ public final class RecordingController: ObservableObject {
         let transcriber: any Transcriber = LocalTranscriber(
             channelFiles: channelFiles,
             language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage),
-            timing: .speechRuns  // real pauses, so the transcript splits into turns
+            // Real pauses, so the transcript splits into turns; never `.segments`
+            // here — demo-mode §6 #2.
+            timing: .speechRuns
         )
         let tier = TranscriptTier.local
         let options = ScribeOptions()
@@ -1622,7 +1624,9 @@ public final class RecordingController: ObservableObject {
         let transcriber: any Transcriber = LocalTranscriber(
             channelFiles: channelFiles,
             language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage),
-            timing: .speechRuns  // real pauses, so the transcript splits into turns
+            // Real pauses, so the transcript splits into turns; never `.segments`
+            // here — demo-mode §6 #2.
+            timing: .speechRuns
         )
         if channelFiles.count == 2 {
             writeDefaultSpeakerMapIfNeeded(

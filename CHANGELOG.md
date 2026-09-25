@@ -14,11 +14,12 @@ All notable changes to Kleoth are documented here. The format is based on
   right; the order of the turns was lost. Whisper's own timestamps stretch each sentence over the
   silence after it, so the transcript never saw where anyone stopped. The on-device engine now
   times each stretch of speech by its words, as it already did for screen recordings, and a new
-  turn starts wherever the other side spoke, even for a one-word "Sure." in a quick exchange. The
-  "Thank you." Whisper made up in a silence goes too: timing by words drops a sentence with no
-  speech under it. Transcribing takes about as long as before. Cloud (Scribe) transcripts are unchanged. A meeting transcribed on device before
-  this keeps its old blocks until it is transcribed again: **Remove transcription**, then
-  **Transcribe**.
+  turn starts wherever the other side spoke in the pause, even for a one-word "Sure." in a quick
+  exchange (a reply that talks over you keeps your turn whole). The "Thank you." Whisper made up
+  in a silence goes too: timing by words drops a sentence with no speech under it. Transcribing
+  takes about as long as before. Cloud (Scribe) transcripts are unchanged. A meeting transcribed
+  on device before this keeps its old blocks until it is transcribed again: **Remove
+  transcription**, then **Transcribe**.
 
 ## [0.5.0] — 2026-09-25
 

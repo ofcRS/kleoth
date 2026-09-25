@@ -65,6 +65,20 @@ import Testing
         #expect(russian.map(\.text) == ["Что-то сломалось."])
     }
 
+    @Test func aWordEndingEarlierThanTheOneBeforeItOpensNoPause() {
+        // WhisperKit's long-word truncation moves starts and ends on their own,
+        // so a word can end before the previous one did. Speech has not paused
+        // until the latest end so far: " ship." starts before " review." ends.
+        let entries = WhisperSpeechRuns.entries(from: [
+            word(" review", 23.00, 24.90),
+            word(" it", 23.60, 23.80),
+            word(" ship.", 24.00, 24.50),
+        ])
+
+        #expect(entries.map(\.text) == ["review it ship."])
+        #expect(entries.first?.end == 24.90)
+    }
+
     @Test func aRunWithNoWordsInItIsDropped() {
         // A lone "." the aligner placed in the padding after the audio ends.
         let entries = WhisperSpeechRuns.entries(from: [

@@ -143,6 +143,11 @@ public enum TranscriptNormalizer {
     /// one paused. Speech that only overlaps the pause (crosstalk, the mic
     /// picking up the other side) doesn't count. Missing timestamps never
     /// force a break.
+    ///
+    /// A linear scan per pause, so O(n·m) for a channel of n entries against
+    /// m on the other side. That's fine for what reaches it: on-device
+    /// speech-run entries, about 35 a minute per channel. It isn't meant for
+    /// per-word input, and Scribe transcripts never get here.
     private static func spokeInPause(previous: ScribeWord?, next: ScribeWord, others: [ScribeWord]) -> Bool {
         guard let pauseStart = previous?.end, let pauseEnd = next.start, pauseEnd > pauseStart else {
             return false

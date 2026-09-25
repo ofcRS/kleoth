@@ -95,6 +95,10 @@ public struct MeetingStore {
         let data = try Data(contentsOf: rawURL)
         let raw = try decoder.decode(ScribeResponse.self, from: data)
         // The tier decides how channels are split into turns (on-device vs Scribe).
+        // A nil tier (no readable meta.json, or none recorded) deliberately means
+        // "not local" here: the turn rule stays off, since a meeting from before
+        // tiers were recorded may be Scribe. The variant helpers below default nil
+        // to local instead, but only to name an archive folder.
         let tier = (try? loadMetadata(in: dir))?.transcriptTier
         let transcript = TranscriptNormalizer.normalize(raw, tier: tier)
 
