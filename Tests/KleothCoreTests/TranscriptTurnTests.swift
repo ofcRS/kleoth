@@ -58,6 +58,24 @@ import Foundation
         #expect(turns(unknown) == expected)
     }
 
+    /// Real WhisperKit output (speech runs, `localtranscribe`) of a fictional
+    /// two-person call voiced by `say`, 0.2 s between turns, with one- and
+    /// two-word replies ("Sure.", "Okay.", "No problem.", "Bye."): the
+    /// transcript reads in the order the script was spoken.
+    @Test func onDeviceQuickExchangeReadsInTheOrderItWasSpoken() throws {
+        let raw = try Fixtures.scribeResponse("whisperkit_quick_exchange")
+        let transcript = TranscriptNormalizer.normalize(raw, tier: TranscriptTier.local)
+
+        // The script: fourteen lines, You first, strictly alternating.
+        let script = [
+            "Hey", "Sure", "Great", "Okay", "The", "Yes", "I",
+            "Perfect", "Then", "Thursday", "One", "No", "Thanks", "Bye",
+        ]
+        #expect(transcript.utterances.map(\.speakerId)
+            == (0..<14).map { $0.isMultiple(of: 2) ? "speaker_0" : "speaker_1" })
+        #expect(transcript.utterances.map { String($0.text.prefix { $0.isLetter }) } == script)
+    }
+
     @Test func onDeviceTurnIsNotSplitBySpeechThatOverlapsIt() {
         // Them starts talking before You pause (crosstalk, or the mic picking
         // up the other side): nothing was said *inside* the pause.
