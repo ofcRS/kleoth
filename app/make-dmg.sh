@@ -50,8 +50,8 @@ cp -R "$APP" "$STAGE/Kleoth.app"
 ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/Read Me.txt" <<'EOF'
-Kleoth — local-first meeting recorder
-=====================================
+Kleoth — local-first voice, meetings and screen capture
+=======================================================
 
 Install: drag Kleoth.app onto the Applications folder, then launch it from
 Applications. Kleoth lives in the menu bar (the lyre icon).
@@ -67,11 +67,12 @@ First launch:
 • The on-device transcription model (~600 MB) downloads on first use, then
   everything transcribes offline.
 
-Your data: every meeting is written as plain files (audio, transcript.md,
-summary.md, JSON) to ~/Kleoth — yours to keep, grep, or sync.
+Your data: meetings, dictations and screen recordings are plain files
+(audio, video, Markdown, JSON) in ~/Kleoth — yours to keep, grep, or sync.
 
-Optional: add an ElevenLabs key (cloud transcription) and/or an OpenRouter
-key (summaries) in Settings.
+Optional: an ElevenLabs key (dictation, cloud transcription) in Settings →
+Accounts. Summaries and dictation clean-up use the AI you already have —
+Claude Code, Codex, Ollama / LM Studio, OpenRouter or Apple on-device.
 EOF
 
 # ----------------------------------------------------------------- 4. build DMG

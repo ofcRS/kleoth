@@ -1,6 +1,6 @@
 # Kleoth
 
-Local-first, bot-free macOS meeting recorder + dictation + screen recording. Native Swift 6 /
+Local-first macOS voice & capture app: dictation, bot-free meeting recording, screen recording. Native Swift 6 /
 SwiftUI menu-bar app and a `kleoth` CLI. Captures mic + system audio locally → transcribes →
 summarizes → writes Markdown/JSON the user owns. Public repo: github.com/ofcRS/kleoth (Apache-2.0).
 
@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (577 tests)
+swift build && swift test                        # core + CLI (589 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -27,10 +27,15 @@ swift run kleoth illustrate <dir>... [--engine codex|openrouter|local] [--style 
 swift build --package-path app --product localtranscribe && app/.build/debug/localtranscribe <meeting-dir> [scribe]
 swift build --package-path app --product dictate && app/.build/debug/dictate 4 [--no-polish] [--device <uid>] [--provider claude-code|codex|local|openrouter] [--text "<raw>" --runs N]
 app/.build/debug/dictate --file <audio> [--fail-first N] [--keep-on-failure]   # real clip through the Scribe retry policy; N injected transient failures; keep → a REAL pending History row
-swift build --package-path app --product screenrec && app/.build/debug/screenrec 10 [--inspect f.mp4] [--extract f.mp4] [--words f.m4a]
+swift build --package-path app --product screenrec && app/.build/debug/screenrec 10 [--inspect f.mp4] [--extract f.mp4] [--words f.m4a] [--sidecar f.mp4 --title T]
 swift run --package-path app pillsandbox                                # pill playground
-app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs
+app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs (step@secs; --demo dictation|screen composes README frames)
+bash app/branding-src/demo/make-demos.sh                          # README demo GIFs from the real pill → docs/assets/demo-*.gif
+bash app/branding-src/demo/make-app-demos.sh [data-dir]            # meeting + viewer GIFs, screenshot-detail.png: a KleothDemo.app copy (-KleothDemo) films its own window
+bun app/branding-src/demo/make-demo-data.ts <dir> [--provider local]   # fictional meetings/recording, real on-device transcripts + summaries (default: Claude Code)
 bun ~/.claude/skills/gpt-images/scripts/gpt-images.ts app/branding-src/<set>/jobs.json           # brand imagery (brief: app/branding-src/BRAND.md)
+bun marketing/sync.ts check [--offline] | apply [--no-remote]   # public pitch: drift report / rewrite README hero, cask, Raycast, images, GitHub About+topics
+bun test ./marketing/sync.test.ts                              # release-gate command parser
 ```
 Logs: `/usr/bin/log stream --predicate 'subsystem == "dev.kleoth"'` (categories `Dictation`,
 `DictationHotkey`, `Covers`, `PillTrace` — the latter needs `defaults write dev.kleoth.app KleothPillTrace -bool YES`).
@@ -67,6 +72,7 @@ KeyboardShortcuts, WhisperKit 0.18)
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
 `docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`,
+`docs/plans/2026-09-24-positioning.md`, `docs/plans/2026-09-24-demo-mode.md` (`-KleothDemo`: what a demo launch must never do),
 `docs/plans/2026-09-24-meeting-illustrations.md`.
 
 ## Data on disk
@@ -112,6 +118,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   while transcribing — not quit) KEEPS its clip as a pending row; pill "… — saved to History" + Retry
   (pastes); History "Try again in cloud / on device" is a background job that copies (on device via
   `enqueuePipelineJob`). Pasted dictations still keep no audio.
+- **Hands-free mid-hold (2026-09-24):** tap ⌘ while fn+shift is held, or click the push-to-talk pill →
+  the same capture goes hands-free (`ChordEdgeDetector` `latch` → `.latchKey`; pill → `.externalLatch`;
+  both → `.latched`). A MODIFIER on purpose: the monitor is listen-only, so Space would be typed into
+  the target app. Only from a confirmed hold; ⌥/⌃ mid-hold still end. Dictation design §10.3 item 16.
 - **Dictation polish:** `DictationDefaults.polishModel` = `google/gemini-3.5-flash-lite` (~1 s),
   fallback glm-5.3-flash; `PolishGate` skips chat targets and < 24 words; `AppStyle` = compose/chat only.
 - **OpenRouter account guardrails:** no-train + ZDR settings turn `require_parameters: true` into 404s
@@ -147,6 +157,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   `start()` — no consent check of their own (only the popover and onboarding, which show the notice in
   place, gate first). The window's start button never closes it; it closes itself once `isRecording`
   is true.
+- **Positioning (2026-09-24):** the public pitch (tagline, GitHub About/topics, README hero, cask/Raycast/
+  DMG text, hero + social-preview images) is written ONLY in `marketing/positioning.json`; `bun marketing/sync.ts
+  apply` writes the rest — never hand-edit the README `positioning`/`release` blocks. Three jobs: Dictate · Meet ·
+  Record screen (beta). Dictation is "Wispr Flow-style", never "alternative", while its STT is Scribe (cloud); held-back
+  claims are listed in `marketing/README.md`. Release gate: `reviewed_for` must equal the version; the
+  `.claude/settings.json` PreToolUse hook blocks `git tag vX.Y.Z` / `gh release create` until `check` passes.
 - **Meeting covers (2026-09-24):** Off by default; engines Codex (`codex exec` `image_gen`, `--ephemeral`, ChatGPT
   plan), OpenRouter (`POST /api/v1/images`, `google/gemini-3.1-flash-lite-image`) and a local server (Ollama
   `x/flux2-klein`). No Apple `ImageCreator`: deprecated 2026-06-11, dead on macOS 27, background-forbidden on 26.
@@ -210,6 +226,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - The repo is public — anything on `main` is world-readable.
 
 ## State (update in place, keep to a few lines)
+- Hands-free mid-hold (2026-09-24, CHANGELOG `[Unreleased]`): core tests, app build, pill filmed (bottom/right
+  edges, real click). Not yet human-verified: the real hotkey — dictation design §10.3 item 16 checklist (a)–(e).
 - Dictation retry merged to main 2026-09-24 (unreleased; CHANGELOG `[Unreleased]`): length-scaled
   Scribe budget + one retry, kept audio for failed/stopped dictations, pill Retry, History "Not
   transcribed" rows with Try again, History opening on the requested tab. Verified: 466 core tests,
@@ -230,12 +248,19 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   checklist items 2–12.
 - Meeting covers (2026-09-24, unreleased; `feat/meeting-covers`, CHANGELOG `[Unreleased]`; design
   `docs/plans/2026-09-24-meeting-illustrations.md`): Settings → Meetings → Covers, History row/header tiles with
-  New/Remove/Draw Cover(s), the covers Usage row, `kleoth illustrate`. Verified: 577 core tests, app build, CLI
+  New/Remove/Draw Cover(s), the covers Usage row, `kleoth illustrate`. Verified: 589 core tests (after merging main), app build, CLI
   live runs (a)–(e) on 2026-09-25 ($0.0673 OpenRouter + 1 Codex image), per-task Fable reviews. Not yet
   human-verified: the manual checklist (design doc §6, items 1–13).
 - Next (2026-09-24): context-aware dictation — in progress on `feat/dictation-context` (the T3 Code
   focus spike, `dictate --focus-probe`, awaits the user's run); then meetings in the pill (phase 1) +
   call detection (phase 2). Designs (local until each branch lands): `docs/plans/2026-09-24-*.md`. After those:
   History as one timeline, then onboarding + positioning. Dropped: trimming silence before Scribe.
+- Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded 2026-09-25
+  (`check` keeps reminding about the preview until the next tag). Demo GIFs: merged (PR #7). Later: a Kleoth
+  landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
+- Demo films (2026-09-25, merged PR #7; no captions under the GIFs by choice): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
+  `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
+  (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height;
+  on-device meeting transcripts aren't split into turns (Whisper segments abut → `TranscriptNormalizer` sees no gap).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

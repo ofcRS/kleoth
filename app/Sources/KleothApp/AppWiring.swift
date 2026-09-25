@@ -29,6 +29,9 @@ final class AppActivation {
     /// Call when a managed window (History / Settings) appears: become a regular,
     /// ⌘-Tab-able app and bring it forward.
     func windowOpened() {
+        // A demo launch films its window from behind the user's; it never
+        // takes focus or a Dock icon.
+        guard !DemoMode.isOn else { return }
         if NSApp.activationPolicy() != .regular {
             NSApp.setActivationPolicy(.regular)
         }
@@ -40,6 +43,7 @@ final class AppActivation {
     /// runloop tick so the closing window has already left the visible set; the
     /// menu-bar popover and status item are borderless, so they don't count.
     func windowClosed() {
+        guard !DemoMode.isOn else { return }
         DispatchQueue.main.async {
             let hasContentWindow = NSApp.windows.contains {
                 $0.isVisible && $0.styleMask.contains(.titled)

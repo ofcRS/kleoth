@@ -1,0 +1,18 @@
+# The second meeting the README film selects.
+when: 0 09:15
+you: Samantha
+them: Daniel | Daniel
+
+YOU: Morning, Daniel. How was your week?
+THEM: Busy, but good. The search rewrite is merged. Queries on big workspaces went from about two seconds to under three hundred milliseconds.
+YOU: That's a huge difference. Did anything break?
+THEM: One thing. Search results stopped showing archived projects, and two customers noticed. I pushed a fix yesterday.
+YOU: Good catch. What are you picking up next?
+THEM: I'd like to take the offline mode spike. I think we can cache the last fifty documents without changing the sync engine.
+YOU: I'd love that, but I don't want it to eat the whole sprint. Can you time box it to three days, and write up what you find?
+THEM: Sure. Three days, and a short write up on Friday.
+YOU: You also said you wanted to do more code review. Is that still true?
+THEM: Yes. I'd like to be a reviewer on the mobile repo.
+YOU: I'll add you this week, and pair you with Ana for your first few reviews.
+THEM: Thanks. That's everything from me.
+YOU: Great work on search. Talk next week.

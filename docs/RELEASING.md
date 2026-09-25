@@ -54,6 +54,9 @@ resource bundle, then copies the app to `/Applications`.
 bash app/make-dmg.sh
 ```
 
+If `marketing/positioning.json` changed since the last `bun marketing/sync.ts apply`, run
+`bun marketing/sync.ts apply --no-remote` first: the DMG's *Read Me.txt* heading comes from it.
+
 This runs `make-app.sh release` first (so the DMG always matches what runs), stages the app with an
 `/Applications` symlink + a `Read Me.txt` + the volume icon, builds a compressed `UDZO` DMG, signs
 the DMG (with "Kleoth Self-Signed", else ad-hoc), verifies it, and prints the size + SHA-256.
@@ -113,7 +116,27 @@ shasum -a 256 app/dist/Kleoth-<version>.dmg
 - [ ] Move the `[Unreleased]` notes (if any) into a dated `[<version>]` section in
       `CHANGELOG.md` (Keep a Changelog format).
 
-## 9. Tag and publish the GitHub release
+## 9. Commercial info (positioning)
+
+Every public copy of Kleoth's pitch comes from `marketing/positioning.json`
+(see [`marketing/README.md`](../marketing/README.md)). A release is where it drifts, so:
+
+- [ ] Read the new `CHANGELOG.md` section against `marketing/positioning.json` and the pages
+      `docs/dictation.md`, `docs/meetings.md`, `docs/screen-recording.md`, `docs/ai-providers.md`:
+      new jobs, a beta that graduated, a held-back claim that became true, a claim that stopped
+      being true. Update the copy.
+- [ ] Set `reviewed_for` in `positioning.json` to `<version>`.
+- [ ] `bun marketing/sync.ts apply` — rewrites the README hero and download link, the cask
+      `desc`/`version`/`sha256`, the Raycast description, the DMG Read Me heading, the images (if
+      their text changed) and the GitHub About/topics.
+- [ ] If `docs/assets/social-preview.png` changed: upload it (GitHub → Settings → General → Social
+      preview; there is no API).
+- [ ] `bun marketing/sync.ts check` passes; commit.
+
+In a Claude Code session the `.claude/settings.json` hook runs this check before `git tag v…`
+and `gh release create`, and blocks them until it passes.
+
+## 10. Tag and publish the GitHub release
 
 ```sh
 git tag v<version>            # e.g. v0.2.0
@@ -128,13 +151,13 @@ gh release create v<version> \
 - [ ] Release notes include the **SHA-256** from step 5/7.
 - [ ] The DMG is attached.
 
-## 10. Update the Homebrew cask
+## 11. Update the Homebrew cask
 
-- [ ] In `packaging/homebrew/kleoth.rb`, bump `version` and replace `sha256` with the new checksum.
+- [ ] `packaging/homebrew/kleoth.rb` already has the new `version` and `sha256` (step 9's `apply`).
 - [ ] Push to the tap repo (e.g. `homebrew-kleoth`). The `livecheck` block tracks GitHub Releases.
 - [ ] **[Developer Program]** Once notarized, remove the self-signed `caveats` note from the cask.
 
-## 11. Announce
+## 12. Announce
 
 - [ ] Link the release; note "right-click → Open on first launch" until notarized builds land.
 

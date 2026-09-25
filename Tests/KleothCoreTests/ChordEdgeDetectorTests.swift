@@ -10,6 +10,7 @@ import Foundation
         static let fn = Mods(rawValue: 1 << 0)
         static let shift = Mods(rawValue: 1 << 1)
         static let command = Mods(rawValue: 1 << 2)
+        static let option = Mods(rawValue: 1 << 3)
         static let chord: Mods = [.fn, .shift]
     }
 
@@ -25,7 +26,8 @@ import Foundation
     }
 
     @Test func addingAThirdModifierMidHoldReadsAsChordUp() {
-        // From `holding` the machine commits (.ended) — the documented 7b
+        // With no latch modifier configured, ⌘ is like any third modifier:
+        // from `holding` the machine commits (.ended) — the documented 7b
         // behavior; from `pressed` it discards as a short tap.
         var detector = ChordEdgeDetector(chord: Mods.chord)
         _ = detector.ingest([.fn, .shift])
@@ -56,6 +58,46 @@ import Foundation
         #expect(detector.ingest([.fn, .shift, .command]) == .chordUp)
         #expect(detector.ingest([.fn, .shift]) == nil)
         #expect(detector.ingest([.fn]) == nil)
+        #expect(detector.ingest([]) == nil)
+    }
+
+    // MARK: The latch modifier (⌘ mid-hold → hands-free, 2026-09-24)
+
+    @Test func addingTheLatchModifierMidHoldReadsAsLatch() {
+        var detector = ChordEdgeDetector(chord: Mods.chord, latch: Mods.command)
+        #expect(detector.ingest([.fn, .shift]) == .chordDown)
+        #expect(detector.ingest([.fn, .shift, .command]) == .latchKey)
+        // The chord is over for the machine, exactly as after `.chordUp`…
+        #expect(!detector.chordIsDown)
+        // …so releasing ⌘ with fn+shift still down never re-arms, and the
+        // eventual fn/shift release is silent.
+        #expect(detector.ingest([.fn, .shift]) == nil)
+        #expect(detector.ingest([.fn, .shift, .command]) == nil)   // a second ⌘ tap
+        #expect(detector.ingest([.fn, .shift]) == nil)
+        #expect(detector.ingest([.fn]) == nil)
+        #expect(detector.ingest([]) == nil)
+        // A genuine press afterwards is an ordinary chord-down.
+        #expect(detector.ingest([.fn, .shift]) == .chordDown)
+    }
+
+    @Test func anyOtherThirdModifierMidHoldIsStillChordUp() {
+        var detector = ChordEdgeDetector(chord: Mods.chord, latch: Mods.command)
+        _ = detector.ingest([.fn, .shift])
+        #expect(detector.ingest([.fn, .shift, .option]) == .chordUp)
+
+        // ⌘ together with another modifier is not the latch either.
+        var both = ChordEdgeDetector(chord: Mods.chord, latch: Mods.command)
+        _ = both.ingest([.fn, .shift])
+        #expect(both.ingest([.fn, .shift, .command, .option]) == .chordUp)
+    }
+
+    @Test func theLatchModifierNeverArmsFromASuperset() {
+        // ⌘ first, then fn+shift: the chord never matched exactly, so there is
+        // no held chord to latch — nothing reaches the machine.
+        var detector = ChordEdgeDetector(chord: Mods.chord, latch: Mods.command)
+        #expect(detector.ingest([.command]) == nil)
+        #expect(detector.ingest([.fn, .shift, .command]) == nil)
+        #expect(detector.ingest([.fn, .shift]) == nil)
         #expect(detector.ingest([]) == nil)
     }
 
