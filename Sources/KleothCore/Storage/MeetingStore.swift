@@ -416,7 +416,9 @@ public struct MeetingStore {
 
     static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // `.withoutEscapingSlashes`: model ids and paths carry `/`, these files
+        // are read and hand-edited by people, and every reader decodes both forms.
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return encoder
     }

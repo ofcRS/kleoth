@@ -40,6 +40,13 @@ public struct CoverStore: Sendable {
     public static let recordFileName = "cover.json"
     /// Pictures History shows, in order of preference.
     public static let displayableImageNames = ["cover.jpg", "cover.png"]
+    /// `install`'s temp file: `.cover-<uuid>.tmp` in the meeting folder.
+    public static let temporaryFilePrefix = ".cover-"
+    public static let temporaryFileSuffix = ".tmp"
+    /// A temp file older than this is debris from a kill mid-install; a
+    /// younger one may belong to a draw in flight (`kleoth illustrate` while
+    /// the app launches, or a job of the app's own).
+    public static let temporaryFileMaxAge: TimeInterval = 3_600
 
     public init() {}
 
@@ -93,8 +100,10 @@ public struct CoverStore: Sendable {
     /// `CoverStoreError.meetingFolderMissing` instead of being resurrected.
     public func install(jpeg: Data, record: CoverRecord, in meetingDir: URL, trash: (URL) throws -> Void) throws {
         try requireFolder(meetingDir)
+        sweepTemporaryFiles(in: meetingDir)
         let fm = FileManager.default
-        let temp = meetingDir.appendingPathComponent(".cover-\(UUID().uuidString).tmp")
+        let temp = meetingDir.appendingPathComponent(
+            Self.temporaryFilePrefix + UUID().uuidString + Self.temporaryFileSuffix)
         do {
             try jpeg.write(to: temp)
             // Every previous picture goes to the Trash — a stray cover.png too,
@@ -136,6 +145,28 @@ public struct CoverStore: Sendable {
             if FileManager.default.fileExists(atPath: picture.path) { try trash(picture) }
         }
         try writeRecord(CoverRecord(state: .removed, createdAt: CoverRecord.timestamp(now)), in: meetingDir)
+    }
+
+    /// Removes the `.cover-*.tmp` files in `meetingDir` older than `maxAge`
+    /// (design §10, known gap: a kill between the temp write and the rename
+    /// leaves one). Younger ones stay — see `temporaryFileMaxAge`. Returns what
+    /// it removed; a missing or unreadable folder yields nothing and never throws.
+    @discardableResult
+    public func sweepTemporaryFiles(
+        in meetingDir: URL, now: Date = Date(), maxAge: TimeInterval = temporaryFileMaxAge
+    ) -> [URL] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: meetingDir.path) else { return [] }
+        var removed: [URL] = []
+        for name in names where name.hasPrefix(Self.temporaryFilePrefix) && name.hasSuffix(Self.temporaryFileSuffix) {
+            let url = meetingDir.appendingPathComponent(name)
+            guard let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+                  now.timeIntervalSince(modified) > maxAge,
+                  (try? fm.removeItem(at: url)) != nil
+            else { continue }
+            removed.append(url)
+        }
+        return removed.sorted { $0.path < $1.path }
     }
 
     // MARK: - Usage
