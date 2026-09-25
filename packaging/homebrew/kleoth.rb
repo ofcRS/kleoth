@@ -28,9 +28,10 @@ cask "kleoth" do
   # Remove this block once notarized builds ship — until then macOS Gatekeeper
   # blocks the first launch because the app is self-signed (no Developer ID).
   caveats <<~EOS
-    Kleoth is currently distributed as a self-signed (un-notarized) build.
-    On first launch, macOS may say it is from an unidentified developer.
-    Right-click Kleoth.app in Applications and choose "Open" (once), or run:
+    Kleoth isn't notarized yet, so macOS blocks its first launch. Allow it once:
+    on macOS 15 or later, System Settings → Privacy & Security → Open Anyway;
+    on macOS 14, right-click Kleoth.app in Applications and choose "Open".
+    Or run:
 
       xattr -dr com.apple.quarantine "#{appdir}/Kleoth.app"
   EOS
