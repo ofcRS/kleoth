@@ -63,13 +63,16 @@ final class DemoDirector {
         guard let script = DemoMode.script.flatMap(Script.init(rawValue:)) else {
             return quit("-KleothDemoScript must be meeting, viewer or still")
         }
-        // The three controllers History reads, built here (each sets its
-        // `shared`): in demo mode no `KleothApp` exists to own them.
+        // The controllers History reads, built here (each sets its `shared`):
+        // in demo mode no `KleothApp` exists to own them. Covers stay Off
+        // (`AppConfig.settings()` forces it), so no tile, menu or draw is
+        // filmed; the controller exists only because History's views read it.
         let recording = RecordingController()
         let dictation = DictationController()
         let screen = ScreenRecordingController()
         let director = DemoDirector(script: script, film: film)
         director.controllers = (recording, dictation, screen)
+        director.covers = CoverController()
         current = director
         director.begin(recording: recording, dictation: dictation, screen: screen)
     }
@@ -88,6 +91,7 @@ final class DemoDirector {
     private let script: Script
     private let writer: DemoFilmWriter
     private var controllers: (RecordingController, DictationController, ScreenRecordingController)?
+    private var covers: CoverController?
     private var window: NSWindow?
     private var captureTimer: Timer?
     private var started = Date()
@@ -158,6 +162,7 @@ final class DemoDirector {
             .environmentObject(recording)
             .environmentObject(dictation)
             .environmentObject(screen)
+            .environmentObject(covers ?? CoverController())   // set in `start()`; History's views crash without one
             .frame(width: windowSize.width, height: windowSize.height)
         let window = DemoWindow(
             contentRect: CGRect(origin: .zero, size: windowSize),

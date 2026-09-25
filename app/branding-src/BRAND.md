@@ -88,3 +88,40 @@ overlaps its lower right corner, with just two graphite hands, no numbers or tic
 pending transcription." Readable at 112 px.
 
 Full texts: `app/branding-src/cleos-v2/prompts.json`.
+
+## Meeting covers
+
+Meeting covers (`docs/plans/2026-09-24-meeting-illustrations.md`) are **user content, not the object
+family**. Each one pictures one of the user's meetings, drawn by the image engine the user picked,
+so none of the rules above applies to them. They never stand in for brand imagery (the icon, the
+empty states, the README hero) and never appear in Settings. Where the family is sculptural objects
+on transparent alpha with a generous margin, a cover is a coloured scene of cute animals or everyday
+objects that fills its square edge to edge — a matted picture reads as a pale square in the 40 pt
+History tile.
+The in-app neutral tile (no cover, or a skipped meeting) is the vector `LyreMark`, never generated.
+
+The image prompt is "A square cover illustration for a meeting. ‹scene› Style: ‹style sentence›
+‹composition› ‹guardrail›" (`CoverPrompt.imagePrompt`). The style sentences
+(`CoverStyle.promptSentence`), verbatim:
+
+- **Animation** — "soft 3D animated-film look, rounded plush-toy characters, warm pastel colours, soft even light."
+- **Illustration** — "flat 2D storybook illustration, simple rounded shapes, soft pastel palette, subtle paper grain, clean outlines."
+- **Sketch** — "friendly hand-drawn pencil sketch with light watercolour washes that fill the square, warm off-white paper tone."
+- **Clay** — "handmade clay-and-felt miniature diorama, stop-motion look, tactile textures, soft studio light."
+
+The composition (`CoverPrompt.composition`): "One clear focal scene, centred, simple uncluttered
+background; it must read as a small thumbnail. The picture fills the whole square edge to edge: no
+border, frame, mat, card or vignette."
+
+The guardrail (`CoverPrompt.guardrail`), verbatim and always last: "Strictly no text, letters,
+numbers, logos, signs, watermarks or captions. No humans, human faces or hands."
+
+**Look test (2026-09-24, verdict 2026-09-25).** 23 images of four synthetic meetings; the two
+sensitive ones were skipped, as they should be. Codex looked best: full-bleed every time, no frame,
+the least lettering, about 50 s a cover. Gemini 3.1 Flash Lite Image (Kleoth's OpenRouter default)
+carries Clay and Animation best at 40 pt. "Generous margins" drew a baked-in mat, card or border in
+10 of 23 images, and printed boxes and the word "puzzled" drew lettering and a "?" — hence the
+edge-to-edge composition, Sketch's washes that fill the square, and the scene prompt's list of
+things that carry print. The user kept all four styles. **Recraft and FLUX not listed yet; re-test
+after the wording fix** (the user, 2026-09-25): both pass this account's data policy, but each baked
+in a border and drew the otters as other animals.

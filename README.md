@@ -186,8 +186,8 @@ Meetings and screen recordings need no API key.
 Open **Settings** from the menu bar. Everything in it is optional:
 
 - **Meetings** — the on-device model, the transcription language (auto-detected, or pinned),
-  automatic transcription after recording, the summary model, and naming meetings after your
-  calendar event.
+  automatic transcription after recording, the summary model, naming meetings after your
+  calendar event, and [meeting covers](#meeting-covers) (off by default).
 - **Dictation** — hold-to-talk on or off, the clean-up model, whether short dictations and chat
   messages are cleaned up too, your personal dictionary, and resetting the pill's position. Without
   an AI provider, the raw transcript is pasted as-is.
@@ -203,6 +203,25 @@ Open **Settings** from the menu bar. Everything in it is optional:
 
 Keys are stored in the macOS Keychain.
 
+### Meeting covers
+
+Off by default. Turn covers on in Settings → Meetings → Covers and each summarized meeting gets a
+small square picture on its History row and in its header: cute animals or everyday objects acting
+out what the meeting was about, as Animation, Illustration, Sketch or Clay. Your AI provider first
+writes a one-sentence scene from the meeting's title, TL;DR and the start of its overview — no
+names, quotes or transcript — and only that scene goes to the image engine. A meeting that looks
+personal (health, performance, pay, hiring, legal matters, family) gets no picture.
+
+| Engine | What it needs | What leaves your Mac |
+|---|---|---|
+| Local server | Ollama with an image model pulled (default `x/flux2-klein`) | nothing |
+| Codex | the `codex` CLI installed and signed in | the scene, to OpenAI over your ChatGPT login — about a minute per cover, within your plan's limits |
+| OpenRouter | an API key | the scene — each cover is billed to your OpenRouter account |
+
+The summary itself goes only to the provider that already summarized the transcript. Click a
+cover for **New Cover** or **Remove Cover**; select older meetings and choose **Draw Covers** to
+give them one.
+
 ## CLI
 
 The repo also ships a `kleoth` command-line tool for the same pipeline (audio file → transcript →
@@ -213,6 +232,7 @@ swift run kleoth transcribe meeting.m4a   # ElevenLabs Scribe; diarized; saves t
 swift run kleoth summarize  <dir|file>    # transcribe (if needed) + AI summary  (--provider, --model)
 swift run kleoth rename     <dir>         # assign real names to speaker_0 / speaker_1 …
 swift run kleoth render     <dir>         # re-render summary.md from summary.json (no API calls)
+swift run kleoth illustrate <dir>...      # draw a cover for summarized meetings (--engine, --style, --dry-run)
 ```
 
 `summarize` runs on the same providers as the app: `--provider claude-code`, `codex`, `local` or
@@ -243,6 +263,9 @@ server — there isn't one. What does leave, and when:
   OpenAI under your account.
   To keep them on your Mac, pick a local server (Ollama, LM Studio) or, for dictation, Apple's
   on-device model in Settings → Accounts (see [Bring your own AI](#bring-your-own-ai)).
+- **Meeting covers** (off by default): a one-sentence scene written from the summary goes to the image
+  engine you pick — to OpenAI through Codex, or to OpenRouter; a local server keeps it on your Mac. See
+  [Meeting covers](#meeting-covers).
 
 Each meeting is one self-contained folder, `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`:
 
@@ -252,6 +275,7 @@ transcript.json · transcript.md       # the transcript (raw + rendered)
 summary.json   · summary.md           # the AI summary (if generated)
 speakers.json                         # speaker_0 / speaker_1 → display names (You / Them)
 meta.json                             # metadata: duration, tier, timestamps, consent
+cover.jpg · cover.json                # the meeting's cover and how it was drawn (if covers are on)
 ```
 
 Dictations are text: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished text, the

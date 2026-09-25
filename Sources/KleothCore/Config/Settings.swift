@@ -31,6 +31,8 @@ public struct Settings: Sendable {
     public var inputDeviceId: String?
     /// Which language-model backend runs summaries and dictation polish (design doc 2026-09-15).
     public var providerSettings: ProviderSettings
+    /// Meeting covers (design doc 2026-09-24); nil engine = Off.
+    public var coverSettings: CoverSettings
 
     public init(
         outputDir: URL,
@@ -41,7 +43,8 @@ public struct Settings: Sendable {
         dictationModel: String = DictationDefaults.polishModel,
         dictationPolishAlways: Bool = false,
         inputDeviceId: String? = nil,
-        providerSettings: ProviderSettings = ProviderSettings()
+        providerSettings: ProviderSettings = ProviderSettings(),
+        coverSettings: CoverSettings = CoverSettings()
     ) {
         self.outputDir = outputDir
         self.defaultModel = defaultModel
@@ -52,6 +55,7 @@ public struct Settings: Sendable {
         self.dictationPolishAlways = dictationPolishAlways
         self.inputDeviceId = inputDeviceId
         self.providerSettings = providerSettings
+        self.coverSettings = coverSettings
     }
 
     /// `providerSettings` with OpenRouter's two models filled from the
@@ -135,7 +139,8 @@ public struct Settings: Sendable {
             dictationModel: dictationModel,
             dictationPolishAlways: dictationPolishAlways,
             inputDeviceId: inputDeviceId,
-            providerSettings: providerSettings
+            providerSettings: providerSettings,
+            coverSettings: CoverSettings.load(config: config)
         )
     }
 

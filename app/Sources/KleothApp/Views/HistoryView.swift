@@ -65,6 +65,7 @@ struct HistoryView: View {
     @EnvironmentObject private var controller: RecordingController
     @EnvironmentObject private var screenRecording: ScreenRecordingController
     @EnvironmentObject private var dictation: DictationController
+    @EnvironmentObject private var covers: CoverController
     @State private var scope: HistoryScope = .meetings
     @State private var selection = Set<RecentMeeting.ID>()
     @State private var search = ""
@@ -73,6 +74,10 @@ struct HistoryView: View {
     @State private var renamingID: RecentMeeting.ID?
     @State private var renameDraft = ""
     @FocusState private var renameFocus: RecentMeeting.ID?
+
+    /// A context-menu cover batch waiting on its confirmation: OpenRouter bills
+    /// each cover, so five or more ask first (§3.5). Nil = no dialog.
+    @State private var pendingBatch: [RecentMeeting]?
 
     var body: some View {
         // The window-lifetime hooks live HERE, above the scope switch — not on
@@ -175,6 +180,7 @@ struct HistoryView: View {
                             meeting: meeting,
                             errorMessage: controller.meetingError(for: meeting.directory),
                             isSummarizing: controller.isSummarizingMeeting(meeting.directory),
+                            showsCover: covers.engine != nil,
                             isRenaming: renamingID == meeting.id,
                             renameDraft: $renameDraft,
                             renameFocus: $renameFocus,
@@ -202,6 +208,21 @@ struct HistoryView: View {
             // Double-click (and Return) on a single row → inline rename, like Finder.
             guard ids.count == 1, let id = ids.first, let meeting = meeting(for: id) else { return }
             beginRename(meeting)
+        }
+        // The context menu's cover batch with OpenRouter and N ≥ 5. It names
+        // no amount: money appears only in Settings → Usage. `presenting:`
+        // hands the batch to the buttons as it was when the dialog opened, so
+        // the dismissal clearing `pendingBatch` can't race the Draw action.
+        .confirmationDialog(
+            "Draw \(pendingBatch?.count ?? 0) covers with OpenRouter?",
+            isPresented: Binding(get: { pendingBatch != nil }, set: { if !$0 { pendingBatch = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingBatch
+        ) { batch in
+            Button("Draw Covers") { covers.draw(batch) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Each one is billed to your OpenRouter account.")
         }
         // ⌫ moves the current selection to the Trash (needs List keyboard focus).
         .onDeleteCommand { deleteMeetings(with: selection) }
@@ -240,6 +261,18 @@ struct HistoryView: View {
             Button("Show in Finder") {
                 let urls = ids.compactMap { meeting(for: $0)?.directory }
                 NSWorkspace.shared.activateFileViewerSelecting(urls)
+            }
+            // Covers for the clicked meetings that can take one: summarized,
+            // no picture yet, not mid-run. One already being drawn is left
+            // out, because the controller would skip it, so N counts only the
+            // covers this click starts (and the confirmation bills for).
+            let drawable = ids.compactMap { meeting(for: $0) }.filter {
+                $0.hasSummary && $0.coverImageURL == nil && !$0.isTranscribing && !covers.isBusy($0.directory)
+            }
+            if covers.engine != nil, !drawable.isEmpty {
+                Button(drawable.count == 1 ? "Draw Cover" : "Draw Covers for \(drawable.count) Meetings") {
+                    requestCovers(drawable)
+                }
             }
             // Revert to audio-only (artifacts go to the Trash; title/audio stay).
             // `ids` is authoritative here — never read `selection` in this closure.
@@ -338,6 +371,17 @@ struct HistoryView: View {
         // onChange(of: recentMeetings) re-points the selection at the newest row.
     }
 
+    /// Draw Cover(s) from the context menu, in the Style setting. OpenRouter
+    /// bills per cover, so five or more there ask first. The local server and
+    /// Codex cost Kleoth nothing and go straight to the queue.
+    private func requestCovers(_ meetings: [RecentMeeting]) {
+        if covers.engine == .openRouter, meetings.count >= 5 {
+            pendingBatch = meetings
+        } else {
+            covers.draw(meetings)
+        }
+    }
+
     // MARK: - Inline rename
 
     private func beginRename(_ meeting: RecentMeeting) {
@@ -400,8 +444,9 @@ struct HistoryView: View {
 /// One row in the history sidebar: a title with clear hierarchy over a secondary
 /// "time · duration" line and a color-coded tier badge (or an "Untranscribed"
 /// chip). While renaming, the title swaps to an inline plain TextField (Enter
-/// commits, Esc cancels — wiring lives in the parent). Built from the shared
-/// Kleoth design system so it reads as one product with the rest of the app.
+/// commits, Esc cancels — wiring lives in the parent). With Covers on, a 40 pt
+/// cover tile sits at the trailing edge. Built from the shared Kleoth design
+/// system so it reads as one product with the rest of the app.
 /// No costs here — provider usage lives in Settings → Usage only.
 private struct MeetingSidebarRow: View {
     let meeting: RecentMeeting
@@ -411,6 +456,8 @@ private struct MeetingSidebarRow: View {
     /// Whether the in-flight run is a summary alone (Summarize), so the busy
     /// label says "Summarizing…" rather than "Transcribing…".
     let isSummarizing: Bool
+    /// Whether Covers ≠ Off. Off shows no tile at all, not an empty slot.
+    let showsCover: Bool
     let isRenaming: Bool
     @Binding var renameDraft: String
     var renameFocus: FocusState<RecentMeeting.ID?>.Binding
@@ -418,37 +465,44 @@ private struct MeetingSidebarRow: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            // Primary: the meeting title carries the row's weight.
-            if isRenaming {
-                TextField("Meeting title", text: $renameDraft)
-                    .textFieldStyle(.plain)
-                    .font(.body.weight(.medium))
-                    .focused(renameFocus, equals: meeting.id)
-                    .onSubmit(onCommit)
-                    .onExitCommand(perform: onCancel)
-            } else {
-                Text(meeting.title)
-                    .font(.body.weight(.medium))
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-            }
+        // The tile trails, so titles line up whether or not a row has art.
+        HStack(alignment: .center, spacing: KleothMetrics.spacingS) {
+            VStack(alignment: .leading, spacing: 3) {
+                // Primary: the meeting title carries the row's weight.
+                if isRenaming {
+                    TextField("Meeting title", text: $renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(.body.weight(.medium))
+                        .focused(renameFocus, equals: meeting.id)
+                        .onSubmit(onCommit)
+                        .onExitCommand(perform: onCancel)
+                } else {
+                    Text(meeting.title)
+                        .font(.body.weight(.medium))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
 
-            // Secondary: when it started and how long it ran.
-            if let metadata = timeAndDuration {
-                Text(metadata)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+                // Secondary: when it started and how long it ran.
+                if let metadata = timeAndDuration {
+                    Text(metadata)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
-            // Status / quality: an "Untranscribed" chip for audio-only folders,
-            // otherwise the transcription-tier badge (On-device / Cloud).
-            statusBadge
-                .padding(.top, 1)
+                // Status / quality: an "Untranscribed" chip for audio-only folders,
+                // otherwise the transcription-tier badge (On-device / Cloud).
+                statusBadge
+                    .padding(.top, 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, KleothMetrics.spacingXS)
+
+            if showsCover {
+                MeetingCoverTile(meeting: meeting, size: 40)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, KleothMetrics.spacingXS)
     }
 
     /// "5:26 PM · 12m 03s · 214 MB", dropping whichever pieces are unknown.

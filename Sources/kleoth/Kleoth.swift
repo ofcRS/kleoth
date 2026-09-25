@@ -18,6 +18,7 @@ struct Kleoth: AsyncParsableCommand {
             Summarize.self,
             Rename.self,
             Render.self,
+            Illustrate.self,
         ]
     )
 }

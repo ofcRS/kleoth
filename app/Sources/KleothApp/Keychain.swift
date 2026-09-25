@@ -75,6 +75,20 @@ public enum Keychain {
         public static let localServerKey = "local_server_key"
         /// JSON map of per-provider, per-task models (`ProviderSettings.modelsJSON`).
         public static let aiModels = "ai_models"
+        /// The meeting-cover engine: a `CoverEngine` raw value, or `"off"`
+        /// (`CoverEngine.offValue`) for Off — the default, and never written
+        /// empty, which would delete the key. New key: NOT in `legacyAccounts`.
+        public static let coverEngine = "cover_engine"
+        /// `"false"` draws covers only when asked for in History; anything
+        /// else (or absent) draws one after each summary. New key: NOT in
+        /// `legacyAccounts`.
+        public static let coverAutomatic = "cover_automatic"
+        /// A `CoverStyle` raw value, or `"auto"` for Automatic (the scene step
+        /// picks by mood). New key: NOT in `legacyAccounts`.
+        public static let coverStyle = "cover_style"
+        /// JSON map of per-engine image models (`CoverSettings.modelsJSON`).
+        /// New key: NOT in `legacyAccounts`.
+        public static let coverModels = "cover_models"
     }
 
     /// Every legacy per-value account, for the one-time migration.

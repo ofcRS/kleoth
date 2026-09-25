@@ -171,8 +171,9 @@ public actor ProviderDetector {
         return snap
     }
 
-    /// `localhost:11434`
-    static func hostLabel(_ url: URL) -> String {
+    /// `localhost:11434`. Public so the app's covers status line names the
+    /// server exactly as the provider rows do.
+    public static func hostLabel(_ url: URL) -> String {
         var label = url.host ?? url.absoluteString
         if let port = url.port { label += ":\(port)" }
         return label

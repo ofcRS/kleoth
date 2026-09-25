@@ -104,16 +104,34 @@ enum AppConfig {
         if let models = Keychain.get(Keychain.Account.aiModels), !models.isEmpty {
             merged.providerSettings.models = ProviderSettings.parseModels(models)
         }
+        // Meeting covers: a stored "off" is the user's explicit Off and overrides a config.json engine.
+        // Trimmed and lowercased like `CoverSettings.load`, so both sources read a value the same way.
+        if let engine = Keychain.get(Keychain.Account.coverEngine), !engine.isEmpty {
+            let raw = engine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            merged.coverSettings.engine = CoverEngine(rawValue: raw)      // "off" / unknown → nil
+        }
+        if let automatic = Keychain.get(Keychain.Account.coverAutomatic), !automatic.isEmpty {
+            merged.coverSettings.automatic = (automatic != "false")
+        }
+        if let style = Keychain.get(Keychain.Account.coverStyle), !style.isEmpty {
+            let raw = style.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            merged.coverSettings.style = CoverStyle(rawValue: raw)          // "auto" / unknown → nil
+        }
+        if let models = Keychain.get(Keychain.Account.coverModels), !models.isEmpty {
+            merged.coverSettings.models = CoverSettings.parseModels(models)
+        }
         merged.defaultModel = ModelCatalog.migrating(merged.defaultModel)
         // Chains `ModelCatalog.migrating` and the retired polish defaults
         // (`DictationDefaults.retiredPolishModels`).
         merged.dictationModel = DictationDefaults.migratingPolishModel(merged.dictationModel)
         // Demo mode: whatever `config.json` says, every folder is the demo
-        // folder and nothing starts on its own.
+        // folder and nothing starts on its own. Covers stay Off, so the films
+        // show History as it is without them and no cover is ever drawn.
         if DemoMode.isOn {
             merged.outputDir = DemoMode.outputDir
             merged.dictationEnabled = false
             merged.autoTranscribe = false
+            merged.coverSettings = CoverSettings()
         }
         return merged
     }
@@ -179,5 +197,70 @@ enum AppConfig {
             snapshot: snapshot,
             summary: factory.select(task: .summary, snapshot: snapshot),
             dictation: factory.select(task: .dictation, snapshot: snapshot))
+    }
+
+    // MARK: - Meeting covers
+
+    /// The scene writer for a cover, or the `ProviderError` that says why
+    /// there is none. It is the `.summary` resolution through the same
+    /// detector: the scene is written by the backend that already summarized
+    /// the whole transcript, so a cloud image engine only ever sees the scene.
+    static func makeSceneWriter() async throws -> (CoverSceneWriter, ProviderFactory.Selection) {
+        // A demo launch reaches no provider, as in `makeSummarizer`.
+        if DemoMode.isOn { throw CancellationError() }
+        let settings = settings()
+        let credentials = credentials()
+        var factory = factory(settings: settings, credentials: credentials)
+        let snapshot = await detector.snapshot(settings: settings.effectiveProviderSettings, openRouterKey: credentials.openRouterKey)
+        let selection = try factory.select(task: .summary, snapshot: snapshot).get()
+        // The scene call gets the fail-fast transport so offline reads "No internet connection" (spec §5); summaries keep the waiting one.
+        factory.transport = CoverEngineFactory.cloudTransport
+        return (CoverSceneWriter(client: try factory.client(for: selection.provider), model: selection.model), selection)
+    }
+
+    /// The image engines for the current settings. Built per use, not cached,
+    /// so a key or server URL edited in Settings applies to the next cover.
+    static func coverEngineFactory() -> CoverEngineFactory {
+        CoverEngineFactory(
+            settings: settings(),
+            credentials: credentials(),
+            runner: FoundationProcessRunner(),
+            locator: .standard,
+            cloudTransport: CoverEngineFactory.cloudTransport,
+            localTransport: CoverEngineFactory.localTransport)
+    }
+
+    /// One status line per engine for Settings → Meetings → Covers (§3.1).
+    /// Read from the shared detector's snapshot, so it runs no probes of its
+    /// own while the cache is warm. OpenRouter and Codex show their provider
+    /// rows as they are; the local server's row names the image model instead
+    /// of the server's model count.
+    static func coverStatus() async -> [CoverEngine: ProviderAvailability] {
+        // A demo launch probes nothing; Settings is never filmed.
+        if DemoMode.isOn { return [:] }
+        let settings = settings()
+        let snapshot = await detector.snapshot(settings: settings.effectiveProviderSettings, openRouterKey: credentials().openRouterKey)
+        var status: [CoverEngine: ProviderAvailability] = [:]
+        status[.openRouter] = snapshot[.openRouter] ?? .unavailable(reason: "No API key")    // "API key set" / "No API key"
+        status[.codex] = snapshot[.codex] ?? .unavailable(reason: "Not installed")           // "Codex 0.153.4 · signed in" / "Not installed" / "Not signed in"
+        // "localhost:11434", spelled by the same helper as the provider rows so the two never drift.
+        let host = ProviderDetector.hostLabel(settings.providerSettings.localServerURL)
+        let model = settings.coverSettings.model(for: .localServer)
+        switch snapshot[.localServer] {
+        case let .available(_, models)?:
+            // Unverified that Ollama lists image models in /v1/models (spec §4.4): a server
+            // that is up but does not list the model says so, and the first draw reports a
+            // missing model for real. Ollama lists ids with their tag, so a pulled
+            // `x/flux2-klein` appears as `x/flux2-klein:latest`.
+            let listed = models.contains(model) || models.contains(model + ":latest")
+            status[.localServer] = .available(detail: listed
+                ? "Ollama at \(host) · \(model) ready"
+                : "Ollama at \(host) · run ollama pull \(model)")
+        case let .unavailable(reason)?:
+            status[.localServer] = .unavailable(reason: reason)                                // "No server at http://localhost:11434"
+        case nil:
+            status[.localServer] = .unavailable(reason: "Not detected")
+        }
+        return status
     }
 }
