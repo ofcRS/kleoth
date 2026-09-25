@@ -212,6 +212,8 @@ func phaseName(_ state: DictationPillState) -> String {
     case .recording: return "recording"
     case .saving: return "saving"
     case .saved: return "saved"
+    case .meeting: return "meeting"
+    case .meetingSaved: return "meetingsaved"
     }
 }
 
@@ -382,6 +384,10 @@ final class SandboxDriver: ObservableObject {
             controller.show(.transcribing)
         case .openAccessibilitySettings, .openScreenRecordingSettings:
             log("Open System Settings")
+        case .meeting(let action):
+            // Provisional: logged only until the sandbox drives the meeting
+            // bar (meetings-in-the-pill plan, Task 2).
+            log("Meeting action: \(action)")
         }
     }
 

@@ -1472,10 +1472,11 @@ final class DictationController: ObservableObject {
             AccessibilityPermission.openSystemSettings()
             pill.dismiss()
         case .startScreenRecording, .stopScreenRecording, .revealLastRecording,
-             .openScreenRecordingSettings:
+             .openScreenRecordingSettings, .meeting:
             // Never reaches here: `PillCoordinator` routes the recording
             // actions to `ScreenRecordingController` instead of the dictation
-            // face (§3.4). Listed so the switch stays exhaustive.
+            // face (§3.4), and the meeting actions to `MeetingPillBridge`.
+            // Listed so the switch stays exhaustive.
             break
         // The pill menu + peek dock (wired 2026-09-09). None of these dismiss
         // the pill: the menu has already closed, and the resting capsule is

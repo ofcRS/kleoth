@@ -133,6 +133,8 @@ struct DictationPillView: View {
                     controller.perform(.switchToHandsFree)
                 case .saved:
                     controller.perform(.revealLastRecording)
+                case .meetingSaved:
+                    controller.perform(.meeting(.openLast))
                 default:
                     // `.recording` deliberately does NOT stop here: the bar is
                     // a toolbar with its own Stop button, and everything else
@@ -510,6 +512,20 @@ struct DictationPillView: View {
             )
             .transition(.opacity)
         case .saved(let text):
+            Image(systemName: "checkmark")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(PillStyle.successTint)
+                .transition(.scale(scale: 0.4).combined(with: .opacity))
+                .accessibilityHidden(true)
+            label(text)
+        case .meeting(let since):
+            RecordingToolbar(
+                since: since, levels: model.recordingLevels, barHovered: model.hovered,
+                pointer: model.pointer, reduceMotion: reduceMotion,
+                onStop: { controller.perform(.meeting(.stop)) }
+            )
+            .transition(.opacity)
+        case .meetingSaved(let text):
             Image(systemName: "checkmark")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(PillStyle.successTint)
@@ -1041,6 +1057,17 @@ enum PillStyle {
     static var recordingContentWidth: CGFloat {
         recordDotSize + spacingS + elapsedWidth + spacingM
             + meterWidth + spacingS + meterWidth + spacingM + stopButtonSize
+    }
+    // MARK: Meeting toolbar
+    /// The people glyph after the dot on the MEETING bar — the one thing that
+    /// tells it from the screen bar (a bar that looked like the screen bar
+    /// would read as "my screen is being recorded", design §3.1.3).
+    static let meetingGlyphWidth: CGFloat = 14
+    /// ≈212 pt → a 240 pt capsule with the compact paddings. Mirrored by
+    /// `RecordingToolbar(meetingGlyph: true)`; `DictationPillController.layout`
+    /// sizes `.meeting` from it. THE TWO MUST AGREE.
+    static var meetingContentWidth: CGFloat {
+        recordingContentWidth + spacingXS + meetingGlyphWidth
     }
     /// `.saving` keeps the recording capsule's width, so its travelling wave
     /// runs the whole bar rather than floating in the middle of it. Chosen so

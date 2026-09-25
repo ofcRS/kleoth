@@ -312,6 +312,30 @@ public enum PillGeometry {
         )
     }
 
+    // MARK: Peek dock
+
+    /// The field of a `count`-field peek dock under a pointer `along` points
+    /// from the capsule's centre (fields `pitch` apart, centred on the
+    /// capsule), clamped to `0..<count`. Shared by `PeekDock`'s hit test and
+    /// the sandbox's film pointer, so the two can never disagree. A zero or
+    /// negative pitch, a non-finite pointer or an empty dock → field 0.
+    public static func dockFieldIndex(along: CGFloat, pitch: CGFloat, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        guard pitch.isFinite, pitch > 0, along.isFinite else { return 0 }
+        let raw = (along / pitch + CGFloat(count - 1) / 2).rounded()
+        guard raw.isFinite else { return 0 }
+        // Clamp BEFORE `Int(_:)`: a finite but huge ratio (a tiny pitch) would trap.
+        return Int(min(max(raw, 0), CGFloat(count - 1)))
+    }
+
+    /// The centre offset of field `index` — the inverse of `dockFieldIndex`,
+    /// for the sandbox. Index clamped to `0..<count`; bad pitch → 0.
+    public static func dockFieldCenter(index: Int, pitch: CGFloat, count: Int) -> CGFloat {
+        guard count > 0, pitch.isFinite, pitch > 0 else { return 0 }
+        let clamped = min(max(index, 0), count - 1)
+        return (CGFloat(clamped) - CGFloat(count - 1) / 2) * pitch
+    }
+
     // MARK: Level
 
     /// RMS amplitude (0…1) → meter level (0…1). Below `floorDecibels` the meter

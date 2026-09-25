@@ -90,7 +90,7 @@ final class DictationPillModel: ObservableObject {
         phase = newPhase
         // The recording meters are meaningless outside the recording toolbar.
         switch newPhase {
-        case .recording, .saving: break
+        case .recording, .saving, .meeting: break
         default: if recordingLevels != .zero { recordingLevels = .zero }
         }
         // The meter is meaningless outside `.listening`; zero it so a re-shown

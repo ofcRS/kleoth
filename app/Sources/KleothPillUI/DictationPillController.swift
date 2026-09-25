@@ -199,7 +199,7 @@ public final class DictationPillController: DictationPillPresenting {
     public func setRecordingLevels(_ levels: AudioLevels) {
         guard panel?.isVisible == true else { return }
         switch model.phase {
-        case .recording, .saving: break
+        case .recording, .saving, .meeting: break
         default:
             // A dictation is showing over the recording. Forget the filter
             // state too, or the meters would ease down from the pre-dictation
@@ -259,8 +259,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// dictation the user is watching.
     private static func isRestingFamily(_ state: DictationPillState) -> Bool {
         switch state {
-        case .hidden, .idle, .recording: return true
-        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved:
+        case .hidden, .idle, .recording, .meeting: return true
+        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved,
+             .meetingSaved:
             return false
         }
     }
@@ -293,8 +294,11 @@ public final class DictationPillController: DictationPillPresenting {
     /// mic glyph) and the bars then bloom in place. Still exactly one reshape.
     /// `model.phase` is still `.armed`; only the size is inherited.
     private func layoutState(for state: DictationPillState) -> DictationPillState {
-        if case .armed = state, case .recording = backdrop {
-            return .listening(handsFree: false)
+        if case .armed = state {
+            switch backdrop {
+            case .recording, .meeting: return .listening(handsFree: false)
+            case .hidden, .idle: break
+            }
         }
         return state
     }
@@ -1172,11 +1176,12 @@ public final class DictationPillController: DictationPillPresenting {
             // anchor 128 pt away from the top and bottom of the screen.
             return CGSize(width: thick.width, height: long.height)
         }
-        // Bottom/top: the recording toolbar is now the LONGEST phase, so the
+        // Bottom/top: the meeting bar (the recording toolbar plus the people
+        // glyph) is now the LONGEST phase, so the
         // one anchor is resolved against it — otherwise a pill docked near a
         // corner would have the bar clamped (and every other phase shifted by
         // the difference: the "levitating" bug this reference size exists for).
-        let bar = layout(for: .recording(since: .distantPast), edge: edge, on: screen, flat: true).panelSize
+        let bar = layout(for: .meeting(since: .distantPast), edge: edge, on: screen, flat: true).panelSize
         return CGSize(width: max(long.width, bar.width), height: max(thick.height, bar.height))
     }
 
@@ -1368,9 +1373,9 @@ public final class DictationPillController: DictationPillPresenting {
         case .warning, .failed: return 38
         // The live recording toolbar: tall enough for the digits, the two
         // meters and the Stop button to breathe without becoming a window.
-        case .recording, .saving: return 30
+        case .recording, .saving, .meeting: return 30
         // The motion thickness, so the text confirmation is ONE morph.
-        case .saved: return 32
+        case .saved, .meetingSaved: return 32
         }
     }
     /// Slack so a font or locale wider than measured never clips: the capsule
@@ -1407,11 +1412,13 @@ public final class DictationPillController: DictationPillPresenting {
     /// `.recording`, not `.idle`.)
     private func isFlat(_ state: DictationPillState) -> Bool {
         switch state {
-        case .recording, .saving, .saved: return true
+        case .recording, .saving, .saved, .meeting, .meetingSaved: return true
         case .hidden, .idle: return false
         case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed:
-            if case .recording = backdrop { return true }
-            return false
+            switch backdrop {
+            case .recording, .meeting: return true
+            case .hidden, .idle: return false
+            }
         }
     }
 
@@ -1467,10 +1474,14 @@ public final class DictationPillController: DictationPillPresenting {
         case .recording, .saving:
             // The live recording TOOLBAR: dot · digits · mic meter · system
             // meter · Stop, mirrored exactly by `RecordingToolbar` in the view
-            // (≈222 pt). It is now the longest phase, so `referenceSize`
-            // resolves the bottom/top anchor against it.
+            // (≈222 pt). Only the meeting bar below is longer; `referenceSize`
+            // resolves the bottom/top anchor against that one.
             length = PillStyle.recordingContentWidth + 2 * PillStyle.compactPadding
-        case .warning, .failed, .saved:
+        case .meeting:
+            // The meeting bar: the screen bar plus the people glyph
+            // (`PillStyle.meetingContentWidth`, ≈240 pt with the paddings).
+            length = PillStyle.meetingContentWidth + 2 * PillStyle.compactPadding
+        case .warning, .failed, .saved, .meetingSaved:
             // +1: SwiftUI's ideal text width can round up a hair past AppKit's
             // measurement; a frame narrower than the ideal would truncate.
             let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
@@ -1518,10 +1529,15 @@ public final class DictationPillController: DictationPillPresenting {
         // here on purpose: the recording backdrop is re-shown after every
         // dictation and would otherwise re-announce itself each time —
         // `ScreenRecordingController` posts the one "Screen recording started"
-        // announcement instead (§6.1). `.saved` announces itself.
+        // announcement instead (§6.1). `.meeting` is silent for the same
+        // reason: the bridge posts the one "Meeting recording started"
+        // announcement, like `ScreenRecordingController`. `.saved` and
+        // `.meetingSaved` announce themselves.
         switch state {
-        case .idle, .armed, .recording, .saving: return
-        case .hidden, .listening, .transcribing, .polishing, .done, .warning, .failed, .saved: break
+        case .idle, .armed, .recording, .saving, .meeting: return
+        case .hidden, .listening, .transcribing, .polishing, .done, .warning, .failed, .saved,
+             .meetingSaved:
+            break
         }
         NSAccessibility.post(
             element: NSApp as Any,
@@ -1554,7 +1570,8 @@ extension DictationPillState {
         case .failed(let fault): return fault.text
         case .recording: return "Recording the screen"
         case .saving: return "Saving the recording…"
-        case .saved(let text): return text
+        case .meeting: return "Recording the meeting"
+        case .saved(let text), .meetingSaved(let text): return text
         }
     }
 
@@ -1569,7 +1586,8 @@ extension DictationPillState {
         case .failed(let fault): return fault.symbolName
         case .recording: return "record.circle.fill"
         case .saving: return "waveform"
-        case .saved: return "checkmark.circle.fill"
+        case .meeting: return "person.2.wave.2.fill"
+        case .saved, .meetingSaved: return "checkmark.circle.fill"
         }
     }
 

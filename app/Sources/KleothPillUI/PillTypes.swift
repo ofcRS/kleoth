@@ -46,27 +46,37 @@ public enum DictationPillState: Equatable, Sendable {
     /// "2:14 · 48 MB" — a green check plus the text, auto-hiding after 4 s;
     /// a click reveals the file in Finder.
     case saved(String)
+    /// A meeting records — the pill's BACKDROP while it runs (never tucked,
+    /// flat on every edge), between the screen recording (which outranks it)
+    /// and the resting pill. `since` is FIXED for the meeting so every re-show
+    /// after a dictation compares equal and fires no spring (the
+    /// `.recording(since:)` rule). Meetings-in-the-pill design §3.1.3.
+    case meeting(since: Date)
+    /// "Meeting saved · 42:10" (· "transcribing" when auto-transcribe is on):
+    /// a green check plus the text, 4 s; a click opens History on that meeting.
+    case meetingSaved(String)
 
-    /// `.done` → 1.0 s, `.warning` → 3.0 s, `.saved` → 4.0 s, everything else
-    /// nil (persists). `.recording` and `.saving` last as long as the session.
+    /// `.done` → 1.0 s, `.warning` → 3.0 s, `.saved`/`.meetingSaved` → 4.0 s,
+    /// everything else nil (persists). `.recording`, `.saving` and `.meeting`
+    /// last as long as the session.
     public var autoHideAfter: Duration? {
         switch self {
         case .done: return .seconds(1)
         case .warning: return .seconds(3)
-        case .saved: return .seconds(4)
+        case .saved, .meetingSaved: return .seconds(4)
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .failed,
-             .recording, .saving:
+             .recording, .saving, .meeting:
             return nil
         }
     }
 
-    /// Only warnings, failures and the saved confirmation carry words; every
+    /// Only warnings, failures and the two saved confirmations carry words; every
     /// other phase is motion.
     public var showsText: Bool {
         switch self {
-        case .warning, .failed, .saved: return true
+        case .warning, .failed, .saved, .meetingSaved: return true
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done,
-             .recording, .saving:
+             .recording, .saving, .meeting:
             return false
         }
     }
@@ -79,6 +89,8 @@ public enum DictationPillBackdrop: Equatable, Sendable {
     case hidden
     case idle
     case recording(since: Date)
+    /// A meeting records (any origin). Outranked by `.recording`, outranks `.idle`.
+    case meeting(since: Date)
 
     /// The phase this backdrop shows as, or nil when the pill should be gone.
     public var state: DictationPillState? {
@@ -86,6 +98,7 @@ public enum DictationPillBackdrop: Equatable, Sendable {
         case .hidden: return nil
         case .idle: return .idle
         case .recording(let since): return .recording(since: since)
+        case .meeting(let since): return .meeting(since: since)
         }
     }
 }
@@ -183,6 +196,10 @@ public enum DictationPillAction: Equatable, Sendable {
     /// clip of the pending row `dictationId` again and paste it into the
     /// frontmost app.
     case retryTranscription(dictationId: String)
+    /// Everything the meeting side owns, in ONE case, so the dictation and
+    /// screen-recording controllers each carry a single `break` line and
+    /// phase 2 extends `MeetingPillAction` without touching them.
+    case meeting(MeetingPillAction)
 
     /// The label of the pill's action BUTTON. Empty for the tap-only actions:
     /// they are the capsule itself, not a button with words.
@@ -196,6 +213,25 @@ public enum DictationPillAction: Equatable, Sendable {
         case .startHandsFreeDictation, .stopHandsFreeDictation, .switchToHandsFree,
              .selectMicrophone, .pasteLastDictation, .openDictationHistory, .hideForAnHour:
             return ""
+        case .meeting(let action): return action.title
+        }
+    }
+}
+
+/// The meeting side's pill actions (meetings-in-the-pill design §4.3).
+public enum MeetingPillAction: Equatable, Sendable {
+    /// The dock's Meeting field, the menu's "Record meeting" row.
+    case start
+    /// The meeting bar's Stop, the menu's "Stop meeting recording" row.
+    case stop
+    /// A click on `.meetingSaved`: History on that meeting.
+    case openLast
+
+    /// The label of a BUTTON carrying this action; empty for the tap-only
+    /// actions (they are the capsule or a dock field, not a button with words).
+    public var title: String {
+        switch self {
+        case .start, .stop, .openLast: return ""
         }
     }
 }
@@ -252,18 +288,22 @@ public struct PillMenuContent: Sendable {
     public var lastDictationPreview: String?
     /// The hotkey, for the dictation row's hint.
     public var hotkeyDescription: String
+    /// The running meeting's fixed start, for the menu's meeting row; nil = no meeting recording.
+    public var meetingSince: Date?
 
     public init(
         microphones: [PillMicrophone] = [],
         selectedMicrophoneId: String? = nil,
         inUseMicrophoneName: String? = nil,
         lastDictationPreview: String? = nil,
-        hotkeyDescription: String = ""
+        hotkeyDescription: String = "",
+        meetingSince: Date? = nil
     ) {
         self.microphones = microphones
         self.selectedMicrophoneId = selectedMicrophoneId
         self.inUseMicrophoneName = inUseMicrophoneName
         self.lastDictationPreview = lastDictationPreview
         self.hotkeyDescription = hotkeyDescription
+        self.meetingSince = meetingSince
     }
 }

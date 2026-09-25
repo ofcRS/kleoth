@@ -32,6 +32,8 @@ final class PillCoordinator {
     /// Start / stop / reveal / open-Settings from the pill.
     /// `ScreenRecordingController` installs this in its `init`.
     var onRecordingAction: ((DictationPillAction) -> Void)?
+    /// The meeting side's actions; `MeetingPillBridge` installs this.
+    var onMeetingAction: ((MeetingPillAction) -> Void)?
 
     // MARK: - Merge inputs
 
@@ -113,7 +115,8 @@ final class PillCoordinator {
             guard lastShowOwner == .recording else { return }
             lastShowOwner = nil
             pill.dismiss()
-        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording:
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording,
+             .meeting, .meetingSaved:
             return
         }
     }
@@ -126,7 +129,7 @@ final class PillCoordinator {
             return true
         case .warning, .failed:
             return lastShowOwner == .dictation
-        case .hidden, .idle, .recording, .saving, .saved:
+        case .hidden, .idle, .recording, .saving, .saved, .meeting, .meetingSaved:
             return false
         }
     }
@@ -198,6 +201,8 @@ final class PillCoordinator {
         case .startScreenRecording, .stopScreenRecording, .revealLastRecording,
              .openScreenRecordingSettings:
             onRecordingAction?(action)
+        case .meeting(let action):
+            onMeetingAction?(action)
         case .openSettings, .openAccessibilitySettings,
              .startHandsFreeDictation, .stopHandsFreeDictation, .switchToHandsFree, .selectMicrophone,
              .pasteLastDictation, .openDictationHistory, .hideForAnHour, .retryTranscription:
