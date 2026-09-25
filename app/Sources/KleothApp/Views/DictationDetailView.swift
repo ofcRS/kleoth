@@ -33,6 +33,7 @@ struct DictationDetailView: View {
     @State private var copiedResetTask: Task<Void, Never>?
 
     @State private var showsRaw = false
+    @State private var showsReplaced = false
 
     var body: some View {
         ScrollView {
@@ -43,6 +44,7 @@ struct DictationDetailView: View {
                 } else {
                     polished
                     raw
+                    replaced
                 }
             }
             .padding(KleothMetrics.spacingL)
@@ -96,12 +98,19 @@ struct DictationDetailView: View {
                         KleothPill("Cleaned up", systemImage: "sparkles")
                             .help("Polished with \(model)")
                     }
-                    if entry.usedRawFallback {
+                    // A changed selection is a raw-fallback row too, and its
+                    // own "Selection changed" badge already says so.
+                    if entry.usedRawFallback,
+                       entry.fieldContext != DictationInsertionPlan.Outcome.selectionChanged.rawValue {
                         KleothPill("Raw", systemImage: "exclamationmark.triangle", tint: KleothPalette.pendingTint)
                     }
                     if let reason = skippedReason {
                         KleothPill("As heard", systemImage: "waveform.badge.checkmark")
                             .help(reason)
+                    }
+                    if let badge = fieldBadge {
+                        KleothPill(badge.title, systemImage: badge.systemImage, tint: badge.tint)
+                            .help(badge.help)
                     }
                     if entry.insertMethod == .clipboard {
                         KleothPill("Copied only", systemImage: "doc.on.clipboard", tint: KleothPalette.pendingTint)
@@ -127,17 +136,60 @@ struct DictationDetailView: View {
     /// Why the clean-up pass was deliberately skipped for this row — a
     /// messenger target or a short utterance (`PolishGate`). Recomputed from
     /// the stored fields (the row carries no reason of its own); nil for rows
-    /// that were polished or fell back.
+    /// that were polished or fell back. At a caret (`field_context: cursor`)
+    /// the paste was also spaced to fit the words around it, and says so.
     private var skippedReason: String? {
         // A pending row has no text to have skipped anything on.
         guard !entry.isPending, !entry.usedRawFallback, (entry.polishModel ?? "").isEmpty else { return nil }
+        // A selection being merged or appended to was gated with its field
+        // (Esc cut a merge short, or an append skipped at the selection's
+        // end). The row doesn't store that field, so recomputing without it
+        // could name a reason that didn't apply ("under 24 words", a chat app).
+        let merged = DictationInsertionPlan.Outcome.merged.rawValue
+        let appended = DictationInsertionPlan.Outcome.appended.rawValue
+        if entry.fieldContext == merged || entry.fieldContext == appended {
+            return "Pasted as heard — the clean-up pass didn't run."
+        }
         let decision = PolishGate.decide(
             rawText: entry.rawText,
             style: AppStyle.classify(bundleId: entry.appBundleId),
             alwaysPolish: false
         )
-        if case let .skip(reason) = decision { return reason }
-        return "Pasted as heard — the clean-up pass didn't run."
+        var reason = "Pasted as heard — the clean-up pass didn't run."
+        if case let .skip(gateReason) = decision { reason = gateReason }
+        guard entry.fieldContext == DictationInsertionPlan.Outcome.cursor.rawValue else { return reason }
+        // Every reason opens with "Pasted as heard".
+        let lead = "Pasted as heard"
+        guard reason.hasPrefix(lead) else { return reason + " Spaced to fit the text around it." }
+        return lead + ", spaced to fit the text around it" + reason.dropFirst(lead.count)
+    }
+
+    /// How the text already in the field shaped this dictation
+    /// (dictation-context design §3.9): a merge, a dictation added after the
+    /// selection, and — in the pending tint, since the dictation didn't go in
+    /// as planned — a selection it replaced unread, or one that changed before
+    /// the paste. A caret, a terminal reference and a value this build doesn't
+    /// know show none.
+    private var fieldBadge: (title: String, systemImage: String, tint: Color, help: String)? {
+        guard !entry.isPending, let stored = entry.fieldContext,
+              let outcome = DictationInsertionPlan.Outcome(rawValue: stored)
+        else { return nil }
+        switch outcome {
+        case .merged:
+            return ("Merged", "arrow.triangle.merge", .secondary,
+                    "Your selection was rewritten together with the dictation. The text it replaced is below.")
+        case .appended:
+            return ("Added after selection", "text.append", .secondary,
+                    "The selection stayed as it was, and the dictation went in after it.")
+        case .replaced:
+            return ("Replaced selection", "arrow.left.arrow.right", KleothPalette.pendingTint,
+                    "The selection couldn't be read, so the dictation replaced it. ⌘Z in that app undoes it.")
+        case .selectionChanged:
+            return ("Selection changed", "cursorarrow.motionlines", KleothPalette.pendingTint,
+                    "The selection changed before the paste, so the dictation went in on its own, as heard.")
+        case .cursor, .reference:
+            return nil
+        }
     }
 
     /// The icon of the app the text was dictated into, when that app is still
@@ -169,6 +221,24 @@ struct DictationDetailView: View {
         if !entry.rawText.isEmpty, entry.rawText != entry.displayText {
             DisclosureGroup("Raw transcript", isExpanded: $showsRaw) {
                 Text(entry.rawText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, KleothMetrics.spacingXS)
+            }
+            .font(.callout.weight(.medium))
+        }
+    }
+
+    /// The selection a merge replaced, as it was (`replaced_text`): the way
+    /// back once the app's own undo history is gone. Merged rows only.
+    @ViewBuilder
+    private var replaced: some View {
+        if let text = entry.replacedText, !text.isEmpty {
+            DisclosureGroup("Replaced text", isExpanded: $showsReplaced) {
+                Text(text)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -315,6 +385,9 @@ struct DictationDetailView: View {
             Menu {
                 Button("Copy Polished") { copy(entry.displayText) }
                 Button("Copy Raw") { copy(entry.rawText) }
+                if let replacedText = entry.replacedText, !replacedText.isEmpty {
+                    Button("Copy Replaced Text") { copy(replacedText) }
+                }
             } label: {
                 Label(
                     copied ? "Copied!" : "Copy",

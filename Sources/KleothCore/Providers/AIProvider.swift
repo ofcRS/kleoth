@@ -46,6 +46,19 @@ public enum AIProvider: String, Codable, CaseIterable, Sendable, Identifiable {
         }
     }
 
+    /// Whether a dictation polish on this provider gets the text in the field it goes into
+    /// (design 2026-09-24-dictation-context §3.1). Apple on-device caps a request at 12,000
+    /// characters and the system prompt alone is 7,159 of them; a local server's context window is
+    /// unknown to Kleoth (Ollama's default is 4k tokens, and it drops the front of an over-long
+    /// prompt without an error); Codex doesn't polish dictations. On those a selection gets the
+    /// dictation added after it instead of merged.
+    public var supportsDictationContext: Bool {
+        switch self {
+        case .openRouter, .claudeCode: return true
+        case .localServer, .codex, .appleOnDevice: return false
+        }
+    }
+
     public var displayName: String {
         switch self {
         case .openRouter: return "OpenRouter"

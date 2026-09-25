@@ -61,6 +61,11 @@ enum AppConfig {
         if let always = Keychain.get(Keychain.Account.dictationPolishAlways), !always.isEmpty {
             merged.dictationPolishAlways = (always == "true")
         }
+        // The field context is the reverse: on by default, so only "false"
+        // turns it off (`Settings.dictationContext`).
+        if let context = Keychain.get(Keychain.Account.dictationContext), !context.isEmpty {
+            merged.dictationContext = (context != "false")
+        }
         // The microphone pick: a device UID; an EMPTY stored value is the
         // user's explicit "Automatic" and overrides any `config.json` pick.
         if let device = Keychain.get(Keychain.Account.inputDevice) {

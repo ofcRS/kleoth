@@ -33,6 +33,10 @@ final class DictationController: ObservableObject {
     /// Mirrors `Settings.dictationPolishAlways` for the Settings toggle; the
     /// pipeline reads the fresh `AppConfig.settings()` value on every run.
     @Published private(set) var polishAlways: Bool
+    /// Mirrors `Settings.dictationContext` for the Settings toggle; the wake,
+    /// the snapshot at release and the pipeline read the fresh
+    /// `AppConfig.settings()` value, as they read every other setting.
+    @Published private(set) var contextEnabled: Bool
     /// True from `.began`/`.toggledOn` until `endSession()` (listening or pipeline in flight).
     @Published private(set) var isSessionActive: Bool = false
     /// Bumped AFTER `await logStore.append` returns (the row is on disk); DictationsListView reloads on change.
@@ -144,6 +148,9 @@ final class DictationController: ObservableObject {
     /// The app that had focus at chord-down (prompt + log). Paste goes to
     /// whoever is frontmost at paste time — the inserter samples again.
     private var target: DictationTarget?
+    /// Set when chord-down woke the target app's field (`wakeField(of:)`),
+    /// so the session's end tells the reader to set back what it set.
+    private var fieldWoken = false
     private var smoothedLevel: Double = 0
 
     private static let levelPollInterval: Duration = .milliseconds(50)
@@ -195,6 +202,7 @@ final class DictationController: ObservableObject {
         self.isMonitoring = false
         self.dictationModel = settings.dictationModel
         self.polishAlways = settings.dictationPolishAlways
+        self.contextEnabled = settings.dictationContext
         self.inputDeviceId = settings.inputDeviceId
 
         pill.onAction = { [weak self] action in self?.handlePillAction(action) }
@@ -273,6 +281,7 @@ final class DictationController: ObservableObject {
             capture.cancel()
             phase = .idle
             target = nil
+            endFieldSession()
             armedDismissTask?.cancel()
             armedDismissTask = nil
             pill.dismiss()
@@ -332,6 +341,14 @@ final class DictationController: ObservableObject {
     func setPolishAlways(_ on: Bool) {
         Keychain.set(on ? "true" : "false", Keychain.Account.dictationPolishAlways)
         polishAlways = on
+    }
+
+    /// "Use the text you're dictating into". The wake at chord-down and the
+    /// read at release check it, so it takes effect from the next dictation;
+    /// one already past its release keeps what it read.
+    func setContextEnabled(_ on: Bool) {
+        Keychain.set(on ? "true" : "false", Keychain.Account.dictationContext)
+        contextEnabled = on
     }
 
     /// The microphone pick, from Settings or the pill menu. nil (or "") =
@@ -520,11 +537,15 @@ final class DictationController: ObservableObject {
         armedDismissTask?.cancel()
         armedDismissTask = nil
         pill.show(.armed)
+        // Before the mic too: the target app builds its accessibility tree
+        // while the user speaks (§3.2).
+        wakeField(of: target)
         capture.inputDeviceId = inputDeviceId
         do {
             try capture.start()
         } catch {
             target = nil
+            endFieldSession()
             log.error("dictation capture failed to start: \(error.localizedDescription, privacy: .public)")
             pill.show(.failed(.message(error.localizedDescription)))
             return
@@ -597,8 +618,11 @@ final class DictationController: ObservableObject {
 
         phase = .transcribing
         let pressTimeTarget = target
+        // The field is read now, alongside the audio preparation and the
+        // upload, and awaited only at the polish step (§3.2).
+        let field = readField(of: pressTimeTarget)
         pipelineTask = Task { [weak self] in
-            await self?.run(clip: clip, target: pressTimeTarget)
+            await self?.run(clip: clip, target: pressTimeTarget, field: field)
         }
     }
 
@@ -608,6 +632,7 @@ final class DictationController: ObservableObject {
             capture.cancel()
             phase = .idle
             target = nil
+            endFieldSession()
             armedDismissTask?.cancel()
             if reason == .tooShort {
                 // May still become a double-tap: hold the peeked capsule
@@ -674,6 +699,7 @@ final class DictationController: ObservableObject {
         isSessionActive = false
         stopLevelPoll()
         target = nil
+        endFieldSession()
     }
 
     /// A chord press while steps 5–8 are in flight: refuse, but say so. The
@@ -746,9 +772,28 @@ final class DictationController: ObservableObject {
         /// The app the dictation was made in, for the polish prompt and the
         /// log row. The paste goes to whoever is frontmost at paste time.
         var target: DictationTarget?
+        /// The focused field's read, started at release (`readField(of:)`).
+        /// nil when nothing was read: the setting is off, another app was in
+        /// front at release, and always for the pill's Retry, whose words were
+        /// spoken earlier, maybe elsewhere (§3.2).
+        var field: Task<FieldRead, Never>? = nil
         /// When the clip was committed — a pending row is stamped with this,
         /// not with the moment two long attempts later that it was kept.
         var startedAt = Date()
+    }
+
+    /// The focused field as read at release: the reader's snapshot, and the
+    /// row's `context_seconds`.
+    ///
+    /// `FocusedTextReader.Snapshot` alone can't say how long a read took that
+    /// found nothing or was abandoned, and §5 stores the budget for a read that
+    /// timed out.
+    private struct FieldRead: Sendable {
+        /// nil when the read found nothing to classify, or was abandoned.
+        var snapshot: FocusedTextReader.Snapshot?
+        /// The snapshot's own seconds; the read budget when it was abandoned;
+        /// the time the call took when it found nothing.
+        var seconds: Double
     }
 
     /// A polish result and what it took: the seconds (when a model ran) and
@@ -758,6 +803,10 @@ final class DictationController: ObservableObject {
         var result: DictationPolishResult
         var seconds: Double? = nil
         var selection: ProviderFactory.Selection? = nil
+        /// The field context the paste follows (`DictationInsertionPlan`):
+        /// the policy's, with a merge turned into an append once the resolved
+        /// provider turns out to take no field context. nil = none.
+        var field: DictationFieldContext? = nil
     }
 
     /// Step 5 (prepare), then steps 6–10 in `runSession`. Temp files are
@@ -767,7 +816,9 @@ final class DictationController: ObservableObject {
     /// takes off the list first. The `defer` also owns every flag reset
     /// (`finishPipeline()` → `endSession()`), so every exit — success, early
     /// return, `.failed`, cancellation — tears down the same way.
-    private func run(clip: DictationCaptureResult, target: DictationTarget?) async {
+    private func run(
+        clip: DictationCaptureResult, target: DictationTarget?, field: Task<FieldRead, Never>?
+    ) async {
         inFlightClips = [clip.fileURL]
         defer {
             discardInFlightClips()
@@ -787,7 +838,8 @@ final class DictationController: ObservableObject {
             durationSeconds: clip.durationSeconds,
             interrupted: clip.interrupted,
             pending: nil,
-            target: target
+            target: target,
+            field: field
         )
 
         // 5. Prepare (off-main): mono downmix + loudness/peak normalize, 64 kbps.
@@ -825,7 +877,8 @@ final class DictationController: ObservableObject {
     }
 
     /// The teardown every pipeline exit shares — a fresh clip's run and the
-    /// pill's Retry.
+    /// pill's Retry. `endSession()` also ends the reader's session
+    /// (`endFieldSession()`), setting back any wake attribute it set.
     private func finishPipeline() {
         refusalTask?.cancel()
         refusalTask = nil
@@ -900,8 +953,17 @@ final class DictationController: ObservableObject {
             return
         }
 
-        // 7. Polish (non-throwing; raw fallback built in) — unless the gate
-        // says Scribe's text is already what the user wants (`polish(…)`).
+        // 7. The field read at release, then the polish (non-throwing; raw
+        // fallback built in) — unless the gate says Scribe's text is already
+        // what the user wants (`polish(…)`). The read started at release under
+        // its own budget, so it is almost always done by now. It exists only
+        // when the press-time app was still in front at release
+        // (`readField(of:)`); the row keeps the press-time app either way.
+        let fieldRead = await job.field?.value
+        let field = fieldRead?.snapshot.flatMap { DictationContextPolicy.context(from: $0.facts, kind: $0.kind) }
+        if let field {
+            log.info("Context: \(Self.describe(field), privacy: .public)")
+        }
         let context = DictationContext(
             appBundleId: job.target?.bundleIdentifier,
             appName: job.target?.localizedName,
@@ -909,7 +971,8 @@ final class DictationController: ObservableObject {
             dictionary: terms
         )
         let polish = await polish(
-            rawText, context: context, settings: settings, polisherTask: polisherTask, interactive: true
+            rawText, context: context, field: field, settings: settings, polisherTask: polisherTask,
+            interactive: true
         )
         // The whole run cancelled during the polish call (not Esc, which
         // cancels only the model call): the polisher swallows cancellation
@@ -920,18 +983,38 @@ final class DictationController: ObservableObject {
             return
         }
 
-        // 8. Insert.
+        // 8. Re-check the field, plan the paste, insert. The plan decides what
+        // ⌘V pastes over a selection or at a caret (§3.3–§3.5); without field
+        // context it is the polish result as it is, exactly as before.
         phase = .inserting
+        let recheck = await recheckField(fieldRead?.snapshot, for: polish.field)
+        // Esc (or any cancel) during the re-check: the run ends here, as it
+        // does when cancelled during the polish — nothing reaches the
+        // pasteboard, and the pill goes away with no `.failed` state.
+        guard !Task.isCancelled else {
+            pill.dismiss()
+            return
+        }
+        let plan = DictationInsertionPlan.decide(
+            context: polish.field, polish: polish.result, rawText: rawText, recheck: recheck
+        )
+        if let outcome = plan.outcome {
+            log.info("Context paste: \(outcome.rawValue, privacy: .public), \(plan.text.count) characters")
+        }
         var method = DictationInsertMethod.paste
-        // A device switch mid-utterance quiesced the mic early (§7): the clip is
-        // still worth pasting, but the pill has to say it is partial instead of
-        // letting a truncated sentence look finished. A polish fallback outranks
-        // it (the text isn't what was said either), and so does the clipboard
-        // fallback below (actionable: "press ⌘V").
-        var warning = polish.result.fallbackReason
+        // The pill's warning, most important first: the clipboard fallback
+        // below (actionable: "press ⌘V"); what happened to the selection (the
+        // plan's — it matters more than why the polish fell back; the row keeps
+        // the polish's reason, except a `selection_changed` row, which keeps the
+        // plan's warning instead); a polish fallback (the text isn't what was
+        // said either); a device switch mid-utterance that quiesced the mic
+        // early (§7) — the clip is still worth pasting, but the pill has to say
+        // it is partial instead of letting a truncated sentence look finished.
+        var warning = plan.warning
+            ?? polish.result.fallbackReason
             ?? (job.interrupted ? "The microphone changed mid-dictation — only part was captured." : nil)
         do {
-            try await inserter.insert(polish.result.text, pressTimeTarget: job.target ?? .frontmost())
+            try await inserter.insert(plan.text, pressTimeTarget: job.target ?? .frontmost())
         } catch let insertion as TextInsertionError where insertion.textLeftOnClipboard {
             method = .clipboard
             warning = insertion.errorDescription
@@ -952,7 +1035,9 @@ final class DictationController: ObservableObject {
             rawText: rawText,
             polish: polish,
             context: context,
-            method: method
+            method: method,
+            plan: plan,
+            contextSeconds: fieldRead?.seconds
         )
         await persist(entry, resolving: job.pending)
 
@@ -972,9 +1057,20 @@ final class DictationController: ObservableObject {
     /// heard" rather than cancelling a dictation whose words are in hand — and
     /// Esc during the model call cuts it short (`polishTask`). A History run
     /// passes false and touches no session state.
+    ///
+    /// `field` is the policy's context for the focused field (nil for a
+    /// History run, or when nothing was read). The gate sees it before any
+    /// provider is resolved (a merge always polishes; a caret mid-sentence
+    /// does in a compose app). Once the provider is known, the polisher gets
+    /// the context that provider takes, and the outcome carries the one the
+    /// paste follows (`PolishOutcome.field`). Esc always comes back as
+    /// `.skipped`, never as the polisher's `.raw(…, "Cancelled.")`: a merge
+    /// cut short then goes in as the selection plus the dictation with no
+    /// warning, the Esc rule (§5).
     private func polish(
         _ rawText: String,
         context: DictationContext,
+        field: DictationFieldContext?,
         settings: Settings,
         polisherTask: Task<(DictationPolisher, ProviderFactory.Selection), any Error>,
         interactive: Bool
@@ -982,11 +1078,12 @@ final class DictationController: ObservableObject {
         let gate = PolishGate.decide(
             rawText: rawText,
             style: AppStyle.classify(bundleId: context.appBundleId),
-            alwaysPolish: settings.dictationPolishAlways
+            alwaysPolish: settings.dictationPolishAlways,
+            placement: PolishGate.placement(for: field)
         )
         if case let .skip(reason) = gate {
             log.debug("polish skipped: \(reason, privacy: .public)")
-            return PolishOutcome(result: .skipped(text: rawText, reason: reason))
+            return PolishOutcome(result: .skipped(text: rawText, reason: reason), field: field)
         }
         if interactive {
             phase = .polishing
@@ -996,9 +1093,20 @@ final class DictationController: ObservableObject {
             // Resolved alongside the upload (step 6), so this normally
             // returns at once; only a cold detector cache makes it wait.
             let (polisher, selection) = try await polisherTask.value
+            // Only some providers take the field (§3.1). One that doesn't
+            // polishes the dictation alone, so a selection can't be merged:
+            // it goes back with the dictation after it, and the pill says why.
+            let provider = selection.provider
+            var context = context
+            context.field = field?.promptContext(providerSupportsContext: provider.supportsDictationContext)
+            let pasteField = provider.supportsDictationContext
+                ? field
+                : field?.appendingInstead(because: "\(provider.displayName) can't merge — added the dictation after the selection")
             if interactive, polishCancelledByUser {
                 // Esc while the model was still being picked.
-                return PolishOutcome(result: .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard."))
+                return PolishOutcome(
+                    result: .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard."), field: pasteField
+                )
             }
             // Its own task so Esc can cancel the model call alone
             // (`handleEscape`); `cancelPipeline()` cancels both together.
@@ -1009,23 +1117,41 @@ final class DictationController: ObservableObject {
             if interactive { polishTask = nil }
             let elapsed = started.duration(to: .now)
             let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            // A polisher sent no field ends a fallback reason with today's
+            // consequence; the paste may do otherwise (an appended selection),
+            // and the row's reason says what it did.
+            let reworded = provider.supportsDictationContext
+                ? attempted
+                : Self.fallback(attempted, endingWith: pasteField?.fallbackConsequence)
             let result: DictationPolishResult = (interactive && polishCancelledByUser)
                 ? .skipped(text: rawText, reason: "Cancelled with Esc — pasted as heard.")
-                : attempted
+                : reworded
             log.debug("polish \(result.ranModel ? "ok" : (result.usedRawFallback ? "fallback" : "skipped"), privacy: .public) in \(seconds, format: .fixed(precision: 2)) s")
-            return PolishOutcome(result: result, seconds: seconds, selection: selection)
+            return PolishOutcome(result: result, seconds: seconds, selection: selection, field: pasteField)
         } catch {
             // No backend could be built. `ProviderError`'s copy is a full
             // sentence, so drop its final period before the suffix turns the
-            // whole line into one.
+            // whole line into one. The suffix says what the paste does
+            // instead: a selection being merged gets the raw dictation after
+            // it (the plan appends, since the polish is `.raw`).
+            let consequence = field?.fallbackConsequence ?? "pasted the raw transcript."
             return PolishOutcome(
-                result: .raw(text: rawText, reason: "\(Self.asClause(error.localizedDescription)) — pasted the raw transcript.")
+                result: .raw(text: rawText, reason: "\(Self.asClause(error.localizedDescription)) — \(consequence)"),
+                field: field
             )
         }
     }
 
     /// The row a transcribed run logs: a new one, or the kept row filled in —
     /// same id and timestamp, its audio and error cleared.
+    ///
+    /// `plan` and `contextSeconds` are a live session's field context (§3.1):
+    /// how it was used (`field_context`), the selection a merge replaced
+    /// (`replaced_text`) and how long the read at release took. A History run
+    /// and the pill's Retry read no field and pass neither, so all three stay
+    /// nil. `polished_text` is the polish result — the merged piece, or the
+    /// dictation alone — never the selection an append put back around it;
+    /// after a selection that changed, it is the dictation as heard.
     private func makeEntry(
         pending: DictationLogEntry?,
         durationSeconds: Double,
@@ -1036,10 +1162,28 @@ final class DictationController: ObservableObject {
         rawText: String,
         polish: PolishOutcome,
         context: DictationContext,
-        method: DictationInsertMethod
+        method: DictationInsertMethod,
+        plan: DictationInsertionPlan? = nil,
+        contextSeconds: Double? = nil
     ) -> DictationLogEntry {
         let surcharge = terms.isEmpty ? 1 : DictationDefaults.keytermSurchargeMultiplier
         let ranModel = polish.result.ranModel
+        var polishedText = polish.result.text
+        var usedRawFallback = polish.result.usedRawFallback
+        var fallbackReason = polish.result.fallbackReason
+        if let plan, plan.outcome == .selectionChanged {
+            // ⌘V pasted the dictation alone, as heard (R6), so the row is a
+            // raw-fallback row: `polished_text` == `raw_text`, with the plan's
+            // warning as the reason. Never the model's merge: it holds the old
+            // selection, which "Paste last dictation" or Copy would put
+            // somewhere else — the duplication the paste avoided — and which is
+            // stored nowhere but `replaced_text`. Nor the paste's fitted
+            // spacing, which belonged to that caret. The model still ran: its
+            // model, provider and cost stay.
+            polishedText = rawText
+            usedRawFallback = true
+            fallbackReason = plan.warning
+        }
         return DictationLogEntry(
             id: pending?.id ?? UUID().uuidString,
             timestamp: pending?.timestamp ?? DictationLogEntry.isoTimestamp(Date()),
@@ -1047,9 +1191,9 @@ final class DictationController: ObservableObject {
             appName: context.appName,
             language: transcription.response.languageCode,              // the engine's code wins on disk
             rawText: rawText,
-            polishedText: polish.result.text,
-            usedRawFallback: polish.result.usedRawFallback,
-            fallbackReason: polish.result.fallbackReason,
+            polishedText: polishedText,
+            usedRawFallback: usedRawFallback,
+            fallbackReason: fallbackReason,
             transcriptionModel: transcriber.modelIdentifier(for: options),   // what actually ran
             polishModel: ranModel ? polish.selection?.model : nil,
             polishProvider: ranModel ? polish.selection?.provider.rawValue : nil,
@@ -1058,7 +1202,10 @@ final class DictationController: ObservableObject {
             transcriptionCost: transcriber.usdPerHour * durationSeconds / 3600 * surcharge,
             polishCost: polish.result.cost,
             polishSeconds: polish.seconds,
-            transcriptionSeconds: transcription.seconds
+            transcriptionSeconds: transcription.seconds,
+            fieldContext: plan?.outcome?.rawValue,
+            replacedText: plan?.replacedText,
+            contextSeconds: contextSeconds
         )
     }
 
@@ -1089,6 +1236,19 @@ final class DictationController: ObservableObject {
         Logger(subsystem: "dev.kleoth", category: "Dictation").error(
             "transcription attempt \(attempt) failed after \(seconds, format: .fixed(precision: 1)) s: \(String(describing: error), privacy: .public)"
         )
+    }
+
+    /// `result` with a fallback reason's closing "pasted the raw transcript."
+    /// replaced by `consequence` — what the paste does instead when the
+    /// polisher was sent no field but the paste follows one (a provider that
+    /// can't merge: "added the dictation after the selection."). Anything
+    /// else comes back as it was.
+    private static func fallback(_ result: DictationPolishResult, endingWith consequence: String?) -> DictationPolishResult {
+        let today = "pasted the raw transcript."
+        guard let consequence, consequence != today,
+              case let .raw(text, reason, cost) = result, reason.hasSuffix(today)
+        else { return result }
+        return .raw(text: text, reason: String(reason.dropLast(today.count)) + consequence, cost: cost)
     }
 
     /// A finished sentence turned into a clause, so appending
@@ -1175,6 +1335,7 @@ final class DictationController: ObservableObject {
         }
         guard preflight() else { return }
         target = DictationTarget.frontmost()
+        wakeField(of: target)
         armedDismissTask?.cancel()
         armedDismissTask = nil
         capture.inputDeviceId = inputDeviceId
@@ -1182,6 +1343,7 @@ final class DictationController: ObservableObject {
             try capture.start()
         } catch {
             target = nil
+            endFieldSession()
             log.error("dictation capture failed to start: \(error.localizedDescription, privacy: .public)")
             pill.show(.failed(.message(error.localizedDescription)))
             return
@@ -1298,6 +1460,117 @@ final class DictationController: ObservableObject {
         // A dismissed "saved to History" pill just leaves the row in History.
         guard phase != .idle else { return }
         cancel()
+    }
+}
+
+// MARK: - The focused field (dictation-context design §3.2)
+
+/// `FocusedTextReader` is the only code that reads another app's text; these
+/// are the controller's three calls into it, each off the main actor and
+/// bounded, plus the session's end. The log gets roles, lengths and timings
+/// only — never field text, `replaced_text` or the pasted text.
+extension DictationController {
+    /// Chord-down (and the pill's Dictate): a wake, nothing more. The reader
+    /// reads the target app's role and its focused element's role, which makes
+    /// Chromium and Electron build their accessibility tree while the user
+    /// speaks. Nothing at all when the setting is off.
+    ///
+    /// Never awaited, so it needs no deadline: nothing waits for it. A hung
+    /// app only keeps the reader's own queue busy for its per-message
+    /// timeouts, and the read at release then runs out of its budget.
+    private func wakeField(of target: DictationTarget?) {
+        guard let processIdentifier = target?.processIdentifier, AppConfig.settings().dictationContext else { return }
+        let bundleId = target?.bundleIdentifier
+        fieldWoken = true
+        Task.detached(priority: .userInitiated) {
+            await FocusedTextReader.shared.wake(processIdentifier: processIdentifier, bundleId: bundleId)
+        }
+    }
+
+    /// Release: one read of the focused field, started at once so it runs
+    /// alongside the audio preparation and the upload, and abandoned after
+    /// `DictationDefaults.contextReadBudget` (a hung app then costs nothing
+    /// but the context; the row stores the budget, §5).
+    ///
+    /// nil, with nothing read, when the setting is off; when secure input is
+    /// on; and when the app in front is no longer the press-time app — the
+    /// words were meant for the press-time field, and the row keeps the
+    /// press-time app, as today (§5).
+    private func readField(of target: DictationTarget?) -> Task<FieldRead, Never>? {
+        guard let processIdentifier = target?.processIdentifier, AppConfig.settings().dictationContext else { return nil }
+        guard !InsertionEnvironment.isSecureInputActive else {
+            log.info("Context snapshot: not read (secure input is on)")
+            return nil
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier else {
+            log.info("Context snapshot: not read (another app is in front at release)")
+            return nil
+        }
+        let bundleId = target?.bundleIdentifier
+        let budget = DictationDefaults.contextReadBudget
+        let log = self.log
+        return Task.detached(priority: .userInitiated) {
+            let started = ContinuousClock.now
+            do {
+                let snapshot = try await withDeadline(seconds: budget) {
+                    await FocusedTextReader.shared.snapshot(processIdentifier: processIdentifier, bundleId: bundleId)
+                }
+                let (whole, fraction) = started.duration(to: .now).components
+                return FieldRead(snapshot: snapshot, seconds: snapshot?.seconds ?? Double(whole) + Double(fraction) / 1e18)
+            } catch {
+                log.info("Context snapshot: abandoned after \(budget, format: .fixed(precision: 2)) s")
+                return FieldRead(snapshot: nil, seconds: budget)
+            }
+        }
+    }
+
+    /// Just before ⌘V: the field read again, abandoned after
+    /// `DictationDefaults.contextRecheckBudget` and then treated as unchanged
+    /// (§5 "Re-check timed out").
+    ///
+    /// `.notNeeded`, with nothing read, when there is no field context — the
+    /// policy gave none for the snapshot, which the reader can't know — and
+    /// for a selection that couldn't be read, which the plan replaces whatever
+    /// the field holds now. `.unavailable` while secure input is on.
+    private func recheckField(
+        _ snapshot: FocusedTextReader.Snapshot?, for field: DictationFieldContext?
+    ) async -> DictationInsertionPlan.Recheck {
+        guard let snapshot, let field else { return .notNeeded }
+        if case .replace = field.verdict { return .notNeeded }
+        guard !InsertionEnvironment.isSecureInputActive else { return .unavailable }
+        let budget = DictationDefaults.contextRecheckBudget
+        do {
+            return try await withDeadline(seconds: budget) {
+                await FocusedTextReader.shared.recheck(snapshot)
+            }
+        } catch {
+            // Timed out: the snapshot stands. Cancelled (Esc in `.inserting`):
+            // the caller ends the run before anything is pasted.
+            let why = error is KleothTimeoutError ? "abandoned after the budget" : "cancelled"
+            log.info("Context re-check: \(why, privacy: .public)")
+            return .unavailable
+        }
+    }
+
+    /// A session that woke the field is over (or never got going): the reader
+    /// sets back any wake attribute it set for it (§5). Not awaited.
+    private func endFieldSession() {
+        guard fieldWoken else { return }
+        fieldWoken = false
+        Task.detached(priority: .utility) {
+            await FocusedTextReader.shared.endSession()
+        }
+    }
+
+    /// A field context for the log: where, how, and lengths in characters —
+    /// never its text (the verdict's reason is left out too).
+    private static func describe(_ field: DictationFieldContext) -> String {
+        let verdict = switch field.verdict {
+        case .merge: "merge"
+        case .append: "append"
+        case .replace: "replace"
+        }
+        return "placement=\(field.placement) verdict=\(verdict) boundary=\(field.boundary) singleLine=\(field.isSingleLine) before=\(field.before.count) selection=\(field.selection.count) after=\(field.after.count)"
     }
 }
 
@@ -1468,7 +1741,9 @@ extension DictationController {
             durationSeconds: entry.durationSeconds ?? 0,
             interrupted: false,
             pending: entry,
-            target: DictationTarget(bundleIdentifier: entry.appBundleId, localizedName: entry.appName)
+            target: DictationTarget(bundleIdentifier: entry.appBundleId, localizedName: entry.appName),
+            // No field: the words were spoken earlier, maybe elsewhere (§3.2).
+            field: nil
         )
         let settings = AppConfig.settings()
         busyPendingIds.insert(id)
@@ -1558,8 +1833,10 @@ extension DictationController {
             languageCode: transcription.response.languageCode,
             dictionary: terms
         )
+        // No field: the words were spoken earlier, maybe elsewhere (§3.2).
         let polish = await polish(
-            rawText, context: context, settings: settings, polisherTask: polisherTask, interactive: false
+            rawText, context: context, field: nil, settings: settings, polisherTask: polisherTask,
+            interactive: false
         )
         // Never between a live session's clipboard write and its ⌘V (the
         // inserter can wait out held modifier keys in between): the paste
