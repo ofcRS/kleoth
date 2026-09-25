@@ -38,8 +38,9 @@ public struct MeetingPipeline {
         // 1. Transcribe with the configured engine (Scribe, or on-device local).
         let raw = try await transcriber.transcribe(fileURL: audioFile, options: options)
 
-        // 2. Normalize.
-        var transcript = TranscriptNormalizer.normalize(raw)
+        // 2. Normalize (by the tier the caller stamped: on device, turns split
+        //    where the other channel spoke in a pause).
+        var transcript = TranscriptNormalizer.normalize(raw, tier: metadata.transcriptTier)
 
         // 3. Apply an existing speaker map, if one was saved for this meeting.
         let speakerMap = loadExistingSpeakerMap(in: dir)

@@ -8,17 +8,31 @@ public enum TranscriptNormalizer {
     private static let maxGap: Double = 1.5
 
     /// Groups Scribe words into utterances per speaker / channel.
-    public static func normalize(_ response: ScribeResponse) -> Transcript {
+    ///
+    /// `tier` is the transcript's `TranscriptTier`. An on-device
+    /// (`local-whisper`) multi-channel transcript also starts a new utterance
+    /// where another channel said something inside a speaker's pause: each
+    /// channel is transcribed on its own, and a short reply ("Sure.") leaves
+    /// the other channel a pause shorter than `maxGap`, which would glue the
+    /// turns on either side of it together. Any other tier (Scribe) groups
+    /// exactly as before.
+    public static func normalize(_ response: ScribeResponse, tier: String? = nil) -> Transcript {
         let utterances: [Utterance]
 
         if let channels = response.transcripts {
             // Multi-channel: each channel maps to a single speaker derived
             // from its channel index (falling back to its array position).
+            let channelWords = channels.enumerated().map { index, channel in
+                (speakerId: "speaker_\(channel.channelIndex ?? index)",
+                 words: (channel.words ?? []).filter { isSpeechToken($0) })
+            }
+            let splitsTurns = tier == TranscriptTier.local
             var collected: [Utterance] = []
-            for (index, channel) in channels.enumerated() {
-                let speakerId = "speaker_\(channel.channelIndex ?? index)"
-                let words = (channel.words ?? []).filter { isSpeechToken($0) }
-                collected.append(contentsOf: group(words, speakerId: speakerId))
+            for (index, channel) in channelWords.enumerated() {
+                let others = splitsTurns
+                    ? channelWords.indices.filter { $0 != index }.flatMap { channelWords[$0].words }
+                    : []
+                collected.append(contentsOf: group(channel.words, speakerId: channel.speakerId, others: others))
             }
             // Sort across channels by start time; nil starts sort last.
             // Use the collection index as a tiebreaker so equal/nil starts
@@ -78,9 +92,10 @@ public enum TranscriptNormalizer {
     // MARK: - Multi-channel grouping
 
     /// Groups a single channel's (already speech-filtered) words into
-    /// utterances for a fixed speaker id, breaking only on a silence gap
-    /// greater than `maxGap`.
-    private static func group(_ words: [ScribeWord], speakerId: String) -> [Utterance] {
+    /// utterances for a fixed speaker id, breaking on a silence gap greater
+    /// than `maxGap` or where one of `others` (the other channels' words;
+    /// empty unless on-device) falls entirely inside the pause.
+    private static func group(_ words: [ScribeWord], speakerId: String, others: [ScribeWord]) -> [Utterance] {
         var utterances: [Utterance] = []
         var current: [ScribeWord] = []
 
@@ -91,7 +106,8 @@ public enum TranscriptNormalizer {
         }
 
         for word in words {
-            if exceedsGap(previous: current.last, next: word) {
+            if exceedsGap(previous: current.last, next: word)
+                || spokeInPause(previous: current.last, next: word, others: others) {
                 flush()
             }
             current.append(word)
@@ -120,6 +136,21 @@ public enum TranscriptNormalizer {
     private static func exceedsGap(previous: ScribeWord?, next: ScribeWord) -> Bool {
         guard let prevEnd = previous?.end, let nextStart = next.start else { return false }
         return (nextStart - prevEnd) > maxGap
+    }
+
+    /// True when one of `others` starts at or after `previous.end` and ends
+    /// at or before `next.start`: another speaker said something while this
+    /// one paused. Speech that only overlaps the pause (crosstalk, the mic
+    /// picking up the other side) doesn't count. Missing timestamps never
+    /// force a break.
+    private static func spokeInPause(previous: ScribeWord?, next: ScribeWord, others: [ScribeWord]) -> Bool {
+        guard let pauseStart = previous?.end, let pauseEnd = next.start, pauseEnd > pauseStart else {
+            return false
+        }
+        return others.contains { word in
+            guard let start = word.start, let end = word.end else { return false }
+            return start >= pauseStart && end <= pauseEnd
+        }
     }
 
     /// Builds an utterance from a non-empty run of speech tokens: each token's

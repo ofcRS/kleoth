@@ -94,7 +94,9 @@ public struct MeetingStore {
         let rawURL = dir.appendingPathComponent("transcript.json")
         let data = try Data(contentsOf: rawURL)
         let raw = try decoder.decode(ScribeResponse.self, from: data)
-        let transcript = TranscriptNormalizer.normalize(raw)
+        // The tier decides how channels are split into turns (on-device vs Scribe).
+        let tier = (try? loadMetadata(in: dir))?.transcriptTier
+        let transcript = TranscriptNormalizer.normalize(raw, tier: tier)
 
         if let map = loadSpeakerMap(in: dir) {
             return SpeakerMapper.apply(map, to: transcript)
@@ -314,7 +316,7 @@ public struct MeetingStore {
         metadata.languageCode = info.languageCode
         metadata.cost = info.cost
 
-        var transcript = TranscriptNormalizer.normalize(raw)
+        var transcript = TranscriptNormalizer.normalize(raw, tier: metadata.transcriptTier)
         if let map = loadSpeakerMap(in: dir) {
             transcript = SpeakerMapper.apply(map, to: transcript)
         }
