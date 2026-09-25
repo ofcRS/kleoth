@@ -3,7 +3,7 @@ import AppKit
 import KleothCore
 
 /// Settings → Dictation: the opt-in toggle, the Accessibility gate, the polish
-/// model, and the personal dictionary.
+/// model, whether the field dictated into is read, and the personal dictionary.
 ///
 /// Reaches the controller through `@EnvironmentObject` only — never
 /// `DictationController.shared`. Reading a `@Published` through a plain static
@@ -82,6 +82,12 @@ struct SettingsDictationSection: View {
             Toggle("Also clean up short dictations and chat messages", isOn: polishAlwaysBinding)
                 .help("Off: anything under \(DictationDefaults.minimumWordsToPolish) words, and every dictation into a messenger, is pasted exactly as transcribed — faster, and no AI call. Longer dictations into editors, AI chats, notes, mail and browsers are still cleaned up and structured.")
 
+            // The grouped form shows the second line as the toggle's caption.
+            Toggle(isOn: contextBinding) {
+                Text("Use the text you're dictating into")
+                Text("Kleoth reads your selection and the text around the cursor in the field you dictate into, and sends it with your words to the AI provider so the result fits. A selection is rewritten together with what you say. Password fields and password managers are never read.")
+            }
+
             dictionaryEditor
 
             Button(didResetPillPosition ? "Position reset" : "Reset pill position") {
@@ -90,8 +96,16 @@ struct SettingsDictationSection: View {
         } header: {
             Text("Dictation")
         } footer: {
-            captionFooter("Hold fn+shift anywhere and speak; release and Kleoth pastes polished text into the app you're in. Double-tap to keep it listening hands-free, or tap ⌘ while holding to switch a dictation that ran long. Audio is uploaded to ElevenLabs to transcribe and the text goes to the AI provider chosen in Settings → Accounts to clean up — the audio is deleted right after, and only the text is kept in ~/Kleoth/dictations.")
+            captionFooter("Hold fn+shift anywhere and speak; release and Kleoth pastes polished text into the app you're in. Double-tap to keep it listening hands-free, or tap ⌘ while holding to switch a dictation that ran long. Audio is uploaded to ElevenLabs to transcribe and the text goes to the AI provider chosen in Settings → Accounts to clean up — the audio is deleted right after, and only the text is kept in ~/Kleoth/dictations. \(contextFooter)")
         }
+    }
+
+    /// What the field context sends, and to whom (dictation-context design §3.1).
+    /// The numbers are read from the constants the reader and the policy use.
+    private var contextFooter: String {
+        let before = DictationDefaults.contextBeforeCharacters.formatted()
+        let after = DictationDefaults.contextAfterCharacters.formatted()
+        return "With “Use the text you're dictating into” on, OpenRouter and Claude Code also get the field's selection and up to \(before) characters before the cursor and \(after) after it; other providers get only your words, and a selection then keeps the dictation after it. A selection rewritten with your words is kept with the dictation in History."
     }
 
     // MARK: - Toggle
@@ -109,6 +123,13 @@ struct SettingsDictationSection: View {
         Binding(
             get: { dictation.polishAlways },
             set: { dictation.setPolishAlways($0) }
+        )
+    }
+
+    private var contextBinding: Binding<Bool> {
+        Binding(
+            get: { dictation.contextEnabled },
+            set: { dictation.setContextEnabled($0) }
         )
     }
 

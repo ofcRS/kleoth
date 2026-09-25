@@ -32,6 +32,10 @@ import Testing
         #expect(AIProvider.appleOnDevice.defaultModel(for: .dictation) == "apple-on-device")
     }
 
+    @Test func onlyOpenRouterAndClaudeCodeTakeFieldContext() {
+        #expect(Set(AIProvider.allCases.filter(\.supportsDictationContext)) == [.openRouter, .claudeCode])
+    }
+
     @Test func parseAcceptsIdsAndTreatsAutoAsNil() {
         #expect(AIProvider.parse("claude-code") == .claudeCode)
         #expect(AIProvider.parse("auto") == nil)

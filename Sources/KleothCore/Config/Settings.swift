@@ -23,6 +23,14 @@ public struct Settings: Sendable {
     /// utterances and messages into chat apps paste Scribe's transcript
     /// directly (`PolishGate`). Strict opt-in (`"true"` only).
     public var dictationPolishAlways: Bool
+    /// Read the focused field at release — its selection and the text around
+    /// the caret — and send it with the words to a provider that takes it
+    /// (`AIProvider.supportsDictationContext`), so the result fits and a
+    /// selection is merged (dictation-context design §3.1). On by default: the
+    /// text goes only to the provider that already gets the words, and
+    /// password fields are never read. The reverse of the strict opt-ins: only
+    /// the literal `"false"` turns it off.
+    public var dictationContext: Bool
     /// The microphone every capture opens — a CoreAudio device UID — or nil
     /// for "Automatic" (the system input). Picked from the pill's menu or
     /// Settings; honoured by meeting recordings, dictation and screen
@@ -42,6 +50,7 @@ public struct Settings: Sendable {
         dictationEnabled: Bool = false,
         dictationModel: String = DictationDefaults.polishModel,
         dictationPolishAlways: Bool = false,
+        dictationContext: Bool = true,
         inputDeviceId: String? = nil,
         providerSettings: ProviderSettings = ProviderSettings(),
         coverSettings: CoverSettings = CoverSettings()
@@ -53,6 +62,7 @@ public struct Settings: Sendable {
         self.dictationEnabled = dictationEnabled
         self.dictationModel = dictationModel
         self.dictationPolishAlways = dictationPolishAlways
+        self.dictationContext = dictationContext
         self.inputDeviceId = inputDeviceId
         self.providerSettings = providerSettings
         self.coverSettings = coverSettings
@@ -121,6 +131,10 @@ public struct Settings: Sendable {
         // Same strict opt-in for "polish every dictation".
         let dictationPolishAlways = (config["dictation_polish_always"] == "true")
 
+        // The reverse for the field context: on by default, so only the
+        // literal "false" turns it off; absent or any other value keeps it on.
+        let dictationContext = (config["dictation_context"] != "false")
+
         // The microphone pick: empty or "auto" both mean the system input,
         // the `transcription_language` normalization.
         var inputDeviceId: String?
@@ -138,6 +152,7 @@ public struct Settings: Sendable {
             dictationEnabled: dictationEnabled,
             dictationModel: dictationModel,
             dictationPolishAlways: dictationPolishAlways,
+            dictationContext: dictationContext,
             inputDeviceId: inputDeviceId,
             providerSettings: providerSettings,
             coverSettings: CoverSettings.load(config: config)

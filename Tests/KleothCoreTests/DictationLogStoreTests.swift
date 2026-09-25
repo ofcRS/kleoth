@@ -63,6 +63,7 @@ import Foundation
             "transcription_model", "polish_model", "polish_provider", "duration_seconds",
             "insert_method", "transcription_cost", "polish_cost", "polish_seconds",
             "audio_file_name", "transcription_error", "transcription_seconds",
+            "field_context", "replaced_text", "context_seconds",
         ])
     }
 
@@ -364,6 +365,72 @@ import Foundation
     @Test func mentionedNamesOfAMissingFolderIsEmpty() throws {
         let store = DictationLogStore(outputDir: try makeTempDir().appendingPathComponent("absent", isDirectory: true))
         #expect(store.audioFileNamesMentioned(among: ["a.m4a"]) == [])
+    }
+
+    // MARK: - Field context (dictation-context design §3.1, §4.1)
+
+    /// A merge row carries all three keys; each must survive the store's
+    /// snake_case round-trip (the acronym trap) unchanged.
+    @Test func fieldContextRoundTrips() async throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        var entry = makeEntry(id: "MERGED")
+        entry.fieldContext = DictationInsertionPlan.Outcome.merged.rawValue
+        entry.replacedText = "See you on Monday."
+        entry.contextSeconds = 0.042
+        try await store.append(entry, on: Date())
+
+        let loaded = try #require(store.loadAll().first)
+        #expect(loaded == entry)
+        #expect(loaded.fieldContext == "merged")
+        #expect(loaded.replacedText == "See you on Monday.")
+        #expect(loaded.contextSeconds == 0.042)
+    }
+
+    /// `field_context` is a plain `String`, not the `Outcome` enum: a value a
+    /// newer build writes must not take the row — or the whole day file, a
+    /// bare JSON array — down (the `insert_method` lesson).
+    @Test func unknownFieldContextDecodes() throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        try FileManager.default.createDirectory(at: store.baseDir, withIntermediateDirectories: true)
+        #expect(DictationInsertionPlan.Outcome(rawValue: "future_thing") == nil)
+        let json = """
+        [{"id": "future", "timestamp": "2026-09-24T15:14:09Z", "raw_text": "r",
+          "polished_text": "p", "field_context": "future_thing"}]
+        """
+        try Data(json.utf8).write(to: store.dayFileURL(named: "2026-09-24"))
+
+        let entries = store.loadDay(named: "2026-09-24")
+        #expect(entries.count == 1)
+        #expect(entries.first?.fieldContext == "future_thing")
+    }
+
+    /// A row as the build before this change writes it — every other key,
+    /// none of the three new ones — still decodes, with the three nil.
+    @Test func oldRowsWithoutTheKeysDecode() throws {
+        let dir = try makeTempDir()
+        let store = DictationLogStore(outputDir: dir)
+        try FileManager.default.createDirectory(at: store.baseDir, withIntermediateDirectories: true)
+        let json = """
+        [{"id": "before-context", "timestamp": "2026-09-23T09:30:00Z",
+          "app_bundle_id": "com.tinyspeck.slackmacgap", "app_name": "Slack", "language": "rus",
+          "raw_text": "raw", "polished_text": "Polished.", "used_raw_fallback": false,
+          "fallback_reason": null, "transcription_model": "scribe_v2",
+          "polish_model": "google/gemini-3.5-flash-lite", "polish_provider": null,
+          "duration_seconds": 8.4, "insert_method": "paste", "transcription_cost": 0.000616,
+          "polish_cost": 0.00011, "polish_seconds": 1.2, "audio_file_name": null,
+          "transcription_error": null, "transcription_seconds": 2.5}]
+        """
+        try Data(json.utf8).write(to: store.dayFileURL(named: "2026-09-23"))
+
+        let entry = try #require(store.loadDay(named: "2026-09-23").first)
+        #expect(entry.id == "before-context")
+        #expect(entry.polishedText == "Polished.")
+        #expect(entry.transcriptionSeconds == 2.5)
+        #expect(entry.fieldContext == nil)
+        #expect(entry.replacedText == nil)
+        #expect(entry.contextSeconds == nil)
     }
 
     // MARK: - Naming

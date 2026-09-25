@@ -70,13 +70,19 @@ protocol DictationHotkeyMonitoring: AnyObject {
 struct DictationTarget: Sendable, Equatable {
     var bundleIdentifier: String?
     var localizedName: String?
+    /// The app's process, from `NSRunningApplication`: `FocusedTextReader` wakes and reads this
+    /// process's focused field, and the snapshot at release counts only while the same process is
+    /// in front (a bundle id can't tell two instances, or a relaunch, apart). nil for a target
+    /// rebuilt from a History row, whose words were spoken earlier.
+    var processIdentifier: pid_t? = nil
 
     @MainActor
     static func frontmost() -> DictationTarget {
         let app = NSWorkspace.shared.frontmostApplication
         return DictationTarget(
             bundleIdentifier: app?.bundleIdentifier,
-            localizedName: app?.localizedName
+            localizedName: app?.localizedName,
+            processIdentifier: app?.processIdentifier
         )
     }
 

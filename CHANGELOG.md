@@ -6,6 +6,32 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Dictation fits the text you're dictating into.** Speak a correction or an addition over a
+  selection and the two come back as one piece in its place: nothing outside it changes, and one
+  ⌘Z (or History) brings the original back. At the cursor, your words continue the sentence; short
+  mid-sentence dictations are now cleaned up too (not in messengers). A terminal selection is only
+  a spelling reference. A selection of 4,000 to 20,000 characters, or one the cleanup failed on,
+  stays as it was with the dictation after it; an unreadable or longer one is replaced as before.
+- **What dictation reads from the field you dictate into, and where it goes.** When you press
+  fn+shift, Kleoth only asks the app what kind of field has focus. When you release, it reads that
+  one field: the selection, and up to 1,500 characters before and 500 after the cursor or
+  selection. It sends them, with your words, to the AI provider that already cleans those up, and
+  only when that is OpenRouter or Claude Code; a local server and Apple's on-device model get your
+  words alone, and a selection then keeps the dictation after it. Password fields and password
+  managers (1Password, Bitwarden, Passwords, Keychain Access) are never read. The text around the
+  cursor is never stored. It's on by default; turn off **Use the text you're dictating into** in
+  Settings → Dictation to read nothing (stored as `dictation_context`: `"false"`).
+
+### Fixed
+
+- **Telegram Desktop messages were restructured like prompts.** Kleoth knew Telegram for macOS and
+  Telegram Desktop's Linux id, but not its Mac one, so long messages got an editor's full rework.
+  Telegram Desktop now gets the light touch of the other messengers: pasted as heard at the cursor
+  (unless "Also clean up short dictations and chat messages" is on), and a merged selection keeps
+  its wording and your voice.
+
 ## [0.5.0] — 2026-09-25
 
 ### Added
