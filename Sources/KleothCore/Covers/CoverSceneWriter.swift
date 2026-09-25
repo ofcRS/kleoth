@@ -32,12 +32,17 @@ public struct CoverSceneWriter: Sendable {
     /// A 45-word scene is about 300 characters; the cap only stops a runaway.
     public static let maxSceneCharacters = 400
 
-    /// The look test's settled scene prompt, verbatim (`.scratch/cover-spike/
-    /// RESULTS.md`, "Settled wording", approved 2026-09-25). It is §3.3's rules
-    /// plus what the test images showed: things that usually carry printing
-    /// (clocks, banners, boxes with printed covers, app UI), feelings shown by
-    /// posture rather than "?" glyphs, one close moment with at most two props
-    /// so a 40 pt tile still reads, and no symbols.
+    /// The scene prompt, revision 4 (2026-09-25). Revision 3 is the look
+    /// test's settled wording (`.scratch/cover-spike/RESULTS.md`, "Settled
+    /// wording", approved 2026-09-25): §3.3's rules plus what the test images
+    /// showed — things that usually carry printing (clocks, banners, boxes with
+    /// printed covers, app UI), feelings shown by posture rather than "?"
+    /// glyphs, one close moment with at most two props so a 40 pt tile still
+    /// reads, and no symbols. Revision 4 adds two lines: no picture inside the
+    /// picture (photos, frames, posters, mirrors, screens showing a picture —
+    /// they invite faces and lettering, and often come out blank — not even
+    /// named when the meeting is about photos), and one physical metaphor for
+    /// the topic rather than a re-staged meeting room.
     static let systemPrompt = """
     You write the scene for a small square cover picture of a meeting. You get the meeting's title, its TL;DR and the start of its overview. The picture is decoration for the meeting's row in a list, so it must be gentle, safe and wordless.
 
@@ -55,7 +60,9 @@ public struct CoverSceneWriter: Sendable {
     - Never people, human faces or hands.
     - Never real names, companies, brands, products, places or events. Never the names used in the meeting.
     - Nothing to read: no text, letters, numbers, signs, labels, screens, documents with writing, or charts. Also leave out things that usually carry writing or numbers: clocks, calendars, banners, flags, maps, tickets, boxes, books or packages with printed covers (board games, cereal, tins), and app icons, buttons or menus. Show the topic as a physical, everyday situation, never as a piece of software. Show feelings through posture, never with question marks or other symbols.
+    - No photos, photographs, picture frames, framed pictures, posters, paintings, portraits, mirrors, or screens showing a picture, and never these words in the scene, even when the meeting is about them: a picture inside the picture invites faces and lettering, and often comes out blank.
     - One close moment with at most two props, against a simple backdrop, so it still reads as a tiny thumbnail.
+    - Prefer the abstract to the literal: one physical metaphor for the main topic — stones stacked into a small bridge, one lantern lit among unlit ones, two nests woven into one — acted out by the characters, rather than a re-staging of the conversation. Never a meeting room, office, desk, conference table or laptop.
     - No ribbons, badges, flags or colour pairs that could read as a symbol.
     - Nothing violent, medical, political or religious.
     - Only what is visible: the characters, the objects, what they do and where. No art-style words (no "watercolour", "3D", "cartoon", "illustration", "cute style"), no camera or lighting words.

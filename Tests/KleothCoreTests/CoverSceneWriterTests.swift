@@ -76,6 +76,24 @@ import Testing
         }
     }
 
+    /// The 2026-09-25 wording: a picture inside the picture (photos, frames,
+    /// posters, mirrors) invites faces and lettering and often comes out
+    /// blank, and a metaphor beats a re-staged meeting room.
+    @Test func systemPromptRefusesPicturesInThePictureAndAsksForAMetaphor() {
+        let prompt = CoverSceneWriter.systemPrompt
+        // Each phrase is new in revision 4 ("metaphor" alone is not: revision
+        // 3 already says "as a gentle metaphor").
+        for phrase in ["photographs", "picture frames", "posters", "mirrors", "one physical metaphor", "Never a meeting room"] {
+            #expect(prompt.contains(phrase), "missing: \(phrase)")
+        }
+        // A meeting about photos must not leak them into the metaphor (the
+        // dry run's "a fox … saving its photos for later").
+        #expect(prompt.contains("never these words in the scene, even when the meeting is about them"))
+        // The animals and the sensitivity rule stay.
+        #expect(prompt.contains("cute animal characters"))
+        #expect(prompt.contains("When unsure: true."))
+    }
+
     /// An answer cut off by the output cap says so in the log detail; the
     /// error case is the same.
     @Test func truncatedAnswerIsNamedInTheUnreadableDetail() async throws {
