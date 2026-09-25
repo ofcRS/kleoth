@@ -555,7 +555,9 @@ final class DictationController: ObservableObject {
             return false
         }
         guard !InsertionEnvironment.isSecureInputActive else {
-            pill.show(.failed(.secureInput))
+            let holder = InsertionEnvironment.secureInputHolder
+            log.info("Dictation refused: secure input held by \(holder?.bundleIdentifier ?? "unknown", privacy: .public)")
+            pill.show(.failed(.secureInput(holder: holder?.localizedName)))
             return false
         }
         return true

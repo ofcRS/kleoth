@@ -33,6 +33,11 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Fixed
 
+- **"The focused field blocks dictation" when it didn't.** Secure input is a lock any app can
+  hold, and a browser can keep it after you leave its password field — so dictation into Slack
+  was refused because a browser in the background still held it. The pill now names the app holding
+  it ("Dia has secure input on — dictation blocked"), so you know what to close or click out of.
+  The paste-time warning names it too.
 - **Long dictations timing out.** Scribe got a flat 25 s whatever the length of the clip, and
   dictations of a minute or more ran out of time when the service was slow. The budget now grows
   with the clip (25 s plus half its length, up to 2 minutes), and a timeout or network error gets

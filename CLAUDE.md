@@ -180,6 +180,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Adding a KleothCore source file is invisible to a warm `app/.build` until
   `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
 - `Transcriber: Sendable` conformance must be declared in the type's own file.
+- `IsSecureEventInputEnabled()` is session-wide: a background Chromium browser can hold it with another app
+  in front. `ioreg -l -w 0 | grep kCGSSessionSecureInputPID` names the holder (only while it's on; it can
+  outlive a quit app by ~30 s). A windowless process is credited to the frontmost app.
 - `zsh` has a `log` builtin — use `/usr/bin/log`. Synthetic `CGEvent` clicks from the agent shell do
   nothing (no Accessibility for the terminal); drive the pill through `pillsandbox` film hooks.
 - A shell-launched probe gets the TERMINAL's TCC grant; it proves nothing about Kleoth's own.

@@ -15,8 +15,25 @@ enum InsertionEnvironment {
 
     /// Secure event input (a password field, the login window, some terminals)
     /// swallows synthetic keystrokes silently — refuse rather than no-op.
+    /// ⚠️ Session-wide: ANY app turns it on for everyone, not just the focused
+    /// field — see `secureInputHolder`.
     static var isSecureInputActive: Bool {
         IsSecureEventInputEnabled()
+    }
+
+    /// The app holding secure input, so the refusal can name it. It is often
+    /// NOT the app in front: a Chromium browser can keep the lock after its
+    /// password field loses focus (Dia, 2026-09-25, with Slack frontmost).
+    /// The WindowServer names the holder in the session dictionary (a process
+    /// with no window of its own is credited to the app in front). Nil when secure
+    /// input is off, or when the holder is not a running app — the lock can
+    /// outlive its process for half a minute after the app quits.
+    static var secureInputHolder: NSRunningApplication? {
+        guard isSecureInputActive,
+              let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              let pid = session["kCGSSessionSecureInputPID"] as? Int
+        else { return nil }
+        return NSRunningApplication(processIdentifier: pid_t(pid))
     }
 }
 
