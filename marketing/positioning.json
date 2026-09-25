@@ -1,6 +1,6 @@
 {
   "$comment": "Kleoth's public positioning — the one place its pitch is written. Edit here, then run `bun marketing/sync.ts apply`. How and when: marketing/README.md.",
-  "reviewed_for": "0.4.0",
+  "reviewed_for": "0.5.0",
   "name": "Kleoth",
   "tagline": "Local-first voice, meetings and screen capture for macOS.",
   "github": {

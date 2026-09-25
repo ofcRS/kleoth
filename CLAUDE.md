@@ -229,37 +229,21 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - The repo is public — anything on `main` is world-readable.
 
 ## State (update in place, keep to a few lines)
-- Hands-free mid-hold (2026-09-24, CHANGELOG `[Unreleased]`): core tests, app build, pill filmed (bottom/right
-  edges, real click). Not yet human-verified: the real hotkey — dictation design §10.3 item 16 checklist (a)–(e).
-- Dictation retry merged to main 2026-09-24 (unreleased; CHANGELOG `[Unreleased]`): length-scaled
-  Scribe budget + one retry, kept audio for failed/stopped dictations, pill Retry, History "Not
-  transcribed" rows with Try again, History opening on the requested tab. Verified: 466 core tests,
-  both packages build, pill filmed, probe retry against live Scribe, History pane rendered with a
-  real pending row (test row removed), an independent review. Not yet human-verified: design doc §6
-  checklist (pill Retry, History Try again on both engines, Esc while transcribing).
-- Not human-verified yet: the providers checklist (provider rows on this Mac, a meeting via
-  Automatic → `summary_provider` in `meta.json`, a dictation via Automatic and via Apple on-device →
-  `polish_provider` in the day file, signing out of Claude Code, a local Ollama server,
-  `kleoth summarize <dir> --provider codex`); pill menu actions end to end; screen-recording manual
-  checklist items 1–8 (design doc §8); recordings viewer checklist (design doc §7).
-- Summary completeness + consent window (2026-09-24, unreleased; CHANGELOG `[Unreleased]`; design
-  `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`): `Summarizer.assess` + one shaped
-  retry (a cut-off, empty, incomplete or malformed answer is never saved), `meta.json` provenance only
-  with a summary, `--max-output-tokens`, a Summarize button + summary failures pinned on the meeting,
-  the "Before you record" window for hotkey/URL/intent starts, `-KleothSimulateFirstRun`. Verified:
-  core tests, app build, per-task and whole-branch reviews. Not yet human-verified: design doc §6
-  checklist items 2–12.
-- Meeting covers (2026-09-24, unreleased; `feat/meeting-covers`, CHANGELOG `[Unreleased]`; design
-  `docs/plans/2026-09-24-meeting-illustrations.md`): Settings → Meetings → Covers, History row/header tiles with
-  New/Remove/Draw Cover(s), the covers Usage row, `kleoth illustrate`. Verified: 589 core tests (after merging main), app build, CLI
-  live runs (a)–(e) on 2026-09-25 ($0.0673 OpenRouter + 1 Codex image), per-task Fable reviews. Not yet
-  human-verified: the manual checklist (design doc §6, items 1–13).
-- Next (2026-09-24): context-aware dictation — in progress on `feat/dictation-context` (the T3 Code
-  focus spike, `dictate --focus-probe`, awaits the user's run); then meetings in the pill (phase 1) +
-  call detection (phase 2). Designs (local until each branch lands): `docs/plans/2026-09-24-*.md`. After those:
-  History as one timeline, then onboarding + positioning. Dropped: trimming silence before Scribe.
-- Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded 2026-09-25
-  (`check` keeps reminding about the preview until the next tag). Demo GIFs: merged (PR #7). Later: a Kleoth
+- v0.5.0 (2026-09-25): hands-free mid-hold, dictation retry + pending dictations, summary completeness + the
+  "Before you record" window, meeting covers (opt-in), the secure-input holder named, macOS 15 first-launch copy.
+  The user verified hands-free and dictation retry in daily use and waived the other manual checklists
+  (providers, pill menu, screen recording, recordings viewer, summary §6) on 2026-09-25.
+- Covers, next (the user, 2026-09-25): keep the cute animals (even more abstract is welcome); the tile is too small
+  to notice and can't be opened full size. Wanted: a full-width cover at the top of the meeting page, title and
+  headline under it, parallax on scroll; try a few patterns. Small fixes with it: the scene prompt should avoid
+  photos and picture frames; `cover.json` escapes `/`; `.cover-*.tmp` is never swept.
+- Next, in order: context-aware dictation (`feat/dictation-context`, uncommitted; will conflict with PR #11 in
+  the dictation files); the covers redesign; on-device meeting transcripts split into turns (demo-mode §6 #2);
+  meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
+  `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
+  timeline, onboarding. Dropped: trimming silence before Scribe.
+- Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand
+  2026-09-25. Demo GIFs: merged (PR #7). Later: a Kleoth
   landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
 - Demo films (2026-09-25, merged PR #7; no captions under the GIFs by choice): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
   `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed

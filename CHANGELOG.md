@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-25
+
 ### Added
 
 - **Go hands-free in the middle of a dictation.** Started holding fn+shift and it's turning into a
@@ -45,6 +47,13 @@ All notable changes to Kleoth are documented here. The format is based on
   `open -a Kleoth --args -KleothSimulateFirstRun YES` launches it as if consent and onboarding had
   never been done, for that launch only, so the first-run flows can be checked on a Mac that
   finished them long ago. The flag stores nothing.
+
+### Changed
+
+- **First launch on macOS 15 and later.** macOS 15 removed right-click → Open for apps that
+  aren't notarized. The DMG's Read Me and the Homebrew cask now give the step that works: click
+  Done, then System Settings → Privacy & Security → **Open Anyway**. Right-click → Open still works
+  on macOS 14.
 
 ### Fixed
 
@@ -91,6 +100,10 @@ All notable changes to Kleoth are documented here. The format is based on
   click). A small **Before you record** window now comes forward with the popover's consent
   notice. **I understand — start recording** acknowledges and starts, and the window closes once
   the recording runs — or stays and shows why the start failed. **Not now** records nothing.
+- **Two Settings footers that weren't true.** Meetings → Summarization called Gemini Flash the
+  default (it's GLM on OpenRouter); it now names the provider your summaries run on. General →
+  Shortcuts promised Shortcuts and Spotlight actions, which these builds don't surface; it now
+  points at `kleoth://toggle`.
 
 ## [0.4.0] — 2026-09-20
 
