@@ -139,6 +139,9 @@ Open **Settings** from the menu bar. Everything here is optional:
   Google the polish falls through to `z-ai/glm-5.3-flash`), edit your personal dictionary (one term per line; the first 100 are
   sent with each dictation), reset the pill position. Needs an ElevenLabs key; without an
   OpenRouter key the raw transcript is pasted as-is.
+- **Covers** — off by default. Pick an image engine (a local server, Codex or OpenRouter) and each
+  summarized meeting gets a small picture in History; the style is Automatic or one you pick. See
+  [Meeting covers](#meeting-covers).
 
 Keys are stored in the macOS Keychain and are **never** printed or committed.
 
@@ -169,6 +172,25 @@ only the end of the meeting.
 Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
 with their own login; the local server and Apple's model never leave the machine.
 
+### Meeting covers
+
+Off by default. Turn covers on in Settings → Meetings → Covers and each summarized meeting gets a
+small square picture on its History row and in its header: cute animals or everyday objects acting
+out what the meeting was about, as Animation, Illustration, Sketch or Clay. Your AI provider first
+writes a one-sentence scene from the meeting's title, TL;DR and the start of its overview — no
+names, quotes or transcript — and only that scene goes to the image engine. A meeting that looks
+personal (health, performance, pay, hiring, legal matters, family) gets no picture.
+
+| Engine | What it needs | What leaves your Mac |
+|---|---|---|
+| Local server | Ollama with an image model pulled (default `x/flux2-klein`) | nothing |
+| Codex | the `codex` CLI installed and signed in | the scene, to OpenAI over your ChatGPT login — about a minute per cover, within your plan's limits |
+| OpenRouter | an API key | the scene — each cover is billed to your OpenRouter account |
+
+The summary itself goes only to the provider that already summarized the transcript. Click a
+cover for **New Cover** or **Remove Cover**; select older meetings and choose **Draw Covers** to
+give them one.
+
 ## CLI
 
 The repo also ships a `kleoth` command-line tool for the same pipeline (audio file → transcript →
@@ -179,6 +201,7 @@ swift run kleoth transcribe meeting.m4a   # ElevenLabs Scribe; diarized; saves t
 swift run kleoth summarize  <dir|file>    # transcribe (if needed) + AI summary  (--model <slug>)
 swift run kleoth rename     <dir>         # assign real names to speaker_0 / speaker_1 …
 swift run kleoth render     <dir>         # re-render summary.md from summary.json (no API calls)
+swift run kleoth illustrate <dir>...      # draw a cover for summarized meetings (--engine, --style, --dry-run)
 ```
 
 Run `swift run kleoth <subcommand> --help` for flags. The CLI resolves keys from environment
@@ -221,6 +244,7 @@ transcript.json · transcript.md       # the transcript (raw + rendered)
 summary.json   · summary.md           # the AI summary (if generated)
 speakers.json                         # speaker_0 / speaker_1 → display names (You / Them)
 meta.json                             # metadata: duration, tier, timestamps, consent
+cover.jpg · cover.json                # the meeting's cover and how it was drawn (if covers are on)
 ```
 
 Dictations are text: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished text, the

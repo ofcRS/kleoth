@@ -18,6 +18,21 @@ All notable changes to Kleoth are documented here. The format is based on
   (the free on-device engine, when Scribe keeps failing) and copies the text to the clipboard when
   it's ready; **Show Audio in Finder** reaches the clip. Deleting the row moves its audio to the
   Trash. Once a dictation is transcribed its audio is deleted — dictations that paste keep none.
+- **Meeting covers (opt-in).** A summarized meeting can get a small square picture — cute animals
+  or everyday objects acting out what the meeting was about — on its History row and in its
+  header. It is off by default: Settings → Meetings → Covers turns it on by picking an engine, a
+  local image server (Ollama), Codex on your ChatGPT plan, or OpenRouter. The style is Animation,
+  Illustration, Sketch or Clay, or Automatic to match the meeting's mood. Your AI provider writes a
+  one-sentence scene from the title, the TL;DR and the start of the overview — no names, quotes or
+  transcript — and only that scene goes to the image engine. The cover is drawn once, right after
+  the meeting's first summary (or only when you ask), and saved in the meeting folder as
+  `cover.jpg`, next to `cover.json`, which records how it was drawn. A meeting that looks personal
+  — health, a performance review, pay, hiring, legal matters, family — gets no picture. Click a
+  cover for **New Cover** (another idea, in any style; the old picture goes to the Trash) or
+  **Remove Cover** (the picture goes to the Trash, and that meeting is never drawn again unless
+  you ask); select older meetings and choose **Draw Covers** to give them one. What OpenRouter
+  covers cost shows as one row in Accounts → Usage. `kleoth illustrate <dir>...` draws covers from
+  the command line; `--dry-run` prints the scene and the image prompt without drawing.
 - **`kleoth summarize --max-output-tokens <n>`.** Sets the summary's output-token budget (1 to
   1000000, default 8192); an answer cut off at that limit is retried once with twice the budget.
   It applies to OpenRouter and local servers — the Claude Code and Codex CLIs take no output cap.
