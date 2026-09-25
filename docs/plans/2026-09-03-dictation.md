@@ -47,7 +47,7 @@ Hold **fn+shift** anywhere on the Mac, speak, release → Kleoth records the mic
 | Pill position storage | `UserDefaults` key `dev.kleoth.dictation.pillPlacement` (JSON `PillPlacement`) | Rewritten on every drag; the Keychain blob is a once-per-launch credential read. |
 | Re-press mid-pipeline | Refuse with a 1 s warning (pipeline) — i.e. "ignore, but say so" | Superseding destroys committed speech; queueing double-pastes non-deterministically. Esc is the escape hatch. |
 | Esc | Cancels a live session (hands-free listening or in-flight pipeline). During push-to-talk any key (incl. Esc) while the chord is held already cancels via `.otherKey`. | Monitor reads only `keyCode == 53` and only while `escapeCancels` is set by the controller. |
-| Secure input | Checked twice: at `armed` (don't even record) and inside `TextInserter` (clipboard-only fallback if focus moved mid-session) | Turns a silent no-op into an explanation. |
+| Secure input | Checked twice: at `armed` (don't even record) and inside `TextInserter` (clipboard-only fallback if focus moved mid-session). The flag is session-wide — ANY app sets it, often a background browser, not the focused field — so both refusals name the holder (`kCGSSessionSecureInputPID` → `NSRunningApplication`) | Turns a silent no-op into an explanation the user can act on. |
 | Accessibility grant without relaunch | Reinstall monitors on grant (didBecomeActive + 1 Hz poll while Settings/pill prompt visible); Settings copy adds "if the hotkey stays dead, relaunch Kleoth" | Monitors installed while untrusted never fire; CGEvent posting may also need a relaunch — covered by copy + manual test. |
 | Hotkey probe | No separate `hotkeyprobe` target; the monitor logs every chord transition via `os.Logger` (`dev.kleoth` / `DictationHotkey`) so `log stream` IS the probe | Accessibility is bundle-scoped; a bare SwiftPM binary can't be trusted anyway. |
 | Pipeline probe | `dictate` executable target (headless record → prep → Scribe → polish, no paste) | Mirrors `taptest`/`localtranscribe`; the only way to exercise capture + network without UI. |
@@ -656,10 +656,10 @@ enum DictationPillState: Equatable, Sendable {
 enum DictationPillFault: Equatable, Sendable {
     case missingElevenLabsKey
     case needsAccessibility
-    case secureInput
+    case secureInput(holder: String?)
     case message(String)
     var text: String { get }                 // "Add an ElevenLabs key to dictate" / "Kleoth needs Accessibility access" /
-                                             // "The focused field blocks dictation" / message
+                                             // "<holder> has secure input on — dictation blocked" / message
     var action: DictationPillAction? { get } // .openSettings / .openAccessibilitySettings / nil / nil
 }
 
@@ -717,7 +717,7 @@ struct DictationTarget: Sendable, Equatable {
 enum TextInsertionError: Error, LocalizedError, Equatable {
     case emptyText
     case accessibilityNotTrusted   // text left on the clipboard
-    case secureInputActive         // text left on the clipboard
+    case secureInputActive(holder: String?)  // text left on the clipboard
     case eventCreationFailed       // text left on the clipboard
     var textLeftOnClipboard: Bool { get }   // self != .emptyText
 }
@@ -880,7 +880,8 @@ struct PasteboardSnapshot: Sendable {
 // `IsSecureEventInputEnabled()` (InsertionEnvironment) are Carbon symbols, not AppKit.
 enum InsertionEnvironment {
     static var isAccessibilityTrusted: Bool
-    static var isSecureInputActive: Bool                       // IsSecureEventInputEnabled()
+    static var isSecureInputActive: Bool                       // IsSecureEventInputEnabled() — session-wide
+    static var secureInputHolder: NSRunningApplication?        // who holds it; nil when off or not a running app
 }
 extension NSPasteboard.PasteboardType {
     static let transient      // "org.nspasteboard.TransientType"
@@ -1576,7 +1577,7 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 | No ElevenLabs key | `armed` preflight | pill `.failed(.missingElevenLabsKey)` + "Open Settings"; nothing recorded | — |
 | Mic denied | `armed` preflight / `DictationCapture.start` | pill `.failed(.message("Kleoth needs microphone access…"))` | — |
 | No input device / engine failure | `DictationCapture.start` | pill `.failed(.message(…))` | — |
-| Secure input active at start | `armed` preflight | pill `.failed(.secureInput)` "The focused field blocks dictation"; nothing recorded | — |
+| Secure input active at start | `armed` preflight | pill `.failed(.secureInput(holder:))` "Dia has secure input on — dictation blocked" (no holder: "Secure input is on — dictation blocked"); nothing recorded | — |
 | Tap < 0.3 s, no double-tap | machine `.cancelled(.tooShort)` | nothing (no pill, no network) | — |
 | Another key while chord held (fn+shift+arrow) | monitor `.otherKey` | nothing; host app receives the shortcut | — |
 | fn+shift+⌘ / +⌥ / +⌃ pressed (someone's real shortcut) | monitor exact-match chord test | never arms — no capture, no pill; the host app receives the shortcut. Adding the extra modifier mid-hold reads as chord-up (→ discarded tap or a normal `.ended`) — except ⌘ from a confirmed hold, which switches to hands-free (§10.3 item 16) | — |
@@ -1593,7 +1594,7 @@ Plain array of strings; ≤1000 stored; ≤100 sent per request after `Keyterms.
 | `installTap` raises (format mismatch after an idle device switch) | `DictationCapture.start` via `catchingObjCExceptions` | `.failed(.message("Couldn't start the microphone (…format mismatch…)"))`, no spend, no log row — and no crash | — |
 | Polish translated the text (model's `language` ≠ Scribe's, both resolvable by `Summarizer.languageName`) | `DictationPolisher` translation guard | raw text pasted; `.warning("Polish changed the language — pasted the raw transcript.")` | ✓ `used_raw_fallback`, `fallback_reason` |
 | Accessibility revoked between start and paste | `TextInserter` | text left on clipboard (unmarked); `.warning("Kleoth needs Accessibility access to paste. Text copied — press ⌘V.")` | ✓ `insert_method: clipboard` |
-| Secure input at paste time (focus moved to a password field) | `TextInserter` | text left on clipboard; `.warning("Secure input is on … Text copied — press ⌘V.")` | ✓ `clipboard` |
+| Secure input at paste time (focus moved to a password field, or another app took the lock) | `TextInserter` | text left on clipboard; `.warning("<holder> has secure input on. Text copied — press ⌘V.")` | ✓ `clipboard` |
 | `CGEvent` creation failed | `TextInserter` | text left on clipboard; warning | ✓ `clipboard` |
 | User copied during the 0.5 s window | restore task `changeCount` guard | their copy wins; snapshot dropped silently | ✓ |
 | Previous clipboard > 24 MB | `PasteboardSnapshot` | not restored; dictated text stays on clipboard | ✓ |

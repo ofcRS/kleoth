@@ -95,7 +95,9 @@ public enum DictationPillBackdrop: Equatable, Sendable {
 public enum DictationPillFault: Equatable, Sendable {
     case missingElevenLabsKey
     case needsAccessibility
-    case secureInput
+    /// Secure input is on somewhere in the session. `holder` is the app
+    /// holding it (display name), nil when it can't be named.
+    case secureInput(holder: String?)
     case message(String)
     /// Screen Recording was never granted (or was declined).
     case screenRecordingNeeded
@@ -119,7 +121,8 @@ public enum DictationPillFault: Equatable, Sendable {
         switch self {
         case .missingElevenLabsKey: return "Add an ElevenLabs key to dictate"
         case .needsAccessibility: return "Kleoth needs Accessibility access"
-        case .secureInput: return "The focused field blocks dictation"
+        case .secureInput(let holder?): return "\(holder) has secure input on — dictation blocked"
+        case .secureInput(nil): return "Secure input is on — dictation blocked"
         case .screenRecordingNeeded: return "Allow Screen Recording, then quit and reopen Kleoth"
         case .screenRecordingStale: return "Quit and reopen Kleoth to finish enabling Screen Recording"
         case .message(let message), .transcriptionKept(let message, _):

@@ -94,8 +94,9 @@ enum TextInsertionError: Error, LocalizedError, Equatable {
     case emptyText
     /// Text left on the clipboard.
     case accessibilityNotTrusted
-    /// Text left on the clipboard.
-    case secureInputActive
+    /// Text left on the clipboard. `holder` = display name of the app holding
+    /// secure input (often not the focused one), nil when it can't be named.
+    case secureInputActive(holder: String?)
     /// Text left on the clipboard.
     case eventCreationFailed
 
@@ -110,8 +111,10 @@ enum TextInsertionError: Error, LocalizedError, Equatable {
             return "Nothing to insert."
         case .accessibilityNotTrusted:
             return "Kleoth needs Accessibility access to paste. Text copied — press ⌘V."
-        case .secureInputActive:
-            return "Secure input is on in the focused app. Text copied — press ⌘V."
+        case .secureInputActive(let holder?):
+            return "\(holder) has secure input on. Text copied — press ⌘V."
+        case .secureInputActive(nil):
+            return "Secure input is on. Text copied — press ⌘V."
         case .eventCreationFailed:
             return "Couldn't send the paste keystroke. Text copied — press ⌘V."
         }
@@ -153,7 +156,7 @@ enum DictationError: Error, LocalizedError, Sendable, Equatable {
         case .missingElevenLabsKey:
             return DictationPillFault.missingElevenLabsKey.text
         case .secureInputActive:
-            return DictationPillFault.secureInput.text
+            return DictationPillFault.secureInput(holder: nil).text
         case .captureFailed(let message), .transcription(let message), .timedOut(let message):
             return message
         }
