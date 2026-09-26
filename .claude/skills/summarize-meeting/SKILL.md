@@ -17,8 +17,9 @@ A **meeting directory** written by the Kleoth app or by `kleoth transcribe`
 (`meeting-yyyy-MM-dd-HHmmss/`, containing `transcript.md` and `meta.json`). The directory path is
 the argument to this skill. If none was provided, ask the user which meeting to summarize.
 
-If the meeting has no transcript yet (no `transcript.md`, or no `meta.json`: the app shows it as
-*Untranscribed*), stop and say so: transcribe it first, in the app or with the
+If the meeting has no transcript yet (neither `transcript.md` nor `transcript.json`: the app shows
+it as *Untranscribed*; it may already have a `meta.json`, which the app writes when the recording
+stops), stop and say so: transcribe it first, in the app or with the
 `transcribe-meeting` skill.
 
 ## Steps

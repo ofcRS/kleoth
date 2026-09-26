@@ -16,15 +16,17 @@ server. It is free and open source (Apache-2.0).
 ## How it works
 
 1. **Record.** Click **Start Recording** in the menu bar, hover the pill at the edge of your screen
-   (shown while dictation is on) and click **Meeting**, press your global hotkey, or use
-   `kleoth://record` from a script or Raycast. Kleoth records two tracks: your mic, and the audio
-   your Mac plays (through a Core Audio process tap, macOS 14.4+). The first time you record, a consent
-   notice asks you to confirm that everyone agrees; the acknowledgement is stamped into each
-   meeting's `meta.json`. However the meeting started, the pill shows its bar while it records, even
-   with dictation off: the elapsed time, a meter for your mic and one for the system audio, and
-   **Stop**. A system meter that stays flat while others talk means Kleoth isn't allowed to record
-   system audio (*Privacy & Security → Screen & System Audio Recording*). Stopping shows "Meeting
-   saved" for a few seconds; click it to open the meeting in History.
+   (shown while dictation is on) and click **Meeting**, press your global hotkey, use
+   `kleoth://record` from a script or Raycast, or click **Record** when the pill asks at the start
+   of a call ([call detection](#calls-that-ask-to-be-recorded), off by default). Kleoth records two
+   tracks: your mic, and the audio your Mac plays (through a Core Audio process tap, macOS 14.4+).
+   The first time you record, a consent notice asks you to confirm that everyone agrees; the
+   acknowledgement is stamped into each meeting's `meta.json`. However the meeting started, the pill
+   shows its bar while it records, even with dictation off: the elapsed time, a meter for your mic
+   and one for the system audio, and **Stop**. A system meter that stays flat while others talk
+   means Kleoth isn't allowed to record system audio (*Privacy & Security → Screen & System Audio
+   Recording*). Stopping shows "Meeting saved" for a few seconds; click it to open the meeting in
+   History.
 2. **Transcribe.** On device by default, with Whisper large-v3 turbo through
    [WhisperKit](https://github.com/argmaxinc/WhisperKit) on the Apple Neural Engine. It is free,
    offline after a one-time ~600 MB model download, and needs no key. The language is detected
@@ -46,6 +48,34 @@ server. It is free and open source (Apache-2.0).
    picture across the top of its page, cute animals or everyday objects acting out what it was
    about; click it to see it full size. See [Meeting covers](../README.md#meeting-covers).
 
+## Calls that ask to be recorded
+
+Off by default. Turn on **Offer to record calls** in Settings → Meetings, and when another app
+starts using the microphone, the pill asks:
+
+- **"Zoom call — record it?"**, with **Record**, **Never for Zoom** and ✕. Call apps (Zoom, Teams,
+  FaceTime, Webex) are asked about after 5 seconds, Google Meet and other calls in a browser after
+  8, chat apps (a Slack huddle, Discord, Telegram) after 30, and any other app, or a browser where
+  no call was seen, after a minute. With calendar access, the offer names the event on now:
+  "“Weekly sync” on Zoom — record it?".
+- **Nothing is recorded until you click Record**, and the seconds of the call before the click are
+  not captured. If you haven't acknowledged recording consent yet, the consent notice asks first.
+- **✕, or no answer for 30 seconds**, means not for this call: no second offer while it lasts, and
+  none for the same app within 10 minutes. **Never for Zoom** stops the offers for that app;
+  Settings → Meetings lists every "Never for …" with **Remove**. "Never for Chrome" silences a
+  browser's other uses of the microphone, such as voice typing; Google Meet and other calls in Chrome
+  are still offered.
+- **Never in the way.** No offer while a meeting or a screen recording runs, while the pill is
+  hidden for an hour, or while you dictate (it comes back afterwards, if the call is still on).
+  Dictation tools, voice memos, Siri and macOS Dictation are never offered.
+- **When the call app lets go of the microphone** during a meeting, the pill suggests stopping once,
+  20 seconds later: "Zoom released the mic — stop recording?". Kleoth never stops a recording on its
+  own; a call can go on in the room after the app hangs up.
+
+Kleoth only notices which apps are using the microphone; no audio is read, and no new permission is
+asked for. With Screen Recording or Accessibility already allowed, it reads the call window's title
+to tell a Meet tab from other sites; a title that names no meeting is never saved.
+
 ## Your meeting is a folder
 
 ```
@@ -54,9 +84,16 @@ server. It is free and open source (Apache-2.0).
   transcript.json · transcript.md       the transcript
   summary.json · summary.md             the summary
   speakers.json                         speaker_0 / speaker_1 → names
-  meta.json                             duration, engine, timestamps, consent
+  meta.json                             title, participants, timestamps, consent, engine, where it happened
   cover.jpg · cover.json                the cover and how it was drawn (if covers are on)
 ```
+
+`meta.json` is written the moment a meeting stops, whether you transcribe it or not, and whether call
+detection is on or off. So an untranscribed recording is already named — after its calendar event,
+or "Recording · Zoom · Sep 24, 14:05" — and can be renamed. It also remembers where it happened: the
+app, the service, how you started it, the calendar event (with calendar access), and a window title
+only when that title named a meeting. When the calendar event had exactly one other person in it,
+their name replaces "Them".
 
 Grep it, sync it with anything, open it in Obsidian, delete it. The app is a view over the
 directory. The `kleoth` CLI (`transcribe`, `summarize`, `rename`, `render`, `illustrate`) works on the same
@@ -85,6 +122,8 @@ folders, and so do the Raycast extension and the `kleoth://` URL scheme.
 - **Covers**, if you turn them on: your AI provider writes a one-sentence scene from the summary,
   and only that scene goes to the image engine you pick: to OpenAI through Codex, or to
   OpenRouter. A local image server keeps it on your Mac.
+- **Call detection** sends nothing anywhere: which app holds the microphone, the matched window
+  title and the calendar event are read on your Mac and kept only in the meeting's `meta.json`.
 
 ## Consent
 

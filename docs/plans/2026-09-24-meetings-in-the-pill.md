@@ -8,8 +8,9 @@ was re-checked against it. Phase 1 (§3.1) stands alone. Phase 2
 gotchas in CLAUDE.md (own `PillMenuPanel`, never `NSMenu`; no `NSHostingView` as a panel's content view;
 panel frames set by the controller only)._
 
-_Phase 1 built 2026-09-25 on `feat/meetings-in-the-pill`; §10 lists the deviations. Phase 2 has not landed
-in this copy yet: §3.2, the phase-2 parts of §4–§6 and the phase-2 lanes of §8 are still the plan._
+_Phase 1 built 2026-09-25 and phase 2 2026-09-26, both on `feat/meetings-in-the-pill`; §10 lists the
+deviations of each. §3–§6 are corrected in place where a ruling changed the behaviour (each says so and
+points at §10); the rest of §4 and §8 stays the plan, and §10 is what was built._
 
 ## 1 The ask
 
@@ -279,6 +280,10 @@ calls-not-seen in Chrome only).
 - **Not offered**: while a meeting or a screen recording runs; while the pill is hidden for the hour;
   when detection is off; for a session first seen more than 10 min ago (it was running while one of the
   above applied — the user evidently chose). Kleoth launched mid-call counts from its launch: offered once.
+  **Ruled at implementation (§10):** when a recorded meeting ends, every session that held the mic during it
+  is silenced for as long as it lasts — the user evidently chose, so the call they just recorded is not
+  offered again at once; a new session of the same app (after an 8 s gap) is offered as usual. When
+  suppression lifts or after a ✕, a due offer shows at once (from that event), not at the next observation.
 - The prompt is the pill's own panel, non-activating — the call app keeps focus, as with every other pill
   phase. The offer shows even when the resting pill is off (dictation disabled): it rises from the edge
   and sinks back to nothing.
@@ -304,6 +309,11 @@ it offers nothing.
   relinks to it silently.
 - A suggestion only, once per release — Kleoth never stops a meeting by itself (Q5). Ignored, the bar
   keeps its elapsed time on screen, which is the reminder.
+- **Ruled at implementation (§10):** the suggestion is made only while call detection is on (the house rule:
+  nothing unasked while it is off; the silent relink and the meeting's context still run with it off) and
+  never while a screen recording runs (its "Stop" over the screen bar would read as stopping that; it comes
+  once the screen recording ends). A visible suggestion is withdrawn when detection is switched off, and when
+  a new meeting starts. Switching detection on after the linked app let go more than 20 s ago shows it at once.
 
 #### 3.2.6 Context: where the meeting happened
 
@@ -356,6 +366,12 @@ Settings → Meetings, a new **Call detection** section under Calendar:
   sites."
 - If the watcher cannot start (a Core Audio error): the toggle stays, with "Call detection isn't
   available: <OSStatus>" under it.
+- **As built (§10):** each entry is its own row, worded as the pill's button was ("Never for Zoom", "Never for
+  calls in Chrome", "Never for Chrome" — the last captioned "Google Meet and other calls in Chrome are still
+  offered"), with **Remove**; no "Never offered for" label. The footer also says that no audio is read, that
+  the pill suggests stopping and never stops on its own, that a title naming no meeting is never saved, that
+  the offer names the calendar event only with calendar naming on, that no new permission is asked for, and
+  that each meeting notes its app whether the toggle is on or off.
 
 ## 4 Contract
 
@@ -737,10 +753,13 @@ decline); `isDictationPhaseLive` is false for it.
   ```
 
   It runs the monitor while enabled or a meeting records; with each change resolves owners, reads
-  `WebCallAssertions.pids()` and, for browsers, window titles — off the main actor (titles once per source
-  acquisition, cached `titleCacheSeconds` per PID); builds `MeetingSource`s; feeds `MeetingDetector`; schedules
-  `.tick` at `nextDeadline`; turns `.show`/`.withdraw` into `showMeetingPhase(.prompt(…))` /
-  `dismissMeetingPhase()` — a refused show becomes `.answered(.refused)`; persists `.ignore`; builds the
+  `WebCallAssertions.pids()` and window titles (every non-never holder) — off the main actor. As built (§10):
+  while anything holds the mic, the held set is re-resolved every `pollWhileHeld` (3 s), titles coming from a
+  `titleCacheSeconds` (30 s) per-PID cache, so a tab whose meeting title or web-call assertion appears after
+  it took the mic still upgrades its source; builds `MeetingSource`s; feeds `MeetingDetector`; schedules
+  `.tick` at `nextDeadline` (the wait floored at 0.25 s, capped at 1 s while a prompt is up); turns
+  `.show`/`.withdraw` into `showMeetingPhase(.prompt(…))` / `dismissMeetingPhase()` — a refused show becomes
+  `.answered(.refused)`; persists `.ignore`; builds the
   `Environment` from `recordingSince` (capture observer), `ScreenRecordingController.isActive` and
   `DictationController.pillHiddenUntil` (Combine).
 - `MeetingPillBridge` forwards `acceptOffer` (answer `.accepted`, then `start(origin: .offer)`),
@@ -753,10 +772,12 @@ decline); `isDictationPhaseLive` is false for it.
   - `start(origin: MeetingStartOrigin = .menu)`; `handle(.record/.toggle)` and `KleothIntents` pass
     `.shortcut`, the bridge `.pill` / `.offer`, the popover and onboarding keep the default.
   - `var meetingContextProvider: ((Date, Date) -> MeetingContext)?`, set by the detection controller.
-  - `stop()`: after the combine, for every meeting, resolve the calendar match and the context, then write
-    `meta.json` (title, date, `started_at`, participants, consent, `context`) BEFORE the auto-transcribe
-    branch. The folder is no longer being recorded by then, so the "reverted" listing applies. Never
-    earlier: a listed folder's duration is probed once and cached forever (`durationCache`), and a
+  - `stop()`: the context is read SYNCHRONOUSLY right after `isRecording = false`, before `recordingSince`
+    goes nil and before the first `await` (§10: read after the combine, the detector has already forgotten
+    the linked source). After the combine, for every meeting, resolve the calendar match, then write
+    `meta.json` (title, date, `started_at`, participants, consent, `context`) BEFORE `.saved` and the
+    auto-transcribe branch. The folder is no longer being recorded by then, so the "reverted" listing
+    applies. Never earlier: a listed folder's duration is probed once and cached forever (`durationCache`), and a
     `meta.json` written at start would list the folder mid-recording (:1562 has no active-folder check). The
     no-calendar title is `MeetingNaming.placeholderTitle` on both branches (today's "Meeting <date>" from
     `defaultMeetingTitle()` stays only for imported files).
@@ -836,7 +857,7 @@ the History lists (3's and 4's), `OnboardingView` and `ConsentView` (4's), `Meet
 | `start()` throws, started from the pill (or an offer) | sticky `.failed(.message("Couldn't start the meeting recording — …"))`; popover line. Started anywhere else: the popover line only (§10) | folder removed as today |
 | Start while already recording | nothing (bar already up) | — |
 | System Audio grant missing | records; the system meter stays flat (silence, not an error — unchanged) | as today |
-| Finalizing throws | backdrop gone; sticky "The meeting stopped with an error — its audio is in History"; History error card | audio kept |
+| Finalizing throws | backdrop gone; sticky "The meeting stopped with an error — its audio is in History"; History error card | audio kept; no `meta.json`, so the context is lost (§10) |
 | Stop while a dictation phase is up | dictation untouched; `.meetingSaved` queued ≤ 10 s, then dropped | — |
 | Meeting and screen recording together | screen bar shown; meeting Stop in menu / popover; meeting bar returns after `.saved` | — |
 | Quit while a meeting records | unchanged from today (not handled here) | — |
@@ -847,7 +868,7 @@ the History lists (3's and 4's), `OnboardingView` and `ConsentView` (4's), `Meet
 | No Accessibility, no Screen Recording | no titles: a Chromium call is still a browser call by its WebRTC assertion ("Call in Chrome"); Safari and Firefox calls are "no call seen" (60 s, generic text); no `window_title` | — |
 | AX call hangs (busy app) | 0.5 s timeout, no titles for that read | — |
 | Calendar not authorized / no event | no calendar fields; title "Recording · Zoom · Sep 24, 14:05" | — |
-| Offer: Record, consent missing | the offer goes; track 4's window asks, as for the Meeting tile | — |
+| Offer: Record, consent missing | the offer goes; track 4's window asks, as for the Meeting tile; its start keeps `started_from: "offer"` (§10) | — |
 | Offer: Record, start throws | the start fault | — |
 | Offer while a dictation phase is up, the dock peeks or the menu is open | held; shown when free (1 s retries) with a fresh 30 s | — |
 | Offer replaced by a dictation chord | comes back after the dictation, if the session is still on | — |
@@ -855,7 +876,7 @@ the History lists (3's and 4's), `OnboardingView` and `ConsentView` (4's), `Meet
 | Never for X | offer withdrawn; X listed in Settings | Keychain `meeting_detection_ignored` |
 | Source releases the mic ≥ 8 s during its offer | offer withdrawn | — |
 | Two sources due at once | one offer, class order | — |
-| Linked source released ≥ 20 s | stop suggestion 60 s; Stop → normal stop | — |
+| Linked source released ≥ 20 s | stop suggestion 60 s, only with detection on and no screen recording running (§3.2.5); Stop → normal stop | — |
 | Stop suggestion ignored | bar stays; no second suggestion until the source takes the mic and releases it again | — |
 | `meta.json` write at stop fails | logged; the row stays "Recording · …" without metadata; transcription rebuilds metadata (context lost) | as before phase 2 |
 | Older build rewrites `meta.json` | `context` dropped | `context` gone |
@@ -1032,10 +1053,10 @@ Lanes an Opus subagent can each own. A lane lists the files it owns; nobody else
 6. **One-to-one calendar calls**: label the other side with the sole other attendee instead of "Them"?
    *Recommended: yes* — right in the common case, renameable when wrong.
 
-## 10 Deviations (2026-09-25, at implementation)
+## 10 Deviations (2026-09-25 and 2026-09-26, at implementation)
 
-Phase 1 as built on `feat/meetings-in-the-pill`, where it differs from §3–§6, one line each with its reason.
-Phase 2 has not landed in this copy; its lanes (plan Tasks 9–18) add their own lines here.
+Both phases as built on `feat/meetings-in-the-pill`, where they differ from §3–§6, each with its reason.
+Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fixes and the review rounds): 14–44.
 
 **Settled before the build**
 
@@ -1095,7 +1116,7 @@ Phase 2 has not landed in this copy; its lanes (plan Tasks 9–18) add their own
     event carries a failed start, so one from the popover, hotkey, `kleoth://` or the intent shows in the
     popover line and the intent's dialog, as before.
 
-**Known gaps, for the §6 checklist**
+**Known gaps, phase 1 (for the §6 checklist)**
 
 - A fresh fault from one capture covers the other capture's live bar until ✕ (item 5).
 - A dictation-owned sticky `.failed` ("… — saved to History") blocks both capture bars until ✕: "never paint
@@ -1103,10 +1124,105 @@ Phase 2 has not landed in this copy; its lanes (plan Tasks 9–18) add their own
 - A meeting whose `.saving` a dictation replaced (or pre-empted) shows the bar with a running clock until its
   `.saved`, and that bar's Stop does nothing — the meeting has already stopped and is being combined.
 
-**Planned for phase 2** (from the implementation plan; its tasks confirm or replace these)
+**Changed while building phase 2** (768 core tests at the end)
 
-- `MeetingDetector.visibleOffer` is public, so the host can answer a "Never for …" click (the action carries
-  key + name, not the offer id).
-- `MeetingOfferText` (KleothCore) builds the prompt copy.
-- `CalendarEventMatcher.best(_:at:serviceId:)` accepts the service NAME the detector reports (tokens for both
-  the id and the name forms).
+14. **The API grew where the host needed it.** `MeetingDetector.visibleOffer` and `linkedSource` are public (a
+    "Never for …" click carries key + name, not the offer id); `MeetingOfferText` builds the prompt copy;
+    `MeetingServiceMatcher.storedTitle` / `linkTokens(forService:)`; `CalendarEventMatcher.best(_:at:serviceId:)`
+    takes the service id or its name; `MeetingNaming.defaultSpeakerNames` lives in KleothCore, tested there
+    (Q6); `MeetingDetectionIgnored.parse` / `encode` for the Keychain string.
+15. **Safari is a browser.** The call, chat and browser lists are consulted before the never rules: the
+    `com.apple.` prefix had made Safari `.never`, and every Meet call in Safari was dropped.
+16. **Safari web apps** (`com.apple.Safari.WebApp.<id>`, a site added to the Dock) are browsers named after
+    themselves ("Teams is using the mic", "Never for Teams"), checked before the never rules. The id shape is
+    unverified (§6 step 9).
+17. **A Google Meet title may end with an em dash** ("Weekly sync — Google Meet").
+18. **Participants are one per address**: `mailto:` stripped and lowercased, a real name replaces one read off
+    the address; `displayName` is nil without an `@` (a `urn:uuid:` attendee) and drops a `+tag`; a blank
+    service id is no service. Without this, an organizer listed again as an attendee made a one-to-one call look
+    like two people (Q6). Two people sharing a display name at two addresses stay two.
+19. **`nextDeadline` is nil or later than now after every tick.** The dwell candidate is skipped while an offer
+    is visible, bounded by the ✕ cooldown and `retryAt`, dropped past `maxOfferAge`; the stop-grace candidate is
+    bounded by `retryAt`; `evaluate` clears a passed `retryAt` and first silences sessions older than
+    `maxOfferAge`; a hovered tick moves the deadline to `now + hoverLinger`. A past deadline made the host tick
+    in a zero-wait loop on the main actor for whole calls (pre-flight C-1); a seeded sweep (120 random runs,
+    random hover and ignored keys) pins the rule.
+20. **An offer shows from the event that makes it due** — the `.environment` that lifts a suppression, the
+    answer that frees the pill — not at the next observation (§3.2.3).
+21. **`.displaced` and `.accepted` set `retryAt` (+1 s):** a displaced offer is never re-shown inside the call
+    that displaced it (it would paint under the dictation), and Record never flashes the next due source's offer
+    before the meeting starts.
+22. **Rejoining withdraws the stop suggestion.** The check no longer needs the linked session, which the 8 s
+    grace had already removed, so a stale "stop recording?" stayed up after the user rejoined.
+23. **The stop suggestion needs detection on and no screen recording** (§3.2.5); the gate is in
+    `nextDeadline` too, or a meeting with detection off kept a past deadline (item 19's loop).
+24. **Sessions held during a recorded meeting are silenced when it ends** (§3.2.3).
+25. **Ties are deterministic:** every choice goes by (class rank, session start, key, app), never by `Set` or
+    `Dictionary` order; the batch link picks the best session after the loop.
+26. **The ending meeting's last stretch counts.** The mic seconds were accrued after the environment had already
+    changed, so their guard always failed; they are accrued first.
+27. **`.direct` only for a regular app.** A pid is taken as the app itself only with a `.regular` activation
+    policy, so `com.apple.WebKit.GPU` and accessory helpers resolve to their host (Safari, a menu-bar app that
+    embeds WebKit, a browser's helpers); the responsible-process and parent steps accept any non-prohibited app.
+    An accessory main app (a dictation tool) still resolves to itself through its `.app` path.
+28. **Listeners are C procs.** `AudioObjectRemovePropertyListenerBlock` called from Swift removed nothing, so
+    listeners stacked with each start (4, then 12 after three starts): every add and remove uses
+    `AudioObjectAddPropertyListener` / `AudioObjectRemovePropertyListener` with one `@convention(c)` proc and a
+    retained context. Re-reads are coalesced: one leading at 0.3 s, one trailing at 1.5 s that each
+    notification pushes back.
+29. **The "one WebKit browser running" fallback** also runs when the responsibility symbol gives no usable
+    answer; daemon stand-ins are never cached, and a cached owner's pid must still be alive.
+30. **`micopen`, a second probe**, holds the mic from another process for the calibration (§6 step 9 can't
+    run against real calls unattended, item 4): it never prompts (exit 3 without an existing grant) and discards
+    every sample. `micwatch` prints bundle ids, pids, booleans and timings — no path, no window title — and
+    floors its tick wait like the app.
+31. **Held mics are re-resolved every 3 s** (§4.4). Resolving titles only when the set of mic holders changed
+    left a Chrome lobby that joined a call as `browser:` — offered at 60 s, and silenced by "Never for Chrome".
+32. **The host floors its tick wait at 0.25 s** (`max(0.25, min(deadline − now, promptUp ? 1 : 3600))`), a
+    second guard behind item 19.
+33. **One controller, fed at start.** `MeetingDetectionController.sharedInstance()` serves the delegate and
+    the Settings scene alike (the `@StateObject` alone would not exist until Settings was built), and `start()`
+    feeds the initial environment: the detector starts with offers off and hears only changes.
+34. **Displacement is reported after the new phase is asked for**, its id read before the owner flips.
+    Reported first, the machine's re-offer passed the busy check and painted a prompt under the dictation. A
+    meeting prompt withdrawn by `clearCapturePhaseBlocking` (a capture bar rising) is reported the same way.
+35. **"Busy" for prompts** = a live dictation phase, the dock or menu open, a queued confirmation, or a phase
+    that holds prompts back, showing now or asked for in the last 0.5 s — not "the last owner was the
+    dictation", which outlives a `.done` that auto-hides without a callback. A prompt yields to a running
+    screen recording (refused, retried each second).
+36. **Answers are idempotent:** only the visible offer's id counts, so a double click never starts twice. The
+    machine withdraws nothing on Record, Never or Stop; what follows takes the prompt down (the bar, the fault,
+    `.saving`), else the bridge dismisses it.
+37. **`isPointerOver` is geometric** (the capsule's rect contains the mouse, the panel up): `model.hovered` could
+    stay true after the pointer left and hold an offer past its 30 s. `finishHide` also clears hover and peeking
+    ("Hide for 1 hour" from a peeking pill came back with the dock out, refusing every offer).
+38. **A same-turn dismiss works.** The pill remembers the phase a transition has yet to apply (`pendingPhase`),
+    so `show(.prompt)` then `dismiss()` in one turn no longer leaves the prompt stuck — for every phase.
+39. **Prompt targets** are padded to the reserved widths and 30 pt tall; a `webcall:` key's button reads "Never
+    for calls in Chrome"; the tooltip only on a `browser:` key.
+40. **The context is captured synchronously at stop** (§4.4): read after the combine, as planned, the detector
+    had already forgotten the linked source, and a call that held the mic under 20 s got no app at all.
+41. **A consent-refused start keeps its origin:** Record on an offer before consent → the "Before you record"
+    window starts the meeting as `offer`.
+42. **The calendar hint is the service**, for the offer's text and the naming at stop alike; one lookup at stop
+    gives both the title and the `calendar_*` fields.
+43. **`runPipeline` keeps a stored placeholder title** when the incoming title is a placeholder too, so "Recording
+    · Zoom · …" is not traded for the service-less recovered form; `meta.json` at stop uses `MeetingStore`'s
+    encoder options (`.withoutEscapingSlashes`); `localtranscribe` carries `context`.
+44. **Settings** as in §3.2.7's "As built" note.
+
+**Known gaps, phase 2 (for the §6 checklist)**
+
+- A finalize that throws writes no `meta.json` (§5): the folder lists as a recovered row, its context lost.
+- `calendar_*` are filled only at stop: a placeholder title that a calendar event found at transcription
+  replaces leaves them empty.
+- Switching detection on mid-meeting, after the linked app let go more than 20 s earlier, shows the stop
+  suggestion at once (true; kept).
+- With consent never given, Record on an offer delays the next due source by only 1 s: a second offer can
+  rise beside the "Before you record" window.
+- During every meeting (detection off too), while an app holds the mic, the host wakes every 3 s for the
+  assertion read and the cached owner lookups.
+- The `browser:` caption is written twice: in Settings and in the pill's tooltip.
+- Unverified until the §6 step 9 calibration on an awake Mac: every real call, WebKit → Safari live, the Safari
+  web-app ids, FaceTime through `avconferenced`, the catalog ids marked "unverified". The `micopen` timings so
+  far (listener trigger 0.05–0.21 s on take, ≤ 0.34 s on release) come from a locked screen.

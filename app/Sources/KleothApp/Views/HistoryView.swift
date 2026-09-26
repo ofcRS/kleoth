@@ -250,8 +250,9 @@ struct HistoryView: View {
     }
 
     /// Context-menu body for a right-clicked set of rows. Rename only offers
-    /// itself for a single meeting with a `meta.json` to hold the title (a
-    /// never-transcribed folder has none yet; a reverted one keeps its).
+    /// itself for a single meeting with a `meta.json` to hold the title: every
+    /// meeting gets one when it stops, transcribed or not. A folder recorded
+    /// before 0.5.1, or one whose finalize or `meta.json` write failed, has none.
     @ViewBuilder
     private func contextMenuItems(for ids: Set<RecentMeeting.ID>) -> some View {
         if !ids.isEmpty {
@@ -388,8 +389,9 @@ struct HistoryView: View {
     // MARK: - Inline rename
 
     private func beginRename(_ meeting: RecentMeeting) {
-        // In-flight rows and folders without a meta.json (never transcribed)
-        // can't hold a title yet; a reverted meeting keeps its meta and renames.
+        // In-flight rows and folders without a meta.json (still finalizing, or
+        // recorded before 0.5.1 wrote it at stop) can't hold a title yet; an
+        // untranscribed or reverted meeting has its meta and renames.
         guard meeting.hasMetadata, !meeting.isTranscribing else { return }
         renameDraft = meeting.title
         renamingID = meeting.id

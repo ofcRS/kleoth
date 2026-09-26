@@ -35,6 +35,28 @@ All notable changes to Kleoth are documented here. The format is based on
   works as before and the bar comes back afterwards; a screen recording started during a meeting
   takes the bar over until it ends. With the bigger dock, a pill parked near a corner sits a little
   further from it, so the dock comes out without the pill shifting.
+- **Calls that ask to be recorded (off by default).** Turn on **Offer to record calls** in
+  Settings → Meetings and, when Zoom, Teams, a Slack huddle, FaceTime, Google Meet in a browser or
+  another app starts using the microphone, the pill asks "Zoom call — record it?" with **Record**,
+  **Never for Zoom** and ✕ (with calendar access, "“Weekly sync” on Zoom — record it?"). Nothing is
+  recorded until you click Record, and the seconds before the click are not captured. ✕, or no
+  answer for 30 seconds, means not for this call: no second offer while it lasts, nor for that app
+  within 10 minutes. An offer never appears during a meeting or a screen recording, waits while you
+  dictate, and never pulls the dock out from under the pointer. When the call app lets go of the
+  microphone during a meeting, the pill suggests stopping once, 20 seconds later ("Zoom released the
+  mic — stop recording?"); Kleoth never stops a recording on its own. Settings → Meetings lists
+  every "Never for …" with **Remove**. Kleoth only notices which apps are using the microphone: no
+  audio is read, no permission is asked for, and nothing leaves your Mac. With Screen Recording or
+  Accessibility already allowed, it reads the call window's title to tell a Meet tab from other
+  sites; a title that names no meeting is never saved.
+- **Every meeting remembers where it happened.** A meeting now gets its `meta.json` the moment it
+  stops, transcribed or not, and whether call detection is on or off. An untranscribed recording
+  is named after its calendar event (with calendar access) or "Recording · Zoom · Sep 24, 14:05",
+  can be renamed right away, and keeps where it happened, through transcription: the app, the
+  service (Zoom, Google Meet…), how you started the recording, the calendar event, and a window
+  title only when it named a meeting. All of it is read on your Mac and stays in that file. When
+  the calendar event had exactly one other person in it, the other side of the transcript is named
+  after them instead of "Them"; renaming the speaker still wins.
 
 ### Changed
 

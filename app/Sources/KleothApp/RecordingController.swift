@@ -1956,9 +1956,9 @@ public final class RecordingController: ObservableObject {
                 // stored cost value can overstate length. Falls back to the stored
                 // value when the audio can't be probed.
                 let realDur = Self.meetingAudioURL(in: dir).flatMap { cachedDuration(of: $0) }
-                // meta.json alone no longer implies a transcript: a reverted
-                // meeting ("Remove Transcription") keeps its metadata identity
-                // but lists as Untranscribed until re-transcribed.
+                // meta.json never implies a transcript: `stop()` writes it for
+                // every meeting, and a reverted meeting ("Remove Transcription")
+                // keeps its own; both list as Untranscribed until transcribed.
                 let hasTranscript = fm.fileExists(
                     atPath: dir.appendingPathComponent("transcript.json").path
                 )
