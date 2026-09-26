@@ -62,7 +62,7 @@ import Testing
     /// only — a call app, a `site:` or `webcall:` browser call. Voice typing
     /// in a browser during "Focus time" is not that event, and neither is a
     /// chat app's voice note nor an unknown app.
-    @Test func offerNamesTheCalendarEventForCallsOnly() throws {
+    @Test func offerNamesTheCalendarEventForCallsAndHuddlesOnly() throws {
         let zoom = try #require(MeetingSource.make(bundleId: "us.zoom.xos", appName: "zoom.us", windowTitles: [], hasWebCall: false))
         let meet = try #require(MeetingSource.make(bundleId: "com.google.Chrome", appName: "Google Chrome",
                                                    windowTitles: ["Weekly sync - Google Meet"], hasWebCall: false))
@@ -75,13 +75,14 @@ import Testing
         #expect(MeetingOfferText.namesCalendarEvent(for: meet))
         #expect(MeetingOfferText.namesCalendarEvent(for: webCall))
         #expect(!MeetingOfferText.namesCalendarEvent(for: browser))
-        #expect(!MeetingOfferText.namesCalendarEvent(for: chat))
+        #expect(MeetingOfferText.namesCalendarEvent(for: chat))   // a huddle: offered only after a 30 s hold
         #expect(!MeetingOfferText.namesCalendarEvent(for: other))
 
         #expect(MeetingOfferText.offer(for: meet, calendarTitle: "Weekly sync") == "“Weekly sync” on Google Meet — record it?")
         #expect(MeetingOfferText.offer(for: webCall, calendarTitle: "Weekly sync") == "“Weekly sync” on Chrome — record it?")
         #expect(MeetingOfferText.offer(for: browser, calendarTitle: "Focus time") == "Chrome is using the mic — record it?")
-        #expect(MeetingOfferText.offer(for: chat, calendarTitle: "Focus time") == "Telegram call — record it?")
+        #expect(MeetingOfferText.offer(for: chat, calendarTitle: "Weekly sync") == "“Weekly sync” on Telegram — record it?")
+        #expect(MeetingOfferText.offer(for: chat, calendarTitle: nil) == "Telegram call — record it?")
         #expect(MeetingOfferText.offer(for: other, calendarTitle: "Focus time") == "Telemost is using the mic — record it?")
     }
 }

@@ -66,12 +66,13 @@ public enum MeetingOfferText {
     public static let maxCalendarTitle = 40
 
     /// Whether an offer on `source` may name the calendar event on now: a
-    /// call only — a call app, or a `site:` / `webcall:` browser call. A
-    /// browser without a call, a chat app (a voice note) or an unknown app is
-    /// no event ("“Focus time” on Chrome" is voice typing). The host skips the
-    /// calendar lookup for the rest.
+    /// call — a call app, a `site:` / `webcall:` browser call, or a chat app
+    /// (offered only after a 30 s hold, so a huddle, not a voice note). A
+    /// browser without a call or an unknown app is no event ("“Focus time” on
+    /// Chrome" is voice typing). The host skips the calendar lookup for the rest.
     public static func namesCalendarEvent(for source: MeetingSource) -> Bool {
         source.sourceClass == .callApp || source.sourceClass == .browserCall
+            || source.sourceClass == .chatApp
     }
 
     /// `calendarTitle` is used only when `namesCalendarEvent(for:)`.
