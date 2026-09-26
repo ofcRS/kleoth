@@ -567,16 +567,12 @@ struct DictationPillView: View {
                 .foregroundStyle(tint)
                 .accessibilityHidden(true)
             label(prompt.text)
-            Button(prompt.primary.title) { controller.perform(prompt.primary) }
-                .buttonStyle(.borderless)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint)
+            promptButton(prompt.primary.title, color: tint) { controller.perform(prompt.primary) }
             if let secondary = prompt.secondary {
-                Button(secondary.title) { controller.perform(secondary) }
-                    .buttonStyle(.borderless)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(PillStyle.ink.opacity(0.7))
-                    .help(neverHelp(secondary))
+                let never = promptButton(secondary.title, color: PillStyle.ink.opacity(0.7)) {
+                    controller.perform(secondary)
+                }
+                if let help = neverHelp(secondary) { never.help(help) } else { never }
             }
             Button {
                 controller.dismissFromUser()
@@ -584,17 +580,43 @@ struct DictationPillView: View {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(PillStyle.ink.opacity(0.6))
+                    // The 18 pt `layout` reserves for it, as a target.
+                    .frame(width: 18, height: Self.promptTargetHeight)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Not now")
         }
     }
 
+    /// How tall a prompt's buttons are as TARGETS. Not the capsule's 38 pt: at
+    /// 30 the ✕'s rectangle stays inside the capsule's round end, so the
+    /// transparent margin around the pill never takes a click.
+    private static let promptTargetHeight: CGFloat = 30
+
+    /// A prompt's word button, padded to the width the controller's `layout`
+    /// reserves for it (title + 22) with the whole rectangle hit-testable: a
+    /// tap on the capsule itself does nothing on a prompt, so a near miss has
+    /// to land on the button, not on the capsule.
+    private func promptButton(_ title: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .padding(.horizontal, 11)
+                .frame(height: Self.promptTargetHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+    }
+
     /// The quiet button's tooltip (§3.2.4): "Never for Chrome" — mic use in a
     /// browser where no call was seen (`browser:` key) — silences only that,
-    /// so it says what stays offered. Every other "Never for …" says it all.
-    private func neverHelp(_ action: DictationPillAction) -> String {
-        guard case .meeting(.neverOffer(let key, let name)) = action, key.hasPrefix("browser:") else { return "" }
+    /// so it says what stays offered. Every other "Never for …" says it all
+    /// and gets no tooltip.
+    private func neverHelp(_ action: DictationPillAction) -> String? {
+        guard case .meeting(.neverOffer(let key, let name)) = action, key.hasPrefix("browser:") else { return nil }
         return "Google Meet and other calls in \(name) are still offered"
     }
 

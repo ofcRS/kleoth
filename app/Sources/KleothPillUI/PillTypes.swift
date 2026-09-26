@@ -307,7 +307,7 @@ public enum MeetingPillAction: Equatable, Sendable {
 @MainActor
 public protocol DictationPillPresenting: AnyObject {
     var onAction: ((DictationPillAction) -> Void)? { get set }
-    /// ✕ or click on a `.failed` pill.
+    /// ✕ or click on a `.failed` pill, or a `.prompt`'s ✕.
     var onDismiss: (() -> Void)? { get set }
     /// What the pill's menu shows — microphones, the last dictation, the
     /// hotkey — asked on every open, so the pill keeps no audio or history

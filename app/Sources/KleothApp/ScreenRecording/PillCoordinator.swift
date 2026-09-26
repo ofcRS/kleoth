@@ -258,15 +258,13 @@ final class PillCoordinator {
         if queuedConfirmation?.owner == .meeting { cancelQueuedConfirmation() }
         guard !isDictationPhaseLive else { return }
         if let id = currentMeetingPromptId, pill.currentState.promptId != id {
-            // A prompt asked for this turn has not landed: a `dismiss()` now
-            // finds the pill still on its backdrop and does nothing, and the
-            // prompt would land after it with no one left to take it down.
-            // One turn later it is up (the pill's transition hop was queued
-            // first), unless something replaced it meanwhile.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.currentMeetingPromptId == id else { return }
-                self.dismissLandedMeetingPhase()
-            }
+            // A prompt asked for this turn has not landed yet (`currentState`
+            // lags a turn behind a `show` on a panel that is up), so the switch
+            // below would find the backdrop and leave it. The pill's own
+            // `dismiss()` handles it: it sees the phase still to land and
+            // collapses onto the backdrop over it, so the prompt never appears.
+            lastShowOwner = nil
+            pill.dismiss()
             return
         }
         dismissLandedMeetingPhase()

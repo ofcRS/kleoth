@@ -76,8 +76,18 @@ public final class DictationPillController: DictationPillPresenting {
     /// Peeking or the menu is open: an offer would pull the dock from under
     /// the pointer, so the meeting side waits (meetings design §3.2.3).
     public var isInteracting: Bool { peeking || menuOpen }
-    /// The pointer is on the panel (any phase): an offer's lifetime waits.
-    public var isPointerOver: Bool { model.hovered }
+    /// The pointer is on the CAPSULE (any phase): an offer's lifetime waits.
+    /// Answered from geometry, like `closeMenu`'s and `reconsiderPointer`'s
+    /// re-checks — never from `model.hovered` alone: the tracking area sends no
+    /// exit to a panel ordered out (or shrunk) from under a parked pointer, so
+    /// `hovered` can stay true long after the pointer has gone, and it counts
+    /// the transparent shadow margin as "on the pill". Film mode has no real
+    /// pointer: there the scripted hover (`setHovered` / `setPointer`) is the truth.
+    public var isPointerOver: Bool {
+        guard let panel, panel.isVisible, model.isPresented else { return false }
+        if ignoresRealPointer { return model.hovered }
+        return Self.capsuleRect(inPanel: pendingFrame ?? panel.frame).contains(NSEvent.mouseLocation)
+    }
     private var menuPanel: PillMenuPanel?
     private let menuModel = PillMenuModel()
     private var menuMonitors: [Any] = []
@@ -104,6 +114,11 @@ public final class DictationPillController: DictationPillPresenting {
     /// The rect the panel settles to when the in-flight transition completes;
     /// nil when the panel is settled (frame == capsule rect, offset == zero).
     private var pendingFrame: CGRect?
+    /// The phase an in-flight transition has yet to apply: `transition` puts
+    /// `model.phase` on the NEXT main-queue turn, so for that turn the model
+    /// still shows the old phase. nil once applied, or when the transition was
+    /// superseded by a settle or a hide (its phase will never land).
+    private var pendingPhase: DictationPillState?
     /// Bumped by every transition, settle, and hide so a stale spring
     /// completion can never shrink the panel to a rect that is no longer the
     /// destination.
@@ -281,7 +296,14 @@ public final class DictationPillController: DictationPillPresenting {
             hideCompletely()
             return
         }
-        if model.phase == state, panel?.isVisible == true, model.isPresented { return }
+        // Already there — unless a transition to another phase is still to
+        // land: a `show(.prompt)` then `dismiss()` in the same turn finds
+        // `model.phase` on the backdrop, and returning here let the prompt
+        // land a turn later with nothing left to take it down. Showing the
+        // backdrop supersedes that transition (the generation check), so the
+        // phase never appears.
+        if model.phase == state, pendingPhase == nil || pendingPhase == state,
+           panel?.isVisible == true, model.isPresented { return }
         show(state)
     }
 
@@ -457,7 +479,8 @@ public final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    /// ✕, or a click anywhere on a `.failed` pill.
+    /// ✕ (on a `.failed` or a `.prompt`), or a click anywhere on a `.failed`
+    /// pill.
     func dismissFromUser() {
         // `currentState` keeps reporting the phase the user dismissed for the
         // duration of the callback. Without this the answer depends on motion
@@ -1003,6 +1026,12 @@ public final class DictationPillController: DictationPillPresenting {
         pendingFrame = nil
         model.apply(offset: .zero)
         model.apply(dockHeld: false)
+        // An ordered-out window gets no `mouseExited`: forget the pointer, or
+        // `hovered` would outlive the panel (a returning pill must not believe
+        // it is under a pointer that left long ago).
+        model.apply(hovered: false)
+        model.apply(pointer: nil)
+        pendingPhase = nil
         // A backdrop that rose while the panel faded out was only stored (the
         // old phase was still up); it takes over now, so a capture that
         // started in the fade never ends up with no bar (hot-mic rule).
@@ -1030,6 +1059,7 @@ public final class DictationPillController: DictationPillPresenting {
 
         guard !Self.reduceMotion else {
             pendingFrame = nil
+            pendingPhase = nil
             var still = Transaction()
             still.disablesAnimations = true
             withTransaction(still) {
@@ -1076,12 +1106,15 @@ public final class DictationPillController: DictationPillPresenting {
         }
 
         let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
+        pendingPhase = phase
         // The animated changes go out on the NEXT main-queue callout so
         // SwiftUI has committed the re-expressed start position first; a
         // change in the same turn would spring from the previous graph value,
         // which is a different point on the new stage.
         Task { @MainActor [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
+            // Applied below in this same callout (or already the model's).
+            self.pendingPhase = nil
             let moves = self.model.offset != destination
             let reshapes = self.model.phase != phase || self.model.capsuleSize != capsule
                 || self.model.flat != flat
@@ -1151,6 +1184,8 @@ public final class DictationPillController: DictationPillPresenting {
     /// not change. Safe to call when already settled.
     private func settle() {
         transitionGeneration += 1
+        // A transition still waiting for its turn is cancelled by the bump.
+        pendingPhase = nil
         releaseDockSurface()
         var still = Transaction()
         still.disablesAnimations = true
@@ -1424,6 +1459,18 @@ public final class DictationPillController: DictationPillPresenting {
     /// it (extra width is transparent margin).
     private static let widthSlack: CGFloat = 20
 
+    /// The capsule inside a SETTLED panel rect (`layout`'s panel size, read
+    /// backwards): the panel minus its shadow margin on every side and the
+    /// width slack along its length — the longer side, whatever the edge (a
+    /// capsule is always longer than it is thick). The capsule is centred in
+    /// the panel (it is an overlay on the root view).
+    static func capsuleRect(inPanel frame: CGRect) -> CGRect {
+        let rect = frame.insetBy(dx: shadowPadding, dy: shadowPadding)
+        return rect.width >= rect.height
+            ? rect.insetBy(dx: widthSlack / 2, dy: 0)
+            : rect.insetBy(dx: 0, dy: widthSlack / 2)
+    }
+
     /// Everything the panel and the view need to agree on for one phase on one
     /// edge: the panel's size (rotated for a side edge) and the explicit label
     /// width for text phases.
@@ -1540,7 +1587,8 @@ public final class DictationPillController: DictationPillPresenting {
             length += 2 * PillStyle.spacingM
         case .prompt(let prompt):
             // Laid out like `.failed`, plus every button it shows: symbol ·
-            // label · primary · the quieter secondary · ✕ (`DictationPillView`).
+            // label · primary · the quieter secondary · ✕ (`DictationPillView`
+            // pads each button to exactly its share here: title + 22, ✕ 18).
             let measured = textWidth(prompt.text, style: .callout, weight: .medium) + 1
             let label = min(measured, labelCap(edge: edge, on: screen, flat: flat))
             labelWidth = label
