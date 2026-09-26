@@ -32,6 +32,12 @@ final class CoverController: ObservableObject {
 
     /// The current engine; nil = Off, and views hide every cover surface.
     @Published private(set) var engine: CoverEngine?
+    /// Whether History shows any cover surface: an engine is picked, or this
+    /// is a demo launch. A demo launch keeps Covers Off (`AppConfig` forces
+    /// it) so nothing can be drawn — `enqueue` needs an engine and
+    /// `AppConfig.makeSceneWriter()` throws — but the pictures its data folder
+    /// holds are shown, so the films can show the page as it looks with them.
+    var showsCovers: Bool { engine != nil || DemoMode.isOn }
     /// Standardized meeting paths with a cover job queued or running — the
     /// tile's spinner. Not `processingPaths`: a cover never blocks the meeting.
     @Published private(set) var busyPaths: Set<String> = []
@@ -74,6 +80,36 @@ final class CoverController: ObservableObject {
         engine = AppConfig.settings().coverSettings.engine
     }
 
+    // MARK: - Launch
+
+    /// Removes stale `.cover-*.tmp` files (a kill mid-install leaves one; design
+    /// §10) from every meeting folder, once, off the main actor. Called from
+    /// `AppDelegate.applicationDidFinishLaunching`, so a demo launch — which
+    /// has no `AppDelegate` — never deletes anything. Files younger than
+    /// `CoverStore.temporaryFileMaxAge` stay: `kleoth illustrate` may be
+    /// drawing into that folder right now. Only `meeting-*` folders are
+    /// visited: a cover is only ever installed in one.
+    func sweepTemporaryFilesAtLaunch() {
+        let outputDir = AppConfig.settings().outputDir
+        let store = self.store
+        Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            guard let folders = try? fm.contentsOfDirectory(
+                at: outputDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            ) else { return }
+            var removed = 0
+            for folder in folders
+            where folder.lastPathComponent.hasPrefix("meeting-")
+                && (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                removed += store.sweepTemporaryFiles(in: folder).count
+            }
+            if removed > 0 {
+                Logger(subsystem: "dev.kleoth", category: "Covers")
+                    .notice("swept \(removed, privacy: .public) stale cover temp files")
+            }
+        }
+    }
+
     // MARK: - Drawing
 
     /// The automatic hook, called by `RecordingController` right after a
@@ -101,6 +137,8 @@ final class CoverController: ObservableObject {
     /// `removed`, so no cover is drawn automatically again (§3.5). Runs
     /// inline: two file moves are not worth a queue.
     func remove(_ meeting: RecentMeeting) {
+        // No engine = Covers Off, which a demo launch forces: its data folder is never written.
+        guard engine != nil else { return }
         let dir = meeting.directory
         let path = key(dir)
         do {

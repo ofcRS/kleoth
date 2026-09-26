@@ -65,8 +65,9 @@ final class DemoDirector {
         }
         // The controllers History reads, built here (each sets its `shared`):
         // in demo mode no `KleothApp` exists to own them. Covers stay Off
-        // (`AppConfig.settings()` forces it), so no tile, menu or draw is
-        // filmed; the controller exists only because History's views read it.
+        // (`AppConfig.settings()` forces it), so nothing is drawn;
+        // `showsCovers` shows the folder's own pictures, which the `cover`
+        // script films.
         let recording = RecordingController()
         let dictation = DictationController()
         let screen = ScreenRecordingController()
