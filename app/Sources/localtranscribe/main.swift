@@ -5,19 +5,22 @@ import KleothCapture
 /// Headless recovery/dev utility: transcribe an existing meeting folder in place
 /// so the app then shows it as processed. Defaults to the on-device WhisperKit
 /// engine; pass `scribe` to use ElevenLabs Scribe (cloud, paid, diarized).
+/// `--segments` times the on-device transcript by Whisper's segments instead
+/// of the app's word-aligned speech runs, to diff the two.
 ///
-///     localtranscribe <meeting-dir> [scribe] [--provider <id>]
+///     localtranscribe <meeting-dir> [scribe] [--segments] [--provider <id>]
 @main
 struct LocalTranscribeMain {
     static func main() async {
         let args = CommandLine.arguments
         guard args.count >= 2 else {
-            FileHandle.standardError.write(Data("usage: localtranscribe <meeting-dir> [scribe] [--provider <id>]\n".utf8))
+            FileHandle.standardError.write(Data("usage: localtranscribe <meeting-dir> [scribe] [--segments] [--provider <id>]\n".utf8))
             exit(2)
         }
         let dir = URL(fileURLWithPath: args[1], isDirectory: true)
         let rest = Array(args.dropFirst(2))
         let useScribe = rest.contains { $0 == "scribe" || $0 == "--scribe" }
+        let timing: LocalTranscriber.Timing = rest.contains("--segments") ? .segments : .speechRuns
         var providerArg: String?
         if let idx = rest.firstIndex(of: "--provider"), idx + 1 < rest.count {
             providerArg = rest[idx + 1]
@@ -94,7 +97,7 @@ struct LocalTranscribeMain {
                 } else {
                     print("Model already on disk — loading offline. Transcribing locally (free, on-device)…")
                 }
-                transcriber = LocalTranscriber(channelFiles: channels)
+                transcriber = LocalTranscriber(channelFiles: channels, timing: timing)  // .speechRuns, as the app
                 primary = channels.first ?? combined ?? mic
                 tier = TranscriptTier.local
                 twoSpeakers = (channels.count == 2)

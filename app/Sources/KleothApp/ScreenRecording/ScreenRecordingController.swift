@@ -365,7 +365,7 @@ final class ScreenRecordingController: ObservableObject {
                 options.tagAudioEvents = false
                 options.languageCode = language
             } else {
-                transcriber = LocalTranscriber(language: language, wordTimestamps: true)
+                transcriber = LocalTranscriber(language: language, timing: .words)
             }
 
             let response = try await transcriber.transcribe(fileURL: audioURL, options: options)

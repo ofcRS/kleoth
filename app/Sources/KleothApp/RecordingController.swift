@@ -1248,7 +1248,10 @@ public final class RecordingController: ObservableObject {
         }
         let transcriber: any Transcriber = LocalTranscriber(
             channelFiles: channelFiles,
-            language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage)
+            language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage),
+            // Real pauses, so the transcript splits into turns; never `.segments`
+            // here — demo-mode §6 #2.
+            timing: .speechRuns
         )
         let tier = TranscriptTier.local
         let options = ScribeOptions()
@@ -1620,7 +1623,10 @@ public final class RecordingController: ObservableObject {
         let channelFiles = [mic, system].filter { fm.fileExists(atPath: $0.path) }
         let transcriber: any Transcriber = LocalTranscriber(
             channelFiles: channelFiles,
-            language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage)
+            language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage),
+            // Real pauses, so the transcript splits into turns; never `.segments`
+            // here — demo-mode §6 #2.
+            timing: .speechRuns
         )
         if channelFiles.count == 2 {
             writeDefaultSpeakerMapIfNeeded(
