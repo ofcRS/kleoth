@@ -330,6 +330,16 @@ import Foundation
         #expect(d.linkedSource == zoom)
     }
 
+    @Test func aMeetingsLastStretchIsCountedWhenItEnds() {
+        // The mic seconds up to the stop count even with no observation since
+        // the last one: the end accrues while the meeting is still current.
+        var d = detector()
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+        _ = run(&d, [zoom], from: 0, to: 5)
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true), at: at(30)))
+        #expect((d.meetingSource(at: at(30))?.micSeconds ?? 0) >= 29)
+    }
+
     @Test func meetingSourceIsTheLongestHolderOverTwentySecondsElseTheLinked() {
         var d = detector()
         _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))

@@ -138,6 +138,11 @@ public struct MeetingDetector: Sendable {
 
         case .environment(let next, let now):
             let previous = environment
+            // The ending (or replaced) meeting accrues its last stretch while
+            // `environment` still says it runs — `accrueMeetingSeconds` guards on it.
+            if previous.meetingSince != nil, next.meetingSince != previous.meetingSince {
+                accrueMeetingSeconds(until: now)
+            }
             environment = next
             if next.meetingSince != previous.meetingSince {
                 if next.meetingSince != nil {
@@ -161,7 +166,6 @@ public struct MeetingDetector: Sendable {
                     effects += withdrawVisible(kind: .stop)
                 } else {
                     effects += withdrawVisible(kind: .stop)
-                    accrueMeetingSeconds(until: now)
                     // The user recorded the calls held during the meeting: no
                     // "record it?" for them now it ends ("the user evidently
                     // chose", §3.2.3; review M-4). A new session of the app is offered.
