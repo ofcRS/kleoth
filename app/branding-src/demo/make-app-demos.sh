@@ -17,6 +17,14 @@
 # ~20 s. Needs ffmpeg and bun.
 set -euo pipefail
 
+# Frames mode is chosen by KLEOTH_DEMO_FRAMES being SET. Set but empty is a mistake (an unset
+# variable in a caller's script, say): refuse it before anything is built, never fall through
+# to README mode, which overwrites the tracked GIFs and screenshot under docs/assets.
+if [ -n "${KLEOTH_DEMO_FRAMES+x}" ] && [ -z "${KLEOTH_DEMO_FRAMES}" ]; then
+  echo "KLEOTH_DEMO_FRAMES is set but empty: give it the folder for the frames (or unset it for the README demos)" >&2
+  exit 1
+fi
+
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
 command -v ffmpeg >/dev/null || { echo "ffmpeg not found (brew install ffmpeg)" >&2; exit 1; }
@@ -82,7 +90,7 @@ encode() { # <film dir> <out.gif>
 # Verification frames only (plan 2026-09-25): KLEOTH_DEMO_FRAMES=<dir> films the
 # `cover` script into <dir> as PNGs and stops — nothing under docs/ is touched.
 # (It still needs ffmpeg: the check above runs first.)
-if [ -n "${KLEOTH_DEMO_FRAMES:-}" ]; then
+if [ -n "${KLEOTH_DEMO_FRAMES+x}" ]; then
   mkdir -p "$KLEOTH_DEMO_FRAMES"
   # Absolute, as -KleothDemoFilm requires (a relative one is from the repo root, like data-dir).
   FRAMES="$(cd "$KLEOTH_DEMO_FRAMES" && pwd)"

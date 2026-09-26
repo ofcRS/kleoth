@@ -32,7 +32,8 @@ final class DemoDirector {
         case cover
     }
 
-    /// The file `make-demo-data.ts` leaves in every folder it makes. A folder
+    /// The file `make-demo-data.ts` leaves in every folder it makes, and that
+    /// hand-made fictional fixtures (the covers-hero ones) carry too. A folder
     /// without it — the real `~/Kleoth`, or wherever Settings points — is never
     /// filmed: its meetings would end up in a public README.
     static let folderMarker = ".kleoth-demo"
@@ -247,10 +248,13 @@ final class DemoDirector {
 
     /// Plan 2026-09-25 `## Design` 8: the page with a cover at rest, scrolled
     /// 140 pt and scrolled 320 pt, in light then dark, then a meeting without a
-    /// picture in light. Seven stills; the captions name each one (so no two
-    /// are the same frame to the writer). Offsets past the end of the page
-    /// clamp to it. The next selection rebuilds the page (`.id(meeting.id)`),
-    /// so the last still is at rest without a scroll of its own.
+    /// picture in light. Seven stills; the captions name each one, so no two
+    /// are the same frame to the writer (which drops a repeat). An offset past
+    /// the end of a short page clamps to it, so 140 and 320 can land on the
+    /// same scroll: the caption then names the offset asked for as well, and
+    /// the two stay apart. The next selection rebuilds the page
+    /// (`.id(meeting.id)`), so the last still is at rest without a scroll of
+    /// its own.
     private func coverScript(_ recording: RecordingController) async {
         guard let withCover = recording.recentMeetings.first(where: { $0.coverImageURL != nil }) else {
             return Self.report("no meeting with a cover in the demo folder")
@@ -268,7 +272,9 @@ final class DemoDirector {
                 let clamped = min(offset, maxScrollOffset(of: scrollView, document: document))
                 setOffsetFromTop(clamped, clip: scrollView.contentView, document: document, in: scrollView)
                 await hold(0.5)
-                caption = "\(name) · scrolled \(Int(clamped)) pt"
+                caption = clamped < offset
+                    ? "\(name) · scrolled \(Int(clamped)) pt, the page's end (asked \(Int(offset)))"
+                    : "\(name) · scrolled \(Int(clamped)) pt"
                 capture()
             }
         }
@@ -346,7 +352,7 @@ final class DemoDirector {
                 let visibleRect = clip.convert(clip.bounds, to: nil)
                 // The page's own top edge, below the part of the clip that
                 // runs under the toolbar: text above it is the toolbar's.
-                let pageTop = visibleRect.maxY - scrollView.contentInsets.top
+                let pageTop = visibleRect.maxY - insets(of: scrollView).top
                 for (text, box) in Self.recognizeLines(in: image) {
                     // Vision's box is normalized, bottom-left origin — the
                     // window's own orientation.
@@ -397,11 +403,21 @@ final class DemoDirector {
         }
     }
 
+    /// The scroll view's top and bottom insets as they take effect. On macOS 26
+    /// they are the scroll view's own `contentInsets` (probed); on 14.4–15 the
+    /// effective one may live on the clip view instead (not probed), so this
+    /// takes the larger of the two.
+    private func insets(of scrollView: NSScrollView) -> (top: CGFloat, bottom: CGFloat) {
+        let outer = scrollView.contentInsets
+        let clip = scrollView.contentView.contentInsets
+        return (max(outer.top, clip.top), max(outer.bottom, clip.bottom))
+    }
+
     /// How much of the page the scroll view shows: the clip less the part
     /// under the toolbar (and any bottom inset).
     private func visibleHeight(of scrollView: NSScrollView) -> CGFloat {
-        let insets = scrollView.contentInsets
-        return scrollView.contentView.bounds.height - insets.top - insets.bottom
+        let edges = insets(of: scrollView)
+        return scrollView.contentView.bounds.height - edges.top - edges.bottom
     }
 
     /// The furthest the page scrolls from rest: its last line at the bottom edge.
@@ -410,12 +426,12 @@ final class DemoDirector {
     }
 
     private func offsetFromTop(clip: NSClipView, document: NSView, in scrollView: NSScrollView) -> CGFloat {
-        let inset = scrollView.contentInsets.top
+        let inset = insets(of: scrollView).top
         return document.isFlipped ? clip.bounds.minY + inset : document.frame.height - clip.bounds.maxY + inset
     }
 
     private func setOffsetFromTop(_ offset: CGFloat, clip: NSClipView, document: NSView, in scrollView: NSScrollView) {
-        let inset = scrollView.contentInsets.top
+        let inset = insets(of: scrollView).top
         let y = document.isFlipped ? offset - inset : document.frame.height - clip.bounds.height - offset + inset
         clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
         scrollView.reflectScrolledClipView(clip)
@@ -486,7 +502,8 @@ private final class DemoFilmWriter: @unchecked Sendable {
 
         /// README GIF frames: 1 px per point, so the GIF needs no scaling.
         static let film = Stage(scale: 1, margin: 40, captionBand: 58)
-        /// The screenshot: Retina, and no caption.
+        /// Retina stills: the screenshot (no caption: `stillScript` clears it)
+        /// and the `cover` frames (each captioned).
         static let still = Stage(scale: 2, margin: 56, captionBand: 56)
     }
 
