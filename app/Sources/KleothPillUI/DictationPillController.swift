@@ -995,6 +995,10 @@ public final class DictationPillController: DictationPillPresenting {
         pendingFrame = nil
         model.apply(offset: .zero)
         model.apply(dockHeld: false)
+        // A backdrop that rose while the panel faded out was only stored (the
+        // old phase was still up); it takes over now, so a capture that
+        // started in the fade never ends up with no bar (hot-mic rule).
+        if let state = backdrop.state { show(state) }
     }
 
     private func scheduleAutoHide(for state: DictationPillState) {
