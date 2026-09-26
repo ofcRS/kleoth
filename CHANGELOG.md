@@ -54,7 +54,8 @@ All notable changes to Kleoth are documented here. The format is based on
   is named after its calendar event (with calendar access) or "Recording · Zoom · Sep 24, 14:05",
   can be renamed right away, and keeps where it happened, through transcription: the app, the
   service (Zoom, Google Meet…), how you started the recording, the calendar event, and a window
-  title only when it named a meeting. All of it is read on your Mac and stays in that file. When
+  title only when it named a meeting. All of it is read on your Mac and kept in that file; the
+  event's title and attendees also go to your AI provider with the transcript, for the summary. When
   the calendar event had exactly one other person in it, the other side of the transcript is named
   after them instead of "Them"; renaming the speaker still wins.
 

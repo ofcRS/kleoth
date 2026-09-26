@@ -269,8 +269,9 @@ calls-not-seen in Chrome only).
   browser with no call seen, "Chrome is using the mic — record it?"; another app, "<App> is using the mic
   — record it?". For a call — a call app, or a `site:` / `webcall:` browser call — with a calendar event on
   now (calendar access given): "“Weekly sync” on Zoom — record it?" (the event title cut at 40 characters).
-  A browser with no call seen, a chat app or another app never names the event: voice typing during "Focus
-  time" is not that event.
+  A chat app (a huddle — chat apps are offered only after a 30 s hold) names it only when the event looks like a
+  call: other attendees, or a link. A browser with no call seen or another app never names the event: voice
+  typing during "Focus time" is not that event.
 - **Buttons**: **Record** (primary), **Never for Zoom** (quiet), ✕ (not now). Record starts the meeting
   exactly like the Meeting tile — without consent, track 4's window asks first.
 - **Recording starts at the click.** The seconds of the call before it are not captured — Kleoth never
@@ -1268,10 +1269,10 @@ Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fix
     match only as "<head> <separator> <service>", Zoom web only as the whole title. A search page no longer counts
     as a call or has its title stored; the old guessed shapes "Jitsi Meet", "Контур.Толк — встреча", "VK Звонки"
     and "SberJazz: Sync" no longer match (step 9 checks the real ones).
-53. **The calendar event names calls only** (`MeetingOfferText.namesCalendarEvent`): a call app or a
-    `site:`/`webcall:` browser call. There is no lookup at all for a browser without a call, a chat app or an
-    unknown app — a Slack huddle is not named after the event either (the call class, as the stop suggestion's
-    relink uses it).
+53. **The calendar event names calls only** (`MeetingOfferText.namesCalendarEvent` / `calendarTitle`): a call
+    app, a `site:`/`webcall:` browser call, or a chat app when the event looks like a call (other attendees or a
+    link — a Slack huddle in "Weekly sync" is named, a voice note in a solo "Focus time" block is not). There is
+    no lookup at all for a browser without a call or an unknown app.
 54. **Q6 counts people** (`CalendarParticipants.otherAttendeeCount`, stored as `context.calendar_other_attendees`):
     an attendee with no readable name but another URL (`urn:uuid:`, a principal path) counts, so a three-person
     event with one readable name keeps "Them". Older meetings (no count) keep the names rule.

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import KleothCore
 
@@ -58,10 +59,10 @@ import Testing
         #expect(MeetingOfferText.offer(for: other, calendarTitle: nil) == "Telemost is using the mic — record it?")
     }
 
-    /// Branch review (phase 2) M7: the calendar event on now names a CALL
-    /// only — a call app, a `site:` or `webcall:` browser call. Voice typing
-    /// in a browser during "Focus time" is not that event, and neither is a
-    /// chat app's voice note nor an unknown app.
+    /// Branch review (phase 2) M7: the calendar event on now names a call —
+    /// a call app, a `site:` or `webcall:` browser call, or a chat app (a
+    /// huddle: chat apps are offered only after a 30 s hold). Voice typing in
+    /// a browser during "Focus time" is not that event, nor is an unknown app.
     @Test func offerNamesTheCalendarEventForCallsAndHuddlesOnly() throws {
         let zoom = try #require(MeetingSource.make(bundleId: "us.zoom.xos", appName: "zoom.us", windowTitles: [], hasWebCall: false))
         let meet = try #require(MeetingSource.make(bundleId: "com.google.Chrome", appName: "Google Chrome",
@@ -84,5 +85,22 @@ import Testing
         #expect(MeetingOfferText.offer(for: chat, calendarTitle: "Weekly sync") == "“Weekly sync” on Telegram — record it?")
         #expect(MeetingOfferText.offer(for: chat, calendarTitle: nil) == "Telegram call — record it?")
         #expect(MeetingOfferText.offer(for: other, calendarTitle: "Focus time") == "Telemost is using the mic — record it?")
+    }
+
+    @Test func aChatAppNamesOnlyAnEventThatLooksLikeACall() throws {
+        let chat = try #require(MeetingSource.make(bundleId: "ru.keepcoder.Telegram", appName: "Telegram", windowTitles: [], hasWebCall: false))
+        let zoom = try #require(MeetingSource.make(bundleId: "us.zoom.xos", appName: "zoom.us", windowTitles: [], hasWebCall: false))
+        let at = Date(timeIntervalSince1970: 1_000_000)
+        func event(_ title: String, others: Int, link: String) -> CalendarCandidate {
+            CalendarCandidate(title: title, start: at, end: at.addingTimeInterval(1800), isAllDay: false, isCancelled: false,
+                              declinedByUser: false, otherAttendeeCount: others, linkText: link)
+        }
+        // A voice note during a solo block is not named after it; a huddle in a real meeting is.
+        #expect(MeetingOfferText.calendarTitle(for: chat, event: event("Focus time", others: 0, link: "")) == nil)
+        #expect(MeetingOfferText.calendarTitle(for: chat, event: event("Weekly sync", others: 2, link: "")) == "Weekly sync")
+        #expect(MeetingOfferText.calendarTitle(for: chat, event: event("Standup", others: 0, link: "https://app.slack.com/huddle/T1/C2")) == "Standup")
+        // A call app names any event on now.
+        #expect(MeetingOfferText.calendarTitle(for: zoom, event: event("Focus time", others: 0, link: "")) == "Focus time")
+        #expect(MeetingOfferText.calendarTitle(for: zoom, event: nil) == nil)
     }
 }

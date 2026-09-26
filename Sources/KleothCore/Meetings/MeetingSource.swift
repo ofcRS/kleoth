@@ -75,6 +75,19 @@ public enum MeetingOfferText {
             || source.sourceClass == .chatApp
     }
 
+    /// The event an offer on `source` may be named after: any event on now for a
+    /// call app or a browser call; for a chat app only one that looks like a call —
+    /// other attendees, or a link — so a long voice note during a solo "Focus time"
+    /// block is not named after it.
+    public static func calendarTitle(for source: MeetingSource, event: CalendarCandidate?) -> String? {
+        guard namesCalendarEvent(for: source), let event else { return nil }
+        if source.sourceClass == .chatApp, event.otherAttendeeCount == 0,
+           !event.linkText.lowercased().contains("http") {
+            return nil
+        }
+        return event.title
+    }
+
     /// `calendarTitle` is used only when `namesCalendarEvent(for:)`.
     public static func offer(for source: MeetingSource, calendarTitle: String?) -> String {
         if namesCalendarEvent(for: source),

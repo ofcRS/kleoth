@@ -515,9 +515,10 @@ final class MeetingDetectionController: ObservableObject {
     /// asking EventKit again. Memory only, never logged.
     private var cachedOfferCalendarTitle: (key: String, title: String?, at: Date)?
 
-    /// The calendar event an offer on `source` names — a call only
-    /// (`MeetingOfferText.namesCalendarEvent`: no lookup at all for a browser
-    /// without a call, a chat app or an unknown app) — looked up at most once
+    /// The calendar event an offer on `source` names — a call app, a browser
+    /// call, or a chat app when the event looks like a call
+    /// (`MeetingOfferText.namesCalendarEvent` / `calendarTitle`: no lookup at all
+    /// for a browser without a call or an unknown app) — looked up at most once
     /// per source key per `offerLifetime`.
     private func offerCalendarTitle(for source: MeetingSource) -> String? {
         guard MeetingOfferText.namesCalendarEvent(for: source) else { return nil }
@@ -540,7 +541,8 @@ final class MeetingDetectionController: ObservableObject {
         guard RecordingController.shared?.calendarAuthorized == true else { return nil }
         let now = Date()
         return CalendarLookup.candidates(around: now).flatMap {
-            CalendarEventMatcher.best($0, at: now, serviceId: Self.service(of: source))?.title
+            MeetingOfferText.calendarTitle(
+                for: source, event: CalendarEventMatcher.best($0, at: now, serviceId: Self.service(of: source)))
         }
     }
 }

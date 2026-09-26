@@ -56,8 +56,9 @@ starts using the microphone, the pill asks:
 - **"Zoom call — record it?"**, with **Record**, **Never for Zoom** and ✕. Call apps (Zoom, Teams,
   FaceTime, Webex) are asked about after 5 seconds, Google Meet and other calls in a browser after
   8, chat apps (a Slack huddle, Discord, Telegram) after 30, and any other app, or a browser where
-  no call was seen, after a minute. With calendar access, an offer for a call (a call app, or a call
-  in a browser) names the event on now: "“Weekly sync” on Zoom — record it?".
+  no call was seen, after a minute. With calendar access, an offer for a call (a call app, a call in a
+  browser, or a chat-app huddle during an event with other people or a link) names the event on now:
+  "“Weekly sync” on Zoom — record it?".
 - **Nothing is recorded until you click Record**, and the seconds of the call before the click are
   not captured. If you haven't acknowledged recording consent yet, the consent notice asks first.
 - **✕, or no answer for 30 seconds**, means not for this call: no second offer while it lasts, and
