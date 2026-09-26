@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-26
+
 ### Added
 
 - **Dictation fits the text you're dictating into.** Speak a correction or an addition over a
