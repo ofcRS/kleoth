@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (664 tests)
+swift build && swift test                        # core + CLI (677 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -260,8 +260,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Context-aware dictation (merged for 0.5.1; design `docs/plans/2026-09-24-dictation-context.md`): the field's
   selection + 1,500/500 chars around the cursor go to OpenRouter/Claude Code with the words; a selection merges in
   place. The user dictates with it daily; the design §6 checklist (1–24) was not run item by item.
-- Next, in order (for 0.5.1): the covers redesign; on-device meeting transcripts split into turns (demo-mode §6 #2);
-  meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
+- On-device meeting turns (merged for 0.5.1; demo-mode §6 #2): meetings transcribe with `LocalTranscriber.Timing
+  .speechRuns` (word alignment, one entry per run of speech) and `TranscriptNormalizer` splits a `local-whisper`
+  channel's turn where another channel spoke entirely inside the pause; Scribe grouping unchanged. Verified on
+  fictional audio only (5/6 exact turn order); not yet on a real meeting or end to end in Russian.
+- Next, in order (for 0.5.1): the covers redesign; meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand
@@ -269,7 +272,6 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   landing page at **shck.dev/kleoth** (`~/projects/shck.dev`), fed from `positioning.json` (`marketing/README.md`).
 - Demo films (2026-09-25, merged PR #7; no captions under the GIFs by choice): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
   `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
-  (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height;
-  on-device meeting transcripts aren't split into turns (Whisper segments abut → `TranscriptNormalizer` sees no gap).
+  (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

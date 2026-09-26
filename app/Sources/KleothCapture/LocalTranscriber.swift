@@ -27,10 +27,27 @@ public struct LocalTranscriber: Transcriber {
     public let model: String
     /// Forced language code (e.g. `"ru"`). `nil` → automatic detection.
     public let language: String?
-    /// Ask WhisperKit for per-word timings and emit one `ScribeWord` per WORD
-    /// (default: one per segment). Screen recordings need this for the
-    /// current-word highlight; meetings keep the cheaper segment path.
-    public let wordTimestamps: Bool
+    /// What each emitted `ScribeWord` covers, and whether WhisperKit's word
+    /// alignment runs to time it.
+    public let timing: Timing
+
+    /// What one emitted `ScribeWord` covers.
+    public enum Timing: Sendable {
+        /// One entry per Whisper segment, timed by the segment's own
+        /// timestamps. The cheapest, but they don't mark speech: consecutive
+        /// segments abut, so the silence after a sentence runs into it (and a
+        /// silent stretch can come back as one filler segment spanning it).
+        /// Dictation, one speaker in one clip, needs nothing more.
+        case segments
+        /// One entry per run of continuous speech, timed by the word
+        /// alignment, with Whisper's own text (`WhisperSpeechRuns`). Meetings:
+        /// the pauses are where `TranscriptNormalizer` splits a channel's
+        /// turns, so they must be where the speaker actually stopped.
+        case speechRuns
+        /// One entry per word, timed by the word alignment. Screen
+        /// recordings' current-word highlight.
+        case words
+    }
 
     /// Default model: multilingual large-v3 turbo (~626 MB), strong on Russian.
     public static let defaultModel = "large-v3-v20240930_626MB"
@@ -39,12 +56,12 @@ public struct LocalTranscriber: Transcriber {
         channelFiles: [URL] = [],
         model: String = LocalTranscriber.defaultModel,
         language: String? = nil,
-        wordTimestamps: Bool = false
+        timing: Timing = .segments
     ) {
         self.channelFiles = channelFiles
         self.model = model
         self.language = language
-        self.wordTimestamps = wordTimestamps
+        self.timing = timing
     }
 
     /// On-device transcription is free.
@@ -94,13 +111,13 @@ public struct LocalTranscriber: Transcriber {
             task: .transcribe,                          // transcribe, never translate
             language: resolvedLanguage,                 // concrete code → no per-chunk drift
             detectLanguage: resolvedLanguage == nil,    // last-resort auto-detect
-            wordTimestamps: wordTimestamps,             // off for meetings — see the property
+            wordTimestamps: timing != .segments,        // the alignment — see `Timing`
             chunkingStrategy: .vad                       // robust long-form handling
         )
 
         // Single channel → single-channel `words[]` response.
         if sources.count == 1 {
-            let channel = try await Self.transcribeFile(sources[0], pipe: pipe, options: decodeOptions)
+            let channel = try await Self.transcribeFile(sources[0], pipe: pipe, options: decodeOptions, timing: timing)
             return ScribeResponse(
                 text: channel.text,
                 words: channel.words,
@@ -119,7 +136,7 @@ public struct LocalTranscriber: Transcriber {
         var maxDuration = 0.0
         var detectedLanguage: String?
         for (index, url) in sources.enumerated() {
-            let channel = try await Self.transcribeFile(url, pipe: pipe, options: decodeOptions)
+            let channel = try await Self.transcribeFile(url, pipe: pipe, options: decodeOptions, timing: timing)
             transcripts.append(ScribeChannelTranscript(
                 text: channel.text,
                 words: channel.words,
@@ -246,18 +263,19 @@ public struct LocalTranscriber: Transcriber {
     /// timed words, the audio duration (seconds), the joined text, and the
     /// detected language.
     ///
-    /// One `ScribeWord` per **segment** by default; per **word** when
-    /// `options.wordTimestamps` is on and WhisperKit actually returned
-    /// `segment.words` (it can be nil for a segment even with the option set,
-    /// e.g. when the alignment pass finds nothing), in which case that segment
-    /// falls back to the segment-level entry. Word timings are absolute
-    /// seconds into the file: the VAD chunker offsets them by each chunk's seek
-    /// time (`TranscriptionUtilities.updateSegmentTimings`), exactly as it does
-    /// the segment timings.
+    /// One `ScribeWord` per segment, per run of speech, or per word, as
+    /// `timing` says. The last two need WhisperKit's `segment.words`, which
+    /// can be nil for a segment even with alignment on (e.g. when the pass
+    /// finds nothing); that segment falls back to the segment-level entry.
+    /// Word timings are absolute seconds into the file: the VAD chunker
+    /// offsets them by each chunk's seek time
+    /// (`TranscriptionUtilities.updateSegmentTimings`), exactly as it does the
+    /// segment timings.
     private static func transcribeFile(
         _ url: URL,
         pipe: WhisperKit,
-        options: DecodingOptions
+        options: DecodingOptions,
+        timing: Timing
     ) async throws -> (words: [ScribeWord], duration: Double, text: String, language: String?) {
         let audioFile = try AVAudioFile(forReading: url)
         let sampleRate = audioFile.processingFormat.sampleRate
@@ -271,19 +289,28 @@ public struct LocalTranscriber: Transcriber {
         for result in results {
             if language == nil { language = result.language }
             for segment in result.segments {
-                if options.wordTimestamps, let timings = segment.words, !timings.isEmpty {
+                if timing == .speechRuns, let timings = segment.words, !timings.isEmpty {
+                    // Whisper's own text, cut where the aligner found a pause.
+                    // A run with no word in it (a stray "." in the silence) is
+                    // dropped, not replaced by the segment.
+                    words += WhisperSpeechRuns.entries(from: timings.map {
+                        WhisperSpeechRuns.Word(text: $0.word, start: Double($0.start), end: Double($0.end))
+                    })
+                    continue
+                }
+                if timing == .words, let timings = segment.words, !timings.isEmpty {
                     var emitted = 0
-                    for timing in timings {
+                    for aligned in timings {
                         // `WordTiming.word` carries WhisperKit's leading space
                         // ("␣the") and can be a bare special token; `clean`
                         // strips both (it trims and drops `<|…|>`).
-                        let text = WhisperText.clean(timing.word)
+                        let text = WhisperText.clean(aligned.word)
                         guard !text.isEmpty else { continue }
-                        let start = Double(timing.start)
+                        let start = Double(aligned.start)
                         words.append(ScribeWord(
                             text: text,
                             start: start,
-                            end: max(start, Double(timing.end)),
+                            end: max(start, Double(aligned.end)),
                             type: "word",
                             speakerId: nil,
                             logprob: nil
