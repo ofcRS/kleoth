@@ -96,8 +96,10 @@ struct MeetingCoverBand: View {
     /// The detail pane's width; the band spans it edge to edge.
     let width: CGFloat
     let hasSummary: Bool
-    /// False when the band is not inside a scroll view (the unprocessed and
-    /// load-error pages): `.scrollView` then has nothing to measure.
+    /// False when the band is not inside a scroll view: `.scrollView` then has
+    /// nothing to measure. Every layout of the meeting page scrolls (the
+    /// unprocessed and load-error pages too, `MeetingDetailView.centredPage`),
+    /// so the page passes true.
     let parallax: Bool
     /// Set on click; `MeetingDetailView` shows it with `.quickLookPreview`.
     @Binding var previewURL: URL?
@@ -112,7 +114,9 @@ struct MeetingCoverBand: View {
     var body: some View {
         let height = CoverHeroGeometry.bandHeight(forWidth: width)
         let pictureHeight = CoverHeroGeometry.pictureHeight(bandHeight: height)
-        let moves = parallax && !reduceMotion
+        // Not in a scroll view, or Reduce Motion on: `CoverHeroGeometry` then
+        // returns no offset and no stretch (its rule is the only gate).
+        let still = !parallax || reduceMotion
         let isBusy = covers.isBusy(meeting.directory)
         let record = covers.record(for: meeting.directory)
         // Through the same cache the rows use — the key carries the mtime,
@@ -133,10 +137,8 @@ struct MeetingCoverBand: View {
                     // The picture's own top sits `reveal` above the band's, so
                     // the band's minY is the picture's plus the reveal.
                     .visualEffect { content, proxy in
-                        content.offset(y: moves
-                            ? CoverHeroGeometry.pictureOffset(
-                                minY: proxy.frame(in: .scrollView).minY + CoverHeroGeometry.reveal, reduceMotion: false)
-                            : 0)
+                        content.offset(y: CoverHeroGeometry.pictureOffset(
+                            minY: proxy.frame(in: .scrollView).minY + CoverHeroGeometry.reveal, reduceMotion: still))
                     }
             } else {
                 // The file is there but unreadable (a damaged drop-in, or it
@@ -149,20 +151,21 @@ struct MeetingCoverBand: View {
         .clipped()
         // Pulled past the top: grow about the bottom edge to fill the gap.
         .visualEffect { content, proxy in
-            content.scaleEffect(moves
-                ? CoverHeroGeometry.stretchScale(
-                    minY: proxy.frame(in: .scrollView).minY, bandHeight: height, reduceMotion: false)
-                : 1, anchor: .bottom)
+            content.scaleEffect(CoverHeroGeometry.stretchScale(
+                minY: proxy.frame(in: .scrollView).minY, bandHeight: height, reduceMotion: still), anchor: .bottom)
         }
         .contentShape(Rectangle())
         .onTapGesture { previewURL = picture }
+        // The picture is one button to VoiceOver, with the click's action;
+        // the corner `…` button (the overlay below) stays its own element.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Meeting cover, show full size")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { previewURL = picture }
         .contextMenu { MeetingCoverMenuItems(meeting: meeting, hasSummary: hasSummary, record: record) }
         .overlay(alignment: .bottomTrailing) { cornerControls(isBusy: isBusy, record: record) }
         // The tooltip is the scene that was sent (§3.5).
         .help(record?.scene ?? "")
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Meeting cover")
-        .accessibilityHint("Click to see it full size")
     }
 
     /// Bottom-trailing: the "Drawing a new cover…" capsule while a New Cover
@@ -209,6 +212,8 @@ struct MeetingCoverBand: View {
 /// failed" — or a spinner chip while one is drawn. Nothing without a summary:
 /// there is nothing to draw from, and the "No summary yet" pill beside it
 /// already says so (a deviation from §3.5's disabled item with a tooltip).
+/// Nothing either while Covers is Off (`engine` nil, a demo launch included):
+/// nothing can be drawn there (plan `## Design` 6).
 struct MeetingCoverChip: View {
     @EnvironmentObject private var covers: CoverController
 
@@ -221,7 +226,11 @@ struct MeetingCoverChip: View {
         let record = covers.record(for: meeting.directory)
         let skipped = record?.state == .skipped
 
-        if isBusy {
+        if covers.engine == nil {
+            // Covers Off has nothing to draw with; the band still shows a
+            // picture that is already there (`showsCovers`).
+            EmptyView()
+        } else if isBusy {
             HStack(spacing: KleothMetrics.spacingXS) {
                 ProgressView().controlSize(.mini)
                 Text("Drawing cover…")
@@ -231,6 +240,9 @@ struct MeetingCoverChip: View {
             .padding(.horizontal, KleothMetrics.spacingS)
             .padding(.vertical, KleothMetrics.spacingXS)
             .background(Color.secondary.opacity(0.14), in: Capsule())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Meeting cover")
+            .accessibilityValue("Drawing cover")
         } else if hasSummary {
             Menu {
                 MeetingCoverMenuItems(meeting: meeting, hasSummary: hasSummary, record: record)
@@ -248,7 +260,9 @@ struct MeetingCoverChip: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help(failure ?? (skipped ? "Skipped: the meeting looked personal" : "Draw a cover for this meeting"))
+            // The state is spoken, not only the control's name.
             .accessibilityLabel("Meeting cover")
+            .accessibilityValue(failure != nil ? "Cover failed" : (skipped ? "No cover" : "Draw Cover"))
         }
     }
 }

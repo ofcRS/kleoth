@@ -16,11 +16,15 @@ import KleothCore
 struct MeetingSummaryView: View {
     let summary: MeetingSummary?
     let transcript: Transcript?
+    /// Off on the meeting page, whose header already shows the TL;DR as the
+    /// headline under the title; the card would repeat it. Copy Summary still
+    /// includes it (`MarkdownRenderer`).
+    var showsTLDR: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
             if let summary {
-                if let tldr = trimmed(summary.tldr) {
+                if showsTLDR, let tldr = trimmed(summary.tldr) {
                     section("TL;DR", systemImage: "text.alignleft") {
                         Text(tldr)
                             .font(.body)
