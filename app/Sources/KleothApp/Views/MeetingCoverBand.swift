@@ -51,9 +51,11 @@ struct MeetingCoverMenuItems: View {
             if record?.state == .skipped {
                 Text("Skipped: the meeting looked personal")
             }
+            // The chip that opens this menu appears only with a summary, and the
+            // band (a picture) offers New Cover instead, so `hasSummary` is a
+            // guard here, not a state anyone sees: no tooltip for it.
             Menu("Draw Cover") { styleButtons(isBusy: isBusy) }
                 .disabled(!hasSummary || !canDraw)
-                .help(hasSummary ? "" : "Needs a summary")
         }
     }
 
@@ -97,10 +99,6 @@ struct MeetingCoverBand: View {
     /// spans the width it is offered, edge to edge (see `body`).
     let width: CGFloat
     let hasSummary: Bool
-    /// False when the band is not inside a scroll view: `.scrollView` then has
-    /// nothing to measure. The meeting page scrolls in every state, so it
-    /// passes true.
-    let parallax: Bool
     /// Set on click; `MeetingDetailView` shows it with `.quickLookPreview`.
     @Binding var previewURL: URL?
 
@@ -114,9 +112,10 @@ struct MeetingCoverBand: View {
     var body: some View {
         let height = CoverHeroGeometry.bandHeight(forWidth: width)
         let pictureHeight = CoverHeroGeometry.pictureHeight(bandHeight: height)
-        // Not in a scroll view, or Reduce Motion on: `CoverHeroGeometry` then
+        // The band always sits in the meeting page's scroll view, which
+        // `.scrollView` measures. Under Reduce Motion `CoverHeroGeometry`
         // returns no offset and no stretch (its rule is the only gate).
-        let still = !parallax || reduceMotion
+        let still = reduceMotion
         let isBusy = covers.isBusy(meeting.directory)
         let record = covers.record(for: meeting.directory)
         // Through the same cache the rows use — the key carries the mtime,

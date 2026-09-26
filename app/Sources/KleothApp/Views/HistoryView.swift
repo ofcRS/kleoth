@@ -270,7 +270,9 @@ struct HistoryView: View {
             let drawable = ids.compactMap { meeting(for: $0) }.filter {
                 $0.hasSummary && $0.coverImageURL == nil && !$0.isTranscribing && !covers.isBusy($0.directory)
             }
-            if covers.showsCovers, !drawable.isEmpty {
+            // An action, so it needs an engine: a demo launch shows covers
+            // (`showsCovers`) but draws none, and must offer no dead item.
+            if covers.engine != nil, !drawable.isEmpty {
                 Button(drawable.count == 1 ? "Draw Cover" : "Draw Covers for \(drawable.count) Meetings") {
                     requestCovers(drawable)
                 }

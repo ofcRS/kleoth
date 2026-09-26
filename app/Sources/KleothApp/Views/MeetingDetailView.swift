@@ -36,8 +36,9 @@ struct MeetingDetailView: View {
     /// a switcher menu; refreshed by `reload()` (i.e. with `contentRevision`).
     @State private var availableTiers: [String] = []
     /// The cover to show full size in the Quick Look panel; set by a click on
-    /// the band (`MeetingCoverBand`), cleared by the panel closing or by the
-    /// picture going away (Remove Cover while the panel is open).
+    /// the band (`MeetingCoverBand`), cleared by the panel closing, by the
+    /// picture going away (Remove Cover while the panel is open), and by the
+    /// picture changing under the same URL (New Cover).
     @State private var previewURL: URL?
 
     var body: some View {
@@ -181,7 +182,7 @@ struct MeetingDetailView: View {
         if covers.showsCovers, let picture = meeting.coverImageURL {
             MeetingCoverBand(
                 meeting: meeting, picture: picture, width: paneWidth, hasSummary: summary != nil,
-                parallax: true, previewURL: $previewURL
+                previewURL: $previewURL
             )
         }
         VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {

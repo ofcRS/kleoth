@@ -74,9 +74,11 @@ struct MeetingCoverTile: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous))
         // One element to VoiceOver that says what it is, not an unnamed image
-        // or a lone progress indicator.
+        // or a lone progress indicator; label and value match the band's chip.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isBusy ? "Drawing cover…" : "Meeting cover")
+        .accessibilityLabel("Meeting cover")
+        .accessibilityValue(isBusy ? "Drawing cover" : "")
+        .accessibilityAddTraits(.isImage)
         // The tooltip is the scene that was sent (§3.5).
         .help(scene)
     }
