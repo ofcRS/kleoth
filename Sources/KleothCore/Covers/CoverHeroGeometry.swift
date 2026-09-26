@@ -26,10 +26,12 @@ public enum CoverHeroGeometry {
     /// page (no parallax), 1 to the window.
     public static let parallax: CGFloat = 0.35
 
+    /// The band's height for a pane `width` wide: `width / aspect`, clamped to `minHeight`...`maxHeight`.
     public static func bandHeight(forWidth width: CGFloat) -> CGFloat {
         min(maxHeight, max(minHeight, width / aspect))
     }
 
+    /// The picture's height behind a band: the band plus the hidden `reveal` above and below.
     public static func pictureHeight(bandHeight: CGFloat) -> CGFloat {
         bandHeight + 2 * reveal
     }
@@ -44,7 +46,9 @@ public enum CoverHeroGeometry {
 
     /// The band's scale about its bottom edge while the page is pulled past its
     /// top, so the picture fills the gap instead of leaving window background
-    /// above it. 1 otherwise, and always under Reduce Motion.
+    /// above it. 1 otherwise, and always under Reduce Motion. No cap here: how
+    /// far the page can be pulled, and so how big the scale gets, is bounded by
+    /// the scroll view's rubber band, not by this function.
     public static func stretchScale(minY: CGFloat, bandHeight: CGFloat, reduceMotion: Bool) -> CGFloat {
         guard !reduceMotion, minY > 0, bandHeight > 0 else { return 1 }
         return 1 + minY / bandHeight

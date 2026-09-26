@@ -149,8 +149,10 @@ public struct CoverStore: Sendable {
 
     /// Removes the `.cover-*.tmp` files in `meetingDir` older than `maxAge`
     /// (design §10, known gap: a kill between the temp write and the rename
-    /// leaves one). Younger ones stay — see `temporaryFileMaxAge`. Returns what
-    /// it removed; a missing or unreadable folder yields nothing and never throws.
+    /// leaves one). Younger ones stay — see `temporaryFileMaxAge`. Only regular
+    /// files: `install` never writes anything else, so a directory or link
+    /// with the name is not ours. Returns what it removed; a missing or
+    /// unreadable folder yields nothing and never throws.
     @discardableResult
     public func sweepTemporaryFiles(
         in meetingDir: URL, now: Date = Date(), maxAge: TimeInterval = temporaryFileMaxAge
@@ -160,7 +162,9 @@ public struct CoverStore: Sendable {
         var removed: [URL] = []
         for name in names where name.hasPrefix(Self.temporaryFilePrefix) && name.hasSuffix(Self.temporaryFileSuffix) {
             let url = meetingDir.appendingPathComponent(name)
-            guard let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+            guard let attributes = try? fm.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular,
+                  let modified = attributes[.modificationDate] as? Date,
                   now.timeIntervalSince(modified) > maxAge,
                   (try? fm.removeItem(at: url)) != nil
             else { continue }

@@ -38,6 +38,16 @@ import CoreGraphics
         #expect(CoverHeroGeometry.stretchScale(minY: 60, bandHeight: 0, reduceMotion: false) == 1)
     }
 
+    /// Degenerate input the view can hand over before layout settles: a
+    /// zero-width pane and a NaN frame. These pass as the guards are written;
+    /// they are here so a refactor can't turn them into a 0 pt band, a NaN
+    /// offset or a NaN scale.
+    @Test func degenerateInputGivesTheRestingBand() {
+        #expect(CoverHeroGeometry.bandHeight(forWidth: 0) == 200)
+        #expect(CoverHeroGeometry.pictureOffset(minY: .nan, reduceMotion: false) == 0)
+        #expect(CoverHeroGeometry.stretchScale(minY: .nan, bandHeight: 300, reduceMotion: false) == 1)
+    }
+
     @Test func reduceMotionTurnsBothOff() {
         #expect(CoverHeroGeometry.pictureOffset(minY: -100, reduceMotion: true) == 0)
         #expect(CoverHeroGeometry.stretchScale(minY: 60, bandHeight: 300, reduceMotion: true) == 1)

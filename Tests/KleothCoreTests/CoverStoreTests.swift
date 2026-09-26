@@ -195,6 +195,24 @@ final class RecordingTrash: @unchecked Sendable {
         #expect(store.sweepTemporaryFiles(in: gone).isEmpty)
     }
 
+    /// `install` only ever writes a regular file, so anything else with the
+    /// temp name is the user's: a stale directory called `.cover-x.tmp` (and
+    /// what is in it) stays, however old.
+    @Test func sweepLeavesAStaleDirectoryWithTheTempName() throws {
+        let dir = try makeMeetingDir()
+        defer { removeRoot(of: dir) }
+        let folder = dir.appendingPathComponent(".cover-x.tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try write("keep", "inside.txt", in: folder)
+        try age(".cover-x.tmp", by: 2 * 3_600, in: dir)
+
+        let removed = store.sweepTemporaryFiles(in: dir)
+
+        #expect(removed.isEmpty)
+        #expect(exists(".cover-x.tmp", in: dir))
+        #expect(exists("inside.txt", in: folder))
+    }
+
     @Test func installSweepsItsFolderFirst() throws {
         let dir = try makeMeetingDir()
         defer { removeRoot(of: dir) }
