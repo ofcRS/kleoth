@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import KleothCore
 
 /// Errors thrown by ``Recorder``.
 public enum RecorderError: Error, Sendable {
@@ -32,6 +33,15 @@ public final class Recorder {
     /// Absolute-time anchor captured at the moment recording started, for later
     /// alignment of the mic and system streams. `nil` until ``start`` is called.
     public private(set) var startAnchor: UInt64?
+
+    /// Live meters for the pill's meeting bar: the RMS (0…1) of the most
+    /// recent mic tap buffer and system IO buffer. Raw, like
+    /// `ScreenRecorder.levels` — the pill shapes them. `.zero` when stopped
+    /// (both words reset on stop), read at ~20 Hz by `MeetingPillBridge`.
+    public var levels: AudioLevels {
+        guard isRecording else { return .zero }
+        return AudioLevels(mic: mic.level.level, system: systemTap.level.level)
+    }
 
     /// Canonical file names within the output directory.
     public static let micFileName = "mic.m4a"

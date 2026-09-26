@@ -23,6 +23,8 @@ public struct MeetingMetadata: Codable, Sendable {
     /// `"claude-code"`). `nil` for meetings summarized before providers
     /// existed — those were OpenRouter. Acronym-free → `summary_provider`.
     public var summaryProvider: String?
+    /// Where the meeting happened (meetings-in-the-pill §4.5). nil for meetings recorded before it existed.
+    public var context: MeetingContext?
 
     public init(
         title: String,
@@ -34,7 +36,8 @@ public struct MeetingMetadata: Codable, Sendable {
         languageCode: String? = nil,
         cost: CostBreakdown? = nil,
         transcriptTier: String? = nil,
-        summaryProvider: String? = nil
+        summaryProvider: String? = nil,
+        context: MeetingContext? = nil
     ) {
         self.title = title
         self.date = date
@@ -46,6 +49,7 @@ public struct MeetingMetadata: Codable, Sendable {
         self.cost = cost
         self.transcriptTier = transcriptTier
         self.summaryProvider = summaryProvider
+        self.context = context
     }
 
     /// Whether `title` is an auto-generated placeholder rather than a meaningful,

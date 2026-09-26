@@ -313,4 +313,51 @@ import CoreGraphics
         #expect(PillGeometry.smoothLevel(previous: .nan, target: .nan) == 0)
         #expect(PillGeometry.smoothLevel(previous: 0.5, target: 0.5) == 0.5)
     }
+
+    // MARK: - Peek dock fields (meetings-in-the-pill §4.1)
+
+    @Test func threeFieldDockKeepsTheOldMapping() {
+        let p: CGFloat = 65
+        #expect(PillGeometry.dockFieldIndex(along: -p, pitch: p, count: 3) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: 0, pitch: p, count: 3) == 1)
+        #expect(PillGeometry.dockFieldIndex(along: p, pitch: p, count: 3) == 2)
+        #expect(PillGeometry.dockFieldIndex(along: -0.49 * p, pitch: p, count: 3) == 1)
+        #expect(PillGeometry.dockFieldIndex(along: -0.51 * p, pitch: p, count: 3) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: 0.51 * p, pitch: p, count: 3) == 2)
+    }
+
+    @Test func fourFieldDockCentresAreHalfPitchOffsets() {
+        let p: CGFloat = 65
+        #expect(PillGeometry.dockFieldIndex(along: -1.5 * p, pitch: p, count: 4) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: -0.5 * p, pitch: p, count: 4) == 1)
+        #expect(PillGeometry.dockFieldIndex(along: 0.5 * p, pitch: p, count: 4) == 2)
+        #expect(PillGeometry.dockFieldIndex(along: 1.5 * p, pitch: p, count: 4) == 3)
+        // The boundary between fields 1 and 2 is the capsule's centre: a hair left is Meeting.
+        #expect(PillGeometry.dockFieldIndex(along: -0.01 * p, pitch: p, count: 4) == 1)
+        #expect(PillGeometry.dockFieldIndex(along: 0.01 * p, pitch: p, count: 4) == 2)
+    }
+
+    @Test func dockFieldIndexClampsFarOutsideAndRefusesBadInput() {
+        let p: CGFloat = 65
+        #expect(PillGeometry.dockFieldIndex(along: -10 * p, pitch: p, count: 4) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: 10 * p, pitch: p, count: 4) == 3)
+        #expect(PillGeometry.dockFieldIndex(along: 30, pitch: 0, count: 4) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: 30, pitch: -5, count: 4) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: .nan, pitch: p, count: 4) == 0)
+        #expect(PillGeometry.dockFieldIndex(along: 30, pitch: p, count: 0) == 0)
+    }
+
+    @Test func dockFieldCenterInvertsTheIndex() {
+        let p: CGFloat = 65
+        for count in [3, 4, 5] {
+            for index in 0..<count {
+                let along = PillGeometry.dockFieldCenter(index: index, pitch: p, count: count)
+                #expect(PillGeometry.dockFieldIndex(along: along, pitch: p, count: count) == index)
+            }
+        }
+        #expect(PillGeometry.dockFieldCenter(index: 0, pitch: p, count: 4) == -1.5 * p)
+        #expect(PillGeometry.dockFieldCenter(index: 1, pitch: p, count: 3) == 0)
+        #expect(PillGeometry.dockFieldCenter(index: 9, pitch: p, count: 3) == p)   // clamped
+        #expect(PillGeometry.dockFieldCenter(index: 0, pitch: 0, count: 3) == 0)
+    }
 }

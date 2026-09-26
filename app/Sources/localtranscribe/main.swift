@@ -150,7 +150,9 @@ struct LocalTranscribeMain {
                 consentAcknowledged: true,
                 model: summaryModel,
                 transcriptTier: tier,
-                summaryProvider: summaryProvider
+                summaryProvider: summaryProvider,
+                // The meeting's context (written once, at stop) survives the probe's rewrite.
+                context: (try? store.loadMetadata(in: dir))?.context
             )
 
             let result = try await pipeline.run(

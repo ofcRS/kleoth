@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (688 tests)
+swift build && swift test                        # core + CLI (778 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -29,6 +29,8 @@ swift build --package-path app --product dictate && app/.build/debug/dictate 4 [
 app/.build/debug/dictate --file <audio> [--fail-first N] [--keep-on-failure]   # real clip through the Scribe retry policy; N injected transient failures; keep → a REAL pending History row
 app/.build/debug/dictate --text "<raw>" [--before s] [--after s] [--selection s | --reference s] [--single-line] [--no-polish]   # synthetic focused field → placement, gate, paste; `--focus-probe --help` = the AX probe (reads the app in front: only with the user)
 swift build --package-path app --product screenrec && app/.build/debug/screenrec 10 [--inspect f.mp4] [--extract f.mp4] [--words f.m4a] [--sidecar f.mp4 --title T]
+swift build --package-path app --product micwatch && caffeinate -s -i app/.build/debug/micwatch --seconds 25 --detector   # who holds the mic: bundle ids, pids, owner method, offers; never titles. --titles only with the user (the terminal's grants)
+swift build --package-path app --product micopen && caffeinate -s -i app/.build/debug/micopen 13   # holds the mic from another process, samples discarded; exit 3 without an existing mic grant (never prompts)
 swift run --package-path app pillsandbox                                # pill playground
 app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs (step@secs; --demo dictation|screen composes README frames)
 bash app/branding-src/demo/make-demos.sh                          # README demo GIFs from the real pill → docs/assets/demo-*.gif
@@ -39,7 +41,7 @@ bun marketing/sync.ts check [--offline] | apply [--no-remote]   # public pitch: 
 bun test ./marketing/sync.test.ts                              # release-gate command parser
 ```
 Logs: `/usr/bin/log stream --predicate 'subsystem == "dev.kleoth"'` (categories `Dictation`,
-`DictationHotkey`, `Covers`, `PillTrace` — the latter needs `defaults write dev.kleoth.app KleothPillTrace -bool YES`).
+`DictationHotkey`, `Covers`, `MeetingDetection`, `MicActivity`, `PillTrace` — the latter needs `defaults write dev.kleoth.app KleothPillTrace -bool YES`).
 Crash reports: `~/Library/Logs/DiagnosticReports/Kleoth-*.ips`. Reset TCC: `tccutil reset ScreenCapture|Accessibility dev.kleoth.app`.
 
 ## Architecture — two SwiftPM packages
@@ -51,7 +53,9 @@ Crash reports: `~/Library/Logs/DiagnosticReports/Kleoth-*.ips`. Reset TCC: `tccu
   `DictationTranscription` = Scribe budget + retry policy, `DictationAudioStore` = kept clips,
   `DictationContextPolicy`/`DictationContextFit`/`DictationInsertionPlan` = field context), `ScreenRecording/`
   (defaults, geometry, session machine, audio math, `Record`/`Store` transcript sidecar), `Usage/`,
-  `Covers/` (drawing, store, engines), `Concurrency/` (`withTimeout`, `withDeadline`).
+  `Covers/` (drawing, store, engines), `Meetings/` (call detection: `MeetingAppCatalog`, `MeetingServiceMatcher`,
+  `MeetingSource`, `MeetingDetector` = the pure offer machine, `MeetingContext`, `MeetingNaming`,
+  `CalendarEventMatcher`), `Concurrency/` (`withTimeout`, `withDeadline`).
 - `kleoth` CLI: `transcribe`, `summarize`, `rename`, `render`, `illustrate`. `KleothCoreTests`.
 
 **`app/` package** (macOS 14.4; deps: `..` as `.package(name: "kleoth-app", path: "..")`,
@@ -59,29 +63,37 @@ KeyboardShortcuts, WhisperKit 0.18)
 - `KleothCapture`: `Recorder` (mic.m4a + system.m4a → 2-channel meeting.m4a), `MicCapture`,
   `SystemAudioTap` (Core Audio process tap), `LocalTranscriber` (WhisperKit), `DictationCapture`,
   `InputDevices`, `AudioFormat` (AAC bit-rate clamp, `TapWriter`), `ObjCExceptions`,
-  `ScreenRecording/` (`ScreenRecorder` + sources/sink/mix pump/frame gate/`MovieWriter`).
+  `ScreenRecording/` (`ScreenRecorder` + sources/sink/mix pump/frame gate/`MovieWriter`), `Meetings/`
+  (`MicActivityMonitor`, `MicOwnerResolver`, `WebCallAssertions`, `WindowTitleReader`).
 - `KleothObjC`: `KLCatchObjCException`.
 - `KleothPillUI`: the pill (`DictationPanel`, `DictationPillController`, model, view, `PillMenu`,
   `PillTypes` = the contract). Shared by the app and `pillsandbox`.
 - `KleothApp`: `MenuBarExtra` agent; `RecordingController` (meetings + serial pipeline queue),
-  `DictationController`, `FocusedTextReader` (the only code that reads another app's text),
-  `ScreenRecordingController`, `PillCoordinator` (single face in front of the
-  pill), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
+  `DictationController`, `FocusedTextReader` (the only code that reads another app's text; call detection's
+  `WindowTitleReader` reads window titles only), `ScreenRecordingController`, `PillCoordinator` (single face
+  in front of the pill: dictation, screen recording, meetings), `Meetings/` (`MeetingCaptureTypes`,
+  `MeetingPillBridge` = the meeting side's face in front of the pill, `MeetingDetectionController`,
+  `CalendarLookup`), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
   Meetings | Dictations | Recordings scopes, `MeetingCoverTile`/`MeetingCoverBand`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
   No test target.
-- Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`.
+- Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`.
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
 `docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`,
 `docs/plans/2026-09-24-positioning.md`, `docs/plans/2026-09-24-demo-mode.md` (`-KleothDemo`: what a demo launch must never do),
-`docs/plans/2026-09-24-meeting-illustrations.md`, `docs/plans/2026-09-24-dictation-context.md`.
+`docs/plans/2026-09-24-meeting-illustrations.md`, `docs/plans/2026-09-24-dictation-context.md`,
+`docs/plans/2026-09-24-meetings-in-the-pill.md`.
 
 ## Data on disk
 - Meeting = `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`: `mic.m4a`, `system.m4a`, `meeting.m4a`,
   `transcript.{json,md}`, `summary.{json,md}`, `speakers.json`, `meta.json`; optional
-  `variants/<tier>/` archives the non-active transcript tier. No `meta.json` = "Untranscribed".
+  `variants/<tier>/` archives the non-active transcript tier. Every meeting has `meta.json` from stop (title,
+  participants, consent, `context` = app/service/origin/mic seconds/calendar event/a window title that named a
+  meeting); no `transcript.json` = "Untranscribed"; a meeting recorded before 0.5.1 may still lack `meta.json`.
+  Keys `meeting_detection` (`"true"` opt-in) and `meeting_detection_ignored` (a JSON object STRING, key → name;
+  keys `app:`/`site:`/`webcall:`/`browser:` + bundle id or service id).
 - Meeting covers: `cover.jpg` + `cover.json` (`CoverRecord`: `drawn`/`skipped`/`removed`; `skipped`/`removed`
   block automatic redraws) in the meeting folder; a dropped-in `cover.png` shows too; no key in `meta.json`.
   Keys `cover_engine` (Off is written `"off"`, never empty), `cover_automatic`, `cover_style`, `cover_models`.
@@ -130,10 +142,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - **Dictation polish:** `DictationDefaults.polishModel` = `google/gemini-3.5-flash-lite` (~1 s),
   fallback glm-5.3-flash; `PolishGate` skips chat targets and < 24 words; `AppStyle` = compose/chat only.
 - **Context-aware dictation (2026-09-24):** `FocusedTextReader` is the ONLY code that reads another
-  app's text (decisions: pure KleothCore). Wake at chord-down, snapshot at release ≤ 0.3 s, re-check
-  before ⌘V ≤ 0.15 s. Selection ≤ 4,000 chars → merged; ≤ 20,000 → dictation after it; unreadable or
-  longer → replaced; changed → dictation as heard (`polished_text` = `raw_text`). Caret context:
-  1,500 before / 500 after. Terminal selection = reference. Only OpenRouter + Claude Code get it.
+  app's text (window titles for call detection aside; decisions: pure KleothCore). Wake at chord-down,
+  snapshot at release ≤ 0.3 s, re-check before ⌘V ≤ 0.15 s. Selection ≤ 4,000 chars → merged;
+  ≤ 20,000 → dictation after it; unreadable or longer → replaced; changed → dictation as heard
+  (`polished_text` = `raw_text`). Caret context: 1,500 before / 500 after. Terminal selection = reference.
+  Only OpenRouter + Claude Code get it.
   `dictation_context` is off only as the STRING `"false"`; both wake lists are empty (design §10).
 - **OpenRouter account guardrails:** no-train + ZDR settings turn `require_parameters: true` into 404s
   for `openai/*`, `mistralai/*`, `x-ai/*`, and for `google/gemini-3.8-flash` when `temperature` is sent.
@@ -144,7 +157,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - **Microphone:** one app-wide input-device pick (`input_device`, empty = Automatic) honoured by all
   three captures, set via `kAudioOutputUnitProperty_CurrentDevice` before reading `inputFormat(forBus:)`.
 - **Pill:** dark capsule docked to a screen edge (`PillPlacement.edge` + fraction), tucked half off-screen
-  when idle, hover → peek dock (Dictate · Record · More), own `PillMenuPanel` (never `NSMenu` — refused
+  when idle, hover → peek dock (Dictate · Meeting · Screen · More), own `PillMenuPanel` (never `NSMenu` — refused
   for inactive apps). Panel frames are set by the controller; SwiftUI never animates the window.
 - **Screen recording:** SCStream screen + audio + a third `AVAudioEngine` mic tap mixed to ONE AAC track;
   H.264 ≤ 1920 px, 30 fps, fMP4 10 s fragments (player compatibility unverified — `fragmentInterval`
@@ -188,6 +201,25 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   on click, the menu on right-click / `…` or a header chip without a picture; rows 56 pt only with a picture or a
   job; a demo launch shows covers (`showsCovers`) and draws none. Design: `docs/plans/2026-09-24-meeting-illustrations.md`
   (§10 addendum for the full-width cover).
+- **Meetings in the pill (2026-09-25):** the meeting bar shows for EVERY meeting (any start path; dictation off
+  or the pill hidden for the hour too — the hot-mic rule). `.saving` is owner-checked (both captures use it);
+  one queued confirmation slot with its owner. The pill's Meeting button just calls `start()` (consent = the
+  "Before you record" window, nothing of its own). Design: `docs/plans/2026-09-24-meetings-in-the-pill.md`
+  (§10 lists the deviations of both phases).
+- **Call detection (2026-09-26):** off by default. Kleoth never starts or stops a recording by itself: the pill
+  offers ("Zoom call — record it?"), and suggests stopping once, 20 s after the linked app lets go of the mic —
+  only with detection on and no screen recording running. No new permission: titles only with an existing
+  Screen Recording/Accessibility grant, the calendar only with access given. `MeetingDetector` is pure and owns
+  every timing; after a tick `nextDeadline` is nil or > now, and the host still floors its wait at 0.25 s (a past
+  deadline was a main-actor busy loop). `IsRunningInput` is read on every re-read, never listened to; held mics
+  are re-resolved every 3 s (titles from a 30 s per-pid cache) so a tab that joins a call upgrades — only while a
+  meeting records or `MeetingDetector.hasOfferableSession` holds (an app holding the mic all day stops after
+  10 min). The monitor itself (detection on, or a meeting recording) still re-reads Core Audio every 3 s on its
+  own queue while ANY process holds the mic (10 s when none does), waking the main actor only on a change. It runs
+  during every meeting for `context`, which `stop()` captures SYNCHRONOUSLY right after `isRecording = false`
+  (before the combine's first `await`, or the detector forgets the linked app) and writes into `meta.json` once;
+  every later writer carries it whole (`runPipeline` reads the existing `meta.json` first). A `PillPrompt` prints
+  as its id only: the opt-in pill trace must never log an offer's text.
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -250,6 +282,19 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - `DictationPrompt.system`/`schemaJSON` are SHA-256-pinned: no-context polish requests stay
   byte-identical (providers cache the prefix). `contextSystem` is `system` plus string replacements
   (the `\nOUTPUT\n` line, `language`'s wording): keep those anchors, and re-pin only on purpose.
+- Pill backdrops (`PillCoordinator.recompute()`): screen recording > meeting > resting pill > hidden. `setBackdrop`
+  takes over only a resting-family phase (otherwise it just stores it) and the pill applies `model.phase` a
+  main-queue turn late, so a capture start sets its backdrop FIRST, then dismisses its own leftover phase
+  (`MeetingPillBridge` `.started`); `clearCapturePhaseBlocking` withdraws the other capture's. The other order
+  leaves a hot mic with no bar. A rising bar clears ANY sticky `.failed` (a dictation's is terminal), and both
+  `setBackdrop` and the coordinator read the phase still to land (`pendingPhase` / `upcomingState`).
+- `referenceSize` is resolved against the four-field dock (275 pt, every edge) and, on bottom/top, the meeting
+  bar (240 pt): a new longest shape must be folded in there, or a pill parked near a corner creeps.
+- Core Audio: per-process `IsRunningInput` listeners register and never fire (listen to `IsRunning`/`Devices`,
+  then re-read), and `AudioObjectRemovePropertyListenerBlock` from Swift silently removes nothing (listeners
+  stacked per start): use `AudioObjectAdd/RemovePropertyListener` with one `@convention(c)` proc.
+- `micwatch --titles` from a shell reads titles with the TERMINAL's grants, and `micopen` holds the mic under
+  them. An unattended probe without `caffeinate -s -i` can hit Maintenance Sleep mid-run (timers 15 min late).
 
 ## Security (hard rules)
 - API keys are never printed or committed. `.env` and `config.json` are gitignored; inspect `.env`
@@ -274,7 +319,15 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   .speechRuns` (word alignment, one entry per run of speech) and `TranscriptNormalizer` splits a `local-whisper`
   channel's turn where another channel spoke entirely inside the pause; Scribe grouping unchanged. Verified on
   fictional audio only (5/6 exact turn order); not yet on a real meeting or end to end in Russian.
-- Next, in order (for 0.5.1): meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
+- Meetings in the pill (merged for 0.5.1): phase 1 = the four-field dock, the meeting
+  bar for every meeting, "Meeting saved"; phase 2 = call detection (offers, the stop suggestion, Settings → Meetings →
+  Call detection) and `meta.json` with `context` at stop. Both whole-branch reviews' fixes are in (design §10 items
+  47–55). Verified: core tests, both builds, code-read traces, a `micopen` calibration on a locked screen (listener
+  trigger 0.05–0.21 s on take, ≤ 0.34 s on release; a bare binary resolves to no owner, so no offer). Not yet: the
+  pill films, the calibration on an awake Mac, design §6 manual items 1–11 and the real-call list (§6 step 9), the
+  Settings section by eye. The README pill GIFs (`make-demos.sh`) still show the three-field dock.
+- Next: release 0.5.1 once the visual checks are done (pill films, covers demo frames, the user's look); the
+  README demo GIFs are the user's call. Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand

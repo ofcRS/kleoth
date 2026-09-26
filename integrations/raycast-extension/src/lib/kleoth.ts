@@ -35,7 +35,12 @@ export function meetingsDir(): string {
   return raw.startsWith("~") ? path.join(os.homedir(), raw.slice(1).replace(/^\//, "")) : raw;
 }
 
-/** All meetings, newest first. One meeting = one folder with a meta.json. */
+/**
+ * All transcribed meetings, newest first: a folder with a meta.json and a
+ * transcript.json. Kleoth writes meta.json when a recording stops, so an
+ * untranscribed meeting has one too — it stays app-side (History), like
+ * audio-only folders from before 0.5.1.
+ */
 export function listMeetings(): Meeting[] {
   const base = meetingsDir();
   let entries: string[];
@@ -58,6 +63,7 @@ export function listMeetings(): Meeting[] {
 
     const metaPath = path.join(dir, "meta.json");
     if (!fs.existsSync(metaPath)) continue; // audio-only folders stay app-side
+    if (!fs.existsSync(path.join(dir, "transcript.json"))) continue; // untranscribed: app-side too
 
     let meta: { title?: string; date?: string; started_at?: string; transcript_tier?: string };
     try {

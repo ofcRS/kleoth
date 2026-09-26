@@ -73,6 +73,21 @@ public final class DictationPillController: DictationPillPresenting {
     public var menuContent: (() -> PillMenuContent)?
     /// True while the menu is up: the peek holds and hover changes are ignored.
     private(set) var menuOpen = false
+    /// Peeking or the menu is open: an offer would pull the dock from under
+    /// the pointer, so the meeting side waits (meetings design §3.2.3).
+    public var isInteracting: Bool { peeking || menuOpen }
+    /// The pointer is on the CAPSULE (any phase): an offer's lifetime waits.
+    /// Answered from geometry, like `closeMenu`'s and `reconsiderPointer`'s
+    /// re-checks — never from `model.hovered` alone: the tracking area sends no
+    /// exit to a panel ordered out (or shrunk) from under a parked pointer, so
+    /// `hovered` can stay true long after the pointer has gone, and it counts
+    /// the transparent shadow margin as "on the pill". Film mode has no real
+    /// pointer: there the scripted hover (`setHovered` / `setPointer`) is the truth.
+    public var isPointerOver: Bool {
+        guard let panel, panel.isVisible, model.isPresented else { return false }
+        if ignoresRealPointer { return model.hovered }
+        return Self.capsuleRect(inPanel: pendingFrame ?? panel.frame).contains(NSEvent.mouseLocation)
+    }
     private var menuPanel: PillMenuPanel?
     private let menuModel = PillMenuModel()
     private var menuMonitors: [Any] = []
@@ -99,6 +114,11 @@ public final class DictationPillController: DictationPillPresenting {
     /// The rect the panel settles to when the in-flight transition completes;
     /// nil when the panel is settled (frame == capsule rect, offset == zero).
     private var pendingFrame: CGRect?
+    /// The phase an in-flight transition has yet to apply: `transition` puts
+    /// `model.phase` on the NEXT main-queue turn, so for that turn the model
+    /// still shows the old phase. nil once applied, or when the transition was
+    /// superseded by a settle or a hide (its phase will never land).
+    private var pendingPhase: DictationPillState?
     /// Bumped by every transition, settle, and hide so a stale spring
     /// completion can never shrink the panel to a rect that is no longer the
     /// destination.
@@ -199,7 +219,7 @@ public final class DictationPillController: DictationPillPresenting {
     public func setRecordingLevels(_ levels: AudioLevels) {
         guard panel?.isVisible == true else { return }
         switch model.phase {
-        case .recording, .saving: break
+        case .recording, .saving, .meeting: break
         default:
             // A dictation is showing over the recording. Forget the filter
             // state too, or the meters would ease down from the pre-dictation
@@ -234,10 +254,13 @@ public final class DictationPillController: DictationPillPresenting {
     /// panel NOW only when the pill is in the resting family (`.hidden`,
     /// `.idle`, `.recording` — nothing the user is waiting on); on any live
     /// dictation phase it is only stored and lands at the next `dismiss()`.
+    /// "The pill" is the phase a transition is about to apply, when there is
+    /// one: `model.phase` lags a turn behind a `show`, and a backdrop must not
+    /// paint over an `.armed` asked for in the same turn.
     public func setBackdrop(_ newBackdrop: DictationPillBackdrop) {
         guard backdrop != newBackdrop else { return }
         backdrop = newBackdrop
-        guard Self.isRestingFamily(model.phase) else { return }
+        guard Self.isRestingFamily(pendingPhase ?? model.phase) else { return }
         if let state = newBackdrop.state {
             show(state)
         } else if model.phase != .hidden {
@@ -245,10 +268,16 @@ public final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    /// What the pill is showing right now — the coordinator's "is a dictation
-    /// phase live?" input.
+    /// What the pill is showing right now.
     public var currentState: DictationPillState { dismissingState ?? model.phase }
     private var dismissingState: DictationPillState?
+
+    /// What the pill shows once the transition in flight lands: `currentState`,
+    /// except that a phase a `show()` asked for this main-queue turn already
+    /// counts (`model.phase` changes a turn later on a panel that is up) — the
+    /// coordinator's "is a dictation phase live?" input. During a ✕ it is still
+    /// the dismissed phase, like `currentState`.
+    public var upcomingState: DictationPillState { dismissingState ?? pendingPhase ?? model.phase }
 
     public func setResting(_ visible: Bool) {
         setBackdrop(visible ? .idle : .hidden)
@@ -259,8 +288,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// dictation the user is watching.
     private static func isRestingFamily(_ state: DictationPillState) -> Bool {
         switch state {
-        case .hidden, .idle, .recording: return true
-        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved:
+        case .hidden, .idle, .recording, .meeting: return true
+        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved,
+             .meetingSaved, .prompt:
             return false
         }
     }
@@ -275,7 +305,14 @@ public final class DictationPillController: DictationPillPresenting {
             hideCompletely()
             return
         }
-        if model.phase == state, panel?.isVisible == true, model.isPresented { return }
+        // Already there — unless a transition to another phase is still to
+        // land: a `show(.prompt)` then `dismiss()` in the same turn finds
+        // `model.phase` on the backdrop, and returning here let the prompt
+        // land a turn later with nothing left to take it down. Showing the
+        // backdrop supersedes that transition (the generation check), so the
+        // phase never appears.
+        if model.phase == state, pendingPhase == nil || pendingPhase == state,
+           panel?.isVisible == true, model.isPresented { return }
         show(state)
     }
 
@@ -293,8 +330,18 @@ public final class DictationPillController: DictationPillPresenting {
     /// mic glyph) and the bars then bloom in place. Still exactly one reshape.
     /// `model.phase` is still `.armed`; only the size is inherited.
     private func layoutState(for state: DictationPillState) -> DictationPillState {
-        if case .armed = state, case .recording = backdrop {
-            return .listening(handsFree: false)
+        // Saving keeps the bar's size (the view's rule): over a meeting backdrop
+        // `.saving` is always the meeting's own save — a screen recording saves
+        // while its own backdrop is still up — so it keeps the 240 pt meeting bar
+        // instead of morphing down to the 222 pt screen toolbar.
+        if case .saving = state, case .meeting(let since) = backdrop {
+            return .meeting(since: since)
+        }
+        if case .armed = state {
+            switch backdrop {
+            case .recording, .meeting: return .listening(handsFree: false)
+            case .hidden, .idle: break
+            }
         }
         return state
     }
@@ -383,7 +430,7 @@ public final class DictationPillController: DictationPillPresenting {
         let size = layout.panelSize
         let center = PillGeometry.dockedCenter(
             edge: edge, along: along,
-            panelSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: layout.flat, on: screen),
+            panelSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: layout.flat, dock: model.dock, on: screen),
             shadowPadding: Self.shadowPadding, in: Self.bounds(of: screen)
         )
         panel.setFrame(
@@ -441,7 +488,8 @@ public final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    /// ✕, or a click anywhere on a `.failed` pill.
+    /// ✕ (on a `.failed` or a `.prompt`), or a click anywhere on a `.failed`
+    /// pill.
     func dismissFromUser() {
         // `currentState` keeps reporting the phase the user dismissed for the
         // duration of the callback. Without this the answer depends on motion
@@ -764,6 +812,20 @@ public final class DictationPillController: DictationPillPresenting {
             subtitle: content.hotkeyDescription.isEmpty ? nil : "or hold \(content.hotkeyDescription)",
             symbol: "mic.fill"
         ))
+        // The meeting row (design §3.1.1): start, or — while a meeting
+        // records — stop, with the elapsed time as of the menu opening.
+        if let since = content.meetingSince {
+            rows.append(PillMenuEntry(
+                id: "meeting", kind: .action(.meeting(.stop)), title: "Stop meeting recording",
+                subtitle: "Recording · \(ElapsedFormatter.string(seconds: Int(Date().timeIntervalSince(since))))",
+                symbol: "person.2.wave.2.fill"
+            ))
+        } else {
+            rows.append(PillMenuEntry(
+                id: "meeting", kind: .action(.meeting(.start)), title: "Record meeting",
+                subtitle: "Microphone and system audio", symbol: "person.2.wave.2.fill"
+            ))
+        }
         rows.append(PillMenuEntry(
             id: "record", kind: .action(.startScreenRecording), title: "Record screen…",
             symbol: "record.circle.fill", tint: PillStyle.recordTint
@@ -948,6 +1010,9 @@ public final class DictationPillController: DictationPillPresenting {
 
     /// The panel's current frame in screen coordinates (sandbox / tests).
     public var panelFrame: CGRect? { panel?.frame }
+    /// The capsule itself, un-rotated (width = its length along the edge) —
+    /// for the sandbox's named pointer spots on a text phase (`label`).
+    public var capsuleSize: CGSize { model.capsuleSize }
 
     private func present() {
         guard !Self.reduceMotion else {
@@ -970,6 +1035,24 @@ public final class DictationPillController: DictationPillPresenting {
         pendingFrame = nil
         model.apply(offset: .zero)
         model.apply(dockHeld: false)
+        // An ordered-out window gets no `mouseExited`: forget the pointer, or
+        // `hovered` would outlive the panel (a returning pill must not believe
+        // it is under a pointer that left long ago).
+        model.apply(hovered: false)
+        model.apply(pointer: nil)
+        // The peek goes with it (raw, not `setPeeking`, which would re-show
+        // `.idle`): "Hide for 1 hour" from the menu hides a peeking pill, and
+        // it must not come back an hour later with the dock out — reading
+        // `isInteracting` all along, which holds every call offer back.
+        peekTask?.cancel()
+        peekTask = nil
+        peeking = false
+        model.apply(peeking: false)
+        pendingPhase = nil
+        // A backdrop that rose while the panel faded out was only stored (the
+        // old phase was still up); it takes over now, so a capture that
+        // started in the fade never ends up with no bar (hot-mic rule).
+        if let state = backdrop.state { show(state) }
     }
 
     private func scheduleAutoHide(for state: DictationPillState) {
@@ -993,6 +1076,7 @@ public final class DictationPillController: DictationPillPresenting {
 
         guard !Self.reduceMotion else {
             pendingFrame = nil
+            pendingPhase = nil
             var still = Transaction()
             still.disablesAnimations = true
             withTransaction(still) {
@@ -1039,12 +1123,15 @@ public final class DictationPillController: DictationPillPresenting {
         }
 
         let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
+        pendingPhase = phase
         // The animated changes go out on the NEXT main-queue callout so
         // SwiftUI has committed the re-expressed start position first; a
         // change in the same turn would spring from the previous graph value,
         // which is a different point on the new stage.
         Task { @MainActor [weak self] in
             guard let self, self.transitionGeneration == generation else { return }
+            // Applied below in this same callout (or already the model's).
+            self.pendingPhase = nil
             let moves = self.model.offset != destination
             let reshapes = self.model.phase != phase || self.model.capsuleSize != capsule
                 || self.model.flat != flat
@@ -1114,6 +1201,8 @@ public final class DictationPillController: DictationPillPresenting {
     /// not change. Safe to call when already settled.
     private func settle() {
         transitionGeneration += 1
+        // A transition still waiting for its turn is cancelled by the bump.
+        pendingPhase = nil
         releaseDockSurface()
         var still = Transaction()
         still.disablesAnimations = true
@@ -1155,29 +1244,38 @@ public final class DictationPillController: DictationPillPresenting {
     // MARK: Placement
 
     /// The panel size the anchor is resolved against: as long as the longest
-    /// motion phase and as thick as a text phase. Resolving (and clamping)
+    /// upright shape (the peek dock, then the listening bar) and as thick as a
+    /// text phase. Resolving (and clamping)
     /// the anchor ONCE with this size, then centering every phase on it, is
     /// what keeps a pill parked near a corner from creeping: clamping each
     /// phase's own size shifted the center by the size difference, so a pill
     /// on the right edge near the bottom rose while growing and sank while
     /// shrinking — the "levitating" the user saw.
-    private static func referenceSize(edge: PillGeometry.Edge, on screen: NSScreen?) -> CGSize {
+    private static func referenceSize(edge: PillGeometry.Edge, dock: PillDockMetrics, on screen: NSScreen?) -> CGSize {
         let long = layout(for: .listening(handsFree: true), edge: edge, on: screen, flat: false).panelSize
         let thick = layout(for: .warning(""), edge: edge, on: screen, flat: false).panelSize
+        // The four-field dock (275 pt) is now the longest upright shape on
+        // every edge; resolving the anchor against it keeps a pill parked
+        // near a corner from creeping when the dock comes out (§4.3). Only its
+        // along-axis length is folded in: its thickness stays out, because
+        // `.idle` with the dock out is nudged inward by `activeOrigin`'s clamp.
+        let dockPanel = layout(for: .idle, edge: edge, on: screen, flat: false, dock: dock).panelSize
         guard !edge.isVertical else {
-            // A side edge has TWO families — the upright dictation capsules
-            // (this anchor) and the flat recording bar, which hugs the edge
+            // A side edge has TWO families — the upright capsules (this
+            // anchor) and the flat recording/meeting bar, which hugs the edge
             // with its near end and is placed by `dockReferenceSize` instead.
-            // Folding the bar's 250 pt length in here would clamp the upright
-            // anchor 128 pt away from the top and bottom of the screen.
-            return CGSize(width: thick.width, height: long.height)
+            // Folding the bar in here would clamp the upright anchor away
+            // from the top and bottom of the screen for a shape that never
+            // stands up.
+            return CGSize(width: thick.width, height: max(long.height, dockPanel.height))
         }
-        // Bottom/top: the recording toolbar is now the LONGEST phase, so the
-        // one anchor is resolved against it — otherwise a pill docked near a
-        // corner would have the bar clamped (and every other phase shifted by
-        // the difference: the "levitating" bug this reference size exists for).
-        let bar = layout(for: .recording(since: .distantPast), edge: edge, on: screen, flat: true).panelSize
-        return CGSize(width: max(long.width, bar.width), height: max(thick.height, bar.height))
+        // Bottom/top: the dock and the meeting bar (the recording toolbar plus
+        // the people glyph) are the LONGEST shapes, so the one anchor is
+        // resolved against them — otherwise a pill docked near a corner would
+        // have them clamped (and every other phase shifted by the difference:
+        // the "levitating" bug this reference size exists for).
+        let bar = layout(for: .meeting(since: .distantPast), edge: edge, on: screen, flat: true).panelSize
+        return CGSize(width: max(long.width, bar.width, dockPanel.width), height: max(thick.height, bar.height))
     }
 
     /// The panel size the DOCK is resolved against for one phase. Upright
@@ -1186,9 +1284,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// phase's length) and borrows only a common thickness for the along-axis
     /// clamp, so phase-to-phase morphs never slide along the edge.
     private static func dockReferenceSize(
-        panelSize: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?
+        panelSize: CGSize, edge: PillGeometry.Edge, flat: Bool, dock: PillDockMetrics, on screen: NSScreen?
     ) -> CGSize {
-        guard flat, edge.isVertical else { return referenceSize(edge: edge, on: screen) }
+        guard flat, edge.isVertical else { return referenceSize(edge: edge, dock: dock, on: screen) }
         return CGSize(width: panelSize.width, height: flatThickness)
     }
 
@@ -1212,7 +1310,7 @@ public final class DictationPillController: DictationPillPresenting {
         return PillGeometry.dockedCenter(
             edge: edge,
             along: savedAlong(edge: edge, on: screen, in: bounds),
-            panelSize: Self.dockReferenceSize(panelSize: panelSize, edge: edge, flat: flat, on: screen),
+            panelSize: Self.dockReferenceSize(panelSize: panelSize, edge: edge, flat: flat, dock: model.dock, on: screen),
             shadowPadding: Self.shadowPadding,
             in: bounds
         )
@@ -1365,18 +1463,30 @@ public final class DictationPillController: DictationPillPresenting {
         switch state {
         case .idle, .armed: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
-        case .warning, .failed: return 38
+        case .warning, .failed, .prompt: return 38
         // The live recording toolbar: tall enough for the digits, the two
         // meters and the Stop button to breathe without becoming a window.
-        case .recording, .saving: return 30
+        case .recording, .saving, .meeting: return 30
         // The motion thickness, so the text confirmation is ONE morph.
-        case .saved: return 32
+        case .saved, .meetingSaved: return 32
         }
     }
     /// Slack so a font or locale wider than measured never clips: the capsule
     /// sizes itself to its content, the panel just has to be big enough to hold
     /// it (extra width is transparent margin).
     private static let widthSlack: CGFloat = 20
+
+    /// The capsule inside a SETTLED panel rect (`layout`'s panel size, read
+    /// backwards): the panel minus its shadow margin on every side and the
+    /// width slack along its length — the longer side, whatever the edge (a
+    /// capsule is always longer than it is thick). The capsule is centred in
+    /// the panel (it is an overlay on the root view).
+    static func capsuleRect(inPanel frame: CGRect) -> CGRect {
+        let rect = frame.insetBy(dx: shadowPadding, dy: shadowPadding)
+        return rect.width >= rect.height
+            ? rect.insetBy(dx: widthSlack / 2, dy: 0)
+            : rect.insetBy(dx: 0, dy: widthSlack / 2)
+    }
 
     /// Everything the panel and the view need to agree on for one phase on one
     /// edge: the panel's size (rotated for a side edge) and the explicit label
@@ -1407,11 +1517,15 @@ public final class DictationPillController: DictationPillPresenting {
     /// `.recording`, not `.idle`.)
     private func isFlat(_ state: DictationPillState) -> Bool {
         switch state {
-        case .recording, .saving, .saved: return true
+        case .recording, .saving, .saved, .meeting, .meetingSaved: return true
         case .hidden, .idle: return false
-        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed:
-            if case .recording = backdrop { return true }
-            return false
+        // A prompt too: the stop suggestion lies flat over the meeting bar
+        // (§3.2.5) and stands up like a fault on a bare side edge.
+        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .prompt:
+            switch backdrop {
+            case .recording, .meeting: return true
+            case .hidden, .idle: return false
+            }
         }
     }
 
@@ -1449,7 +1563,7 @@ public final class DictationPillController: DictationPillPresenting {
         var labelWidth: CGFloat?
         switch state {
         case .idle where dock != nil:
-            // The peek DOCK: three fields, fully on screen (`PillDockMetrics`).
+            // The peek DOCK: four fields, fully on screen (`PillDockMetrics`).
             // It is thicker than the anchor was resolved for, so
             // `activeOrigin`'s clamp nudges it inward: its near side lands
             // `shadowPadding` in from the screen edge and it grows inward.
@@ -1467,10 +1581,14 @@ public final class DictationPillController: DictationPillPresenting {
         case .recording, .saving:
             // The live recording TOOLBAR: dot · digits · mic meter · system
             // meter · Stop, mirrored exactly by `RecordingToolbar` in the view
-            // (≈222 pt). It is now the longest phase, so `referenceSize`
-            // resolves the bottom/top anchor against it.
+            // (≈222 pt). The meeting bar below is longer, and the peek dock
+            // longer still; `referenceSize` resolves the anchor against the longest.
             length = PillStyle.recordingContentWidth + 2 * PillStyle.compactPadding
-        case .warning, .failed, .saved:
+        case .meeting:
+            // The meeting bar: the screen bar plus the people glyph
+            // (`PillStyle.meetingContentWidth`, ≈240 pt with the paddings).
+            length = PillStyle.meetingContentWidth + 2 * PillStyle.compactPadding
+        case .warning, .failed, .saved, .meetingSaved:
             // +1: SwiftUI's ideal text width can round up a hair past AppKit's
             // measurement; a frame narrower than the ideal would truncate.
             let measured = textWidth(state.pillText, style: .callout, weight: .medium) + 1
@@ -1483,6 +1601,20 @@ public final class DictationPillController: DictationPillPresenting {
             if state.isSticky {
                 length += PillStyle.spacingS + 18
             }
+            length += 2 * PillStyle.spacingM
+        case .prompt(let prompt):
+            // Laid out like `.failed`, plus every button it shows: symbol ·
+            // label · primary · the quieter secondary · ✕ (`DictationPillView`
+            // pads each button to exactly its share here: title + 22, ✕ 18).
+            let measured = textWidth(prompt.text, style: .callout, weight: .medium) + 1
+            let label = min(measured, labelCap(edge: edge, on: screen, flat: flat))
+            labelWidth = label
+            length = 20 + PillStyle.spacingS + label
+            length += PillStyle.spacingS + textWidth(prompt.primary.title, style: .caption1, weight: .semibold) + 22
+            if let secondary = prompt.secondary {
+                length += PillStyle.spacingS + textWidth(secondary.title, style: .caption1, weight: .semibold) + 22
+            }
+            length += PillStyle.spacingS + 18   // ✕
             length += 2 * PillStyle.spacingM
         }
         let height = (state == .idle ? dock?.size.height : nil) ?? capsuleHeight(for: state)
@@ -1518,10 +1650,16 @@ public final class DictationPillController: DictationPillPresenting {
         // here on purpose: the recording backdrop is re-shown after every
         // dictation and would otherwise re-announce itself each time —
         // `ScreenRecordingController` posts the one "Screen recording started"
-        // announcement instead (§6.1). `.saved` announces itself.
+        // announcement instead (§6.1). `.meeting` is silent for the same
+        // reason: the bridge posts the one "Meeting recording started"
+        // announcement, like `ScreenRecordingController`. `.saved` and
+        // `.meetingSaved` announce themselves, and so does a `.prompt` (the
+        // question is the event).
         switch state {
-        case .idle, .armed, .recording, .saving: return
-        case .hidden, .listening, .transcribing, .polishing, .done, .warning, .failed, .saved: break
+        case .idle, .armed, .recording, .saving, .meeting: return
+        case .hidden, .listening, .transcribing, .polishing, .done, .warning, .failed, .saved,
+             .meetingSaved, .prompt:
+            break
         }
         NSAccessibility.post(
             element: NSApp as Any,
@@ -1554,7 +1692,9 @@ extension DictationPillState {
         case .failed(let fault): return fault.text
         case .recording: return "Recording the screen"
         case .saving: return "Saving the recording…"
-        case .saved(let text): return text
+        case .meeting: return "Recording the meeting"
+        case .saved(let text), .meetingSaved(let text): return text
+        case .prompt(let prompt): return prompt.text
         }
     }
 
@@ -1569,14 +1709,18 @@ extension DictationPillState {
         case .failed(let fault): return fault.symbolName
         case .recording: return "record.circle.fill"
         case .saving: return "waveform"
-        case .saved: return "checkmark.circle.fill"
+        case .meeting: return "person.2.wave.2.fill"
+        case .saved, .meetingSaved: return "checkmark.circle.fill"
+        case .prompt(let prompt): return prompt.symbolName
         }
     }
 
     /// `.failed` sticks around until the user dismisses it or a new session
-    /// replaces it — it is the only phase with a ✕.
+    /// replaces it; a `.prompt` until the user answers or its owner withdraws
+    /// it. They are the only phases with a ✕.
     public var isSticky: Bool {
         if case .failed = self { return true }
+        if case .prompt = self { return true }
         return false
     }
 

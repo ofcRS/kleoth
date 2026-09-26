@@ -4,8 +4,9 @@ import AVFoundation
 /// Captures microphone input via `AVAudioEngine`'s input-node tap and writes
 /// it to a preopened `AVAudioFile`.
 ///
-/// The real-time render callback installed on the input node only writes the
-/// incoming buffer to a file that was opened up front; it performs no
+/// The real-time render callback installed on the input node only stores the
+/// buffer's RMS for the pill (``level``) and writes the incoming buffer to a
+/// file that was opened up front; it performs no
 /// allocation, locking, or `await`, as required for audio render threads. A
 /// single failure flag is flipped via a heap word on error; the rich error is
 /// surfaced from ``stop()`` after the engine has stopped (which establishes a
@@ -33,6 +34,13 @@ public final class MicCapture {
     /// allocation-free.
     private let writeFailed = RenderFlag()
 
+    /// Meter for the pill: the RMS of the most recent tap buffer's first
+    /// channel (the screen recorder's `MicrophoneSource.level` idiom). Stored
+    /// on the render thread, read from the main actor without a hop — see
+    /// ``LevelWord`` for the (deliberate, benign) race that buys. Reset on
+    /// start and stop.
+    let level = LevelWord()
+
     public init() {}
 
     deinit {
@@ -56,6 +64,7 @@ public final class MicCapture {
     public func start(writingTo outputURL: URL) throws {
         guard !isRunning else { return }
         writeFailed.reset()
+        level.reset()
 
         // A local until the session is live: every throw below frees it.
         releaseEngine()
@@ -101,16 +110,23 @@ public final class MicCapture {
 
     private static let tapBufferSize: AVAudioFrameCount = 4096
 
-    /// @Sendable real-time callback: one (converted) file write, no
-    /// allocation/await/locks.
+    /// @Sendable real-time callback: one meter store (a single `vDSP_measqv`)
+    /// and one (converted) file write, no allocation/await/locks.
     ///
     /// - Throws: ``ObjCExceptionError`` when AVFoundation raises on a format
     ///   that does not match the hardware (see `DictationCapture.installTap`).
     private func installTap(_ writer: TapWriter, on engine: AVAudioEngine) throws {
         let failed = writeFailed
+        let level = level
         let input = engine.inputNode
         try catchingObjCExceptions {
             input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: writer.sourceFormat) { @Sendable buffer, _ in
+                // `inputFormat(forBus:)` is float32 non-interleaved on every
+                // device seen; a non-float format leaves `floatChannelData`
+                // nil and the meter at its last value (reset on stop).
+                if let channels = buffer.floatChannelData, buffer.frameLength > 0 {
+                    level.storeRMS(of: channels[0], count: Int(buffer.frameLength))
+                }
                 do {
                     _ = try writer.write(buffer)
                 } catch {
@@ -176,15 +192,18 @@ public final class MicCapture {
             tapFormat = nil
         }
         engine.stop()
+        level.reset()   // the bar drops while the tap is reinstalled (as MicrophoneSource does)
         guard format.channelCount > 0, format.sampleRate > 0,
               let writer = TapWriter(file: file, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
             releaseEngine()   // no input left; don't keep the device pinned
+            level.reset()     // a dead lane must not freeze the pill's mic bar
             return
         }
         do {
             try installTap(writer, on: engine)
         } catch {
             releaseEngine()   // no input left worth reopening; the system channel keeps recording
+            level.reset()
             return
         }
         do {
@@ -192,6 +211,7 @@ public final class MicCapture {
             try engine.start()
         } catch {
             releaseEngine()
+            level.reset()
         }
     }
 
@@ -219,6 +239,7 @@ public final class MicCapture {
         // Quiesces the render thread (ordering with the flag below) and frees
         // the engine, which is what lets a headset leave hands-free mode.
         releaseEngine()
+        level.reset()   // after the render thread is quiesced, so no late store survives
         // Releasing the last reference flushes and closes the AAC file.
         file = nil
         isRunning = false

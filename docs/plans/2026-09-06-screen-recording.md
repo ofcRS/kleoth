@@ -854,11 +854,16 @@ no remux pass in v1.
 | recording ends, dictation off | `.saving → .saved → hidden` | `.hidden` |
 | "Refuse while busy" dictation warning (`:539-549`) | unchanged — restores the pipeline phase, not the backdrop | `.recording(since:)` |
 
+_2026-09-25: a third backdrop, `.meeting(since:)`, sits between `.recording` and `.idle`; the full table is in
+`2026-09-24-meetings-in-the-pill.md` §3.1.5._
+
 ### 6.3 Visibility precedence — decision record
 Pill visible ⇔ `isMonitoring || screenRecording.isActive`. Reason (data): the only pill visibility path today
 is dictation's (`DictationController.swift:27-31`); the ask puts the start control on the pill; a hot mic must
 have an indicator. Existing installs see no change until they record. A resting pill for dictation-off users
 (a Settings toggle) is a product decision for the user (§9).
+
+_2026-09-25: also visible while a meeting records (`RecordingController.recordingSince != nil`)._
 
 ### 6.4 Click routing
 `DictationPillView.swift:77-79` `.onTapGesture` becomes a switch: `.failed` → `dismissFromUser()` (as today);

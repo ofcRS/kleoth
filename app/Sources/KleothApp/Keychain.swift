@@ -95,6 +95,10 @@ public enum Keychain {
         /// JSON map of per-engine image models (`CoverSettings.modelsJSON`).
         /// New key: NOT in `legacyAccounts`.
         public static let coverModels = "cover_models"
+        /// "true" (strict) offers to record calls; absent or anything else is off. New key: NOT in `legacyAccounts`.
+        public static let meetingDetection = "meeting_detection"
+        /// JSON object string, source key → name (`MeetingDetectionIgnored`). New key: NOT in `legacyAccounts`.
+        public static let meetingDetectionIgnored = "meeting_detection_ignored"
     }
 
     /// Every legacy per-value account, for the one-time migration.

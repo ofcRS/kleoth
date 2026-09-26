@@ -73,7 +73,7 @@ your Mac unless you choose cloud transcription.
 
 ## Screen recording: Loom-style, local (beta)
 
-Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on), drag
+Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on, and click **Screen**), drag
 a region or take the whole display, and Kleoth records it with system audio **and** your microphone as one small H.264 MP4 (about 22 MB
 per minute) in `~/Kleoth/screen-recordings/`. Each recording is transcribed on device afterwards
 and opens in a viewer with the transcript beside the video: the spoken word is highlighted, clicking
@@ -158,8 +158,9 @@ macOS remembers the choice.
 | **System Audio Recording** | Record the other participants (the audio your Mac plays). Shown under *Privacy & Security → Screen & System Audio Recording*. | First recording. |
 | **Keychain** | Store your optional API keys securely. **Click "Always Allow"** so you are not re-prompted. | When you save a key, or on a re-signed build. |
 | Calendar *(optional)* | Name a meeting from the calendar event you're in. Decline freely. | If you grant it. |
-| Accessibility *(optional)* | Dictation only: watch for the fn+shift chord system-wide, send the ⌘V that pastes the dictated text, and read the selection and the text around the cursor in the field you dictate into ([what is read](#data--privacy)). | When you turn dictation on in Settings. |
-| Screen Recording *(optional)* | Screen recording only: capture the display or region you picked. Kleoth's own pill and picker are never in the frame. | The first time you start a screen recording. |
+| Accessibility *(optional)* | Needed only for dictation: watch for the fn+shift chord system-wide, send the ⌘V that pastes the dictated text, and read the selection and the text around the cursor in the field you dictate into ([what is read](#data--privacy)). | When you turn dictation on in Settings. |
+| Screen Recording *(optional)* | Needed only for screen recording: capture the display or region you picked. Kleoth's own pill and picker are never in the frame. | The first time you start a screen recording. |
+| Call detection *(optional, off by default)* | No permission and no prompt. Which apps are using the microphone comes from Core Audio; no audio is read. With Accessibility or Screen Recording already allowed, Kleoth also reads the call window's title ([what is kept](#data--privacy)). | Never asked. It runs while **Offer to record calls** is on in Settings → Meetings, and during each meeting you record, to note where it happened. |
 
 Everything except the microphone and system-audio grants is optional. The only place Kleoth sends
 audio is ElevenLabs Scribe, with your key: each dictation, and a meeting or recording you choose to
@@ -171,10 +172,15 @@ The first launch opens a short welcome window: your name, recording consent, mic
 system-audio access, and the speech-model download. After that, Kleoth lives in the menu bar (the
 lyre).
 
-- **Record a meeting.** Click the lyre → **Start Recording**, and **Stop Recording** when the call
-  ends. Open the meeting and click **Transcribe** (free, on device), or turn on automatic
-  transcription in Settings → Meetings. If an AI provider is available, the summary follows.
-  Everything is also on disk in `~/Kleoth/meeting-<timestamp>/`.
+- **Record a meeting.** Click the lyre → **Start Recording**, hover the pill (shown while dictation is
+  on) and click **Meeting**, or press your recording hotkey. With **Offer to record calls** on
+  (Settings → Meetings, off by default), the pill also asks when Zoom, Teams, Google Meet or another
+  app starts using the microphone; nothing is recorded until you click **Record**. However you
+  started it, the pill shows the meeting bar while it records — elapsed time, a mic and a
+  system-audio meter, and **Stop**; **Stop Recording** in the popover works too. Open the meeting
+  and click **Transcribe** (free, on device), or turn on automatic transcription in Settings →
+  Meetings. If an AI provider is available, the summary follows. Everything is also on disk in
+  `~/Kleoth/meeting-<timestamp>/`.
 - **Dictate.** Turn on dictation in Settings → Dictation, allow Accessibility, and add an
   ElevenLabs key in Settings → Accounts. Then hold **fn+shift** in any app, speak, and let go.
 - **Record your screen.** Click the lyre → **Record screen…**, drag a region or press Return for
@@ -189,7 +195,8 @@ Open **Settings** from the menu bar. Everything in it is optional:
 
 - **Meetings** — the on-device model, the transcription language (auto-detected, or pinned),
   automatic transcription after recording, the summary model, naming meetings after your
-  calendar event, and [meeting covers](#meeting-covers) (off by default).
+  calendar event, call detection (off by default) and the apps you've said never to offer for,
+  and [meeting covers](#meeting-covers) (off by default).
 - **Dictation** — hold-to-talk on or off, the clean-up model, whether short dictations and chat
   messages are cleaned up too, **Use the text you're dictating into** (on by default; see
   [Data & privacy](#data--privacy) for what is read and sent), your personal dictionary, and
@@ -261,7 +268,8 @@ server — there isn't one. What does leave, and when:
 - **Audio** goes only to ElevenLabs Scribe, with your key: each dictation, and a meeting or
   recording you choose to transcribe in the cloud.
 - **Transcripts** go to your AI provider: a meeting's, for its summary, right after it is
-  transcribed; a dictation's, for clean-up. On **Automatic** (the default) that is the first
+  transcribed, with its title, date and participants (with calendar access: the event's other attendees,
+  by name or, without one, by email address); a dictation's, for clean-up. On **Automatic** (the default) that is the first
   provider Kleoth finds — local server, Claude Code, Codex, OpenRouter, Apple — so with no local
   server running and the Claude Code or Codex CLI signed in, your transcripts go to Anthropic or
   OpenAI under your account.
@@ -270,6 +278,13 @@ server — there isn't one. What does leave, and when:
 - **Meeting covers** (off by default): a one-sentence scene written from the summary goes to the image
   engine you pick — to OpenAI through Codex, or to OpenRouter; a local server keeps it on your Mac. See
   [Meeting covers](#meeting-covers).
+- **Call detection** (off by default) sends nothing anywhere. Kleoth notices which apps are using
+  the microphone (Core Audio reports that; no audio is read) and, with Accessibility or Screen
+  Recording already allowed, reads the titles of those apps' windows to tell a meeting tab from
+  other sites. A title that names no meeting is only matched against, never saved or logged. With
+  calendar access, an offer for a call names the event on now. The same watch runs during every meeting you
+  record, whether call detection is on or off, so the meeting's `meta.json` notes where it happened
+  (below).
 
 Each meeting is one self-contained folder, `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`:
 
@@ -278,9 +293,15 @@ mic.m4a · system.m4a · meeting.m4a   # your audio (mic, system, 2-channel comb
 transcript.json · transcript.md       # the transcript (raw + rendered)
 summary.json   · summary.md           # the AI summary (if generated)
 speakers.json                         # speaker_0 / speaker_1 → display names (You / Them)
-meta.json                             # metadata: duration, tier, timestamps, consent
+meta.json                             # metadata: title, participants, timestamps, consent, tier, where it happened
 cover.jpg · cover.json                # the meeting's cover and how it was drawn (if covers are on)
 ```
+
+`meta.json` is written the moment a meeting stops, transcribed or not. It records where the meeting
+happened: the app, the service (Zoom, Google Meet…), how you started the recording, how long the app
+held the microphone, the calendar event (with calendar access), and a window title only when it
+named a meeting ("Weekly sync - Google Meet"). A meeting recorded by an older version may have no
+`meta.json` until it is transcribed.
 
 Dictations are text: `~/Kleoth/dictations/<yyyy-MM-dd>.json` holds the raw and polished text, the
 target app, language, and models per utterance; the audio clip is deleted as soon as it has been
@@ -302,8 +323,8 @@ can fit it:
   one the cleanup failed on, stays as it was with your words added after it; one that can't be
   read, or is longer, is replaced by your words as before (⌘Z brings it back).
 - **What is sent, and to whom:** that text goes, with your words, only to the AI provider that
-  already cleans them up, and only when that is OpenRouter or Claude Code. Nothing else on screen is
-  read: not other fields, not window titles.
+  already cleans them up, and only when that is OpenRouter or Claude Code. Dictation reads nothing
+  else on screen: not other fields, not window titles.
 - **Never read:** password fields, password managers (1Password, Bitwarden, Passwords, Keychain
   Access) and Kleoth's own windows.
 - **In a terminal** (Terminal, iTerm2, Ghostty, Warp, kitty, Alacritty, WezTerm), only a selection
@@ -321,7 +342,8 @@ the viewer rewrites only the sidecar; the movie is never touched.
 **Consent:** recording conversations is regulated and the rules vary by jurisdiction — many places
 require **all-party consent**. Kleoth records both sides without a visible bot; that is a UX choice,
 **not legal cover**. Get every participant's consent before recording. The app surfaces a consent
-acknowledgement and stamps it into each meeting's `meta.json`.
+acknowledgement and stamps it into each meeting's `meta.json`. Call detection only asks: a
+recording starts when you click **Record**, never by itself.
 
 ## Build from source
 

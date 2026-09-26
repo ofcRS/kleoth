@@ -133,14 +133,17 @@ struct ConsentView: View {
         }
     }
 
-    /// The window's primary action: acknowledge, then start. `start()` reports
-    /// a failure only through `statusMessage`, so one that returns without
-    /// recording pins that message under the buttons.
+    /// The window's primary action: acknowledge, then start. `start()` returns
+    /// a `MeetingStartOutcome` and also puts every failure in `statusMessage`;
+    /// this window reads the message, so a start that returns without
+    /// recording pins it under the buttons. The start keeps the origin of the
+    /// one it stands in for (`consentWindowOrigin`: an accepted offer stays
+    /// `offer`, the hotkey `shortcut`).
     private func acknowledgeAndStart() {
         startFailure = nil
         controller.acknowledgeConsent()
         Task {
-            await controller.start()
+            await controller.start(origin: controller.consentWindowOrigin)
             if !controller.isRecording {
                 startFailure = controller.statusMessage
             }

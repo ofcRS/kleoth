@@ -17,9 +17,9 @@ and keeps every dictation as plain JSON on your disk.
 
 1. **Hold fn+shift and speak.** A small dark pill at the edge of your screen springs out and shows a
    live waveform. Let go when you are done. Double-tap the chord for hands-free and tap once to
-   stop; Esc cancels. You can also click **Dictate** on the pill's hover dock. From the next
-   release, a hold that runs long can go hands-free mid-way: tap ⌘ while you hold, or click the
-   pill, and let go of the keys. Nothing said so far is lost.
+   stop; Esc cancels. You can also hover the pill and click **Dictate** on its dock (Dictate ·
+   Meeting · Screen · More). A hold that runs long can go hands-free mid-way: tap ⌘ while you
+   hold, or click the pill, and let go of the keys. Nothing said so far is lost.
 2. **Speech-to-text.** The clip goes to [ElevenLabs Scribe](https://elevenlabs.io) with your own
    API key. Your personal dictionary is sent along as key terms, so names and jargon come back
    spelled your way. Scribe gets a time budget that grows with the length of the clip, and a
@@ -40,9 +40,9 @@ The clean-up runs on whichever AI you already use: a local Ollama or LM Studio s
 OpenRouter, or Apple's on-device model on macOS 26. With none of them, the raw Scribe transcript is
 pasted as it is. See [AI providers](ai-providers.md).
 
-## When transcription fails (next release)
+## When transcription fails
 
-From the next release, a dictation that cannot be transcribed keeps its audio: Scribe timed out
+A dictation that cannot be transcribed keeps its audio: Scribe timed out
 twice, the network dropped, or the key was rejected. The pill says what happened ("Timed out —
 saved to History") and offers **Retry**, which sends the same audio again and pastes the result.
 Pressing Esc while it transcribes stops waiting and keeps the audio too ("Stopped — saved to
