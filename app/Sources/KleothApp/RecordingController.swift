@@ -208,6 +208,15 @@ public final class RecordingController: ObservableObject {
     /// Wall-clock time the in-progress recording began (for `startedAt`).
     private var activeRecordingStartedAt: Date?
 
+    /// How the in-progress recording was started (`start(origin:)`); stored
+    /// only for now — Task 15 writes it into the meeting's context at stop.
+    private var activeRecordingOrigin: MeetingStartOrigin = .menu
+
+    /// The meeting's app / service / window title / mic seconds for a
+    /// (startedAt, stoppedAt) span — set by `MeetingDetectionController`;
+    /// read at stop by Task 15.
+    var meetingContextProvider: ((Date, Date) -> MeetingContext)?
+
     /// Watches the output directory so externally-created meetings (the CLI, a
     /// second instance) and our own saves keep `recentMeetings` current without
     /// relying on view lifecycle. See `startWatchingOutputDir()`.
@@ -811,8 +820,10 @@ public final class RecordingController: ObservableObject {
     ///
     /// Returns what happened (`MeetingStartOutcome`) for the pill's bridge;
     /// every older caller ignores it and reads the published state instead.
+    /// `origin` says which surface started it (the bridge passes `.pill` /
+    /// `.offer`); Task 15 records it in the meeting's context.
     @discardableResult
-    public func start() async -> MeetingStartOutcome {
+    public func start(origin: MeetingStartOrigin = .menu) async -> MeetingStartOutcome {
         // No `await` until `isRecording = true`: the consent window's double-click safety needs it.
         guard !isRecording else { return .alreadyRecording }
 
@@ -836,6 +847,7 @@ public final class RecordingController: ObservableObject {
             recorderBox = recorder
             activeRecordingDir = dir
             activeRecordingStartedAt = since
+            activeRecordingOrigin = origin
             recordingSince = since
             isRecording = true
             statusMessage = "Recording…"

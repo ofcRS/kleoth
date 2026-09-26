@@ -23,6 +23,10 @@ struct KleothApp: App {
     @StateObject private var dictation = DictationController()
     @StateObject private var screenRecording = ScreenRecordingController()
     @StateObject private var covers = CoverController()
+    /// Call detection (meetings phase 2). Injected into Settings ONLY — no
+    /// other view reads it; `applicationDidFinishLaunching` starts it, and
+    /// whichever of the two asks first creates the one instance.
+    @StateObject private var detection = MeetingDetectionController.sharedInstance()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -89,6 +93,7 @@ struct KleothApp: App {
                 .environmentObject(dictation)
                 .environmentObject(screenRecording)
                 .environmentObject(covers)
+                .environmentObject(detection)
         }
     }
 }

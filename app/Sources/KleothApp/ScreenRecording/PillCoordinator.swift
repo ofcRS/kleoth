@@ -53,6 +53,18 @@ final class PillCoordinator {
     private enum Owner { case dictation, recording, meeting }
     private var lastShowOwner: Owner?
 
+    /// The last phase the coordinator asked the pill for, whose, and when
+    /// (every `pill.show` goes through `present`). `pill.currentState` only
+    /// catches up a main-queue turn after a `show()` on a panel that is
+    /// already up (the transition's `Task` hop), so for that turn this is the
+    /// fresher fact: the meeting prompt on the pill and whether a phase that
+    /// is about to land keeps prompts out.
+    private var lastShown: (state: DictationPillState, owner: Owner, at: Date)?
+    /// How long a phase just asked for counts as up for `isPillBusyForPrompts`
+    /// — a turn is what it needs; this is generous, and a wrong "busy" costs a
+    /// prompt one 1 s retry.
+    private static let phaseLandingWindow: TimeInterval = 0.5
+
     /// A confirmation (`.saved` / `.meetingSaved`) that arrived while a
     /// dictation phase was live (screen-recording §2.4, §7 row 21; meetings
     /// §3.1.5). ONE slot: the newer one wins — two captures ending under the
@@ -114,8 +126,7 @@ final class PillCoordinator {
             if case .saved = state { queueConfirmation(state, owner: .recording) }
             return
         }
-        lastShowOwner = .recording
-        pill.show(state)
+        present(state, owner: .recording)
     }
 
     /// `pill.dismiss()` iff the pill is showing something the recording side put
@@ -139,8 +150,64 @@ final class PillCoordinator {
 
     // MARK: - Meeting side
 
-    /// ✕ on a meeting-owned `.failed`.
-    var onMeetingDismiss: (() -> Void)?
+    /// ✕ on a meeting-owned phase: a prompt's ✕ carries its id, a `.failed`'s
+    /// ✕ (or click) carries nil.
+    var onMeetingDismiss: ((String?) -> Void)?
+
+    /// A meeting prompt (its id) was replaced or withdrawn by something other
+    /// than the meeting side itself — a dictation phase, a recording phase, a
+    /// capture bar rising, a dictation dismiss, the meeting's own save. The
+    /// detector hears `.displaced` and asks again once the pill is free; it
+    /// must never keep believing a prompt is visible that the pill dropped.
+    var onMeetingPromptDisplaced: ((String) -> Void)?
+
+    /// The meeting prompt on the pill, or asked for within the last
+    /// `phaseLandingWindow` and not landed yet; nil for anything else. Not
+    /// `pill.currentState` alone: it lags a turn behind a show, and a withdraw
+    /// right after a show must still find its prompt. A `.prompt` never
+    /// auto-hides, and every path that takes one down goes through the
+    /// coordinator and moves `lastShowOwner`; a prompt the pill never landed
+    /// (a capture bar took the panel over in that turn) stops counting once
+    /// the window has passed.
+    var currentMeetingPromptId: String? {
+        guard lastShowOwner == .meeting, let shown = lastShown, shown.owner == .meeting,
+              let id = shown.state.promptId else { return nil }
+        if pill.currentState.promptId == id { return id }
+        return Date().timeIntervalSince(shown.at) < Self.phaseLandingWindow ? id : nil
+    }
+
+    /// Whether a meeting prompt has to wait: a dictation phase, a recording
+    /// or meeting `.saving`/`.saved`/`.meetingSaved`/`.warning`/`.failed`, a
+    /// confirmation queued behind a dictation, or the dock / menu under the
+    /// pointer. A phase asked for in the last `phaseLandingWindow` counts as
+    /// up (the pill applies it a turn late) — e.g. a dictation's `.armed`
+    /// over a prompt. Not "the last owner is dictation": that owner outlives
+    /// `.done` / `.warning`, which the pill hides on its own timer.
+    var isPillBusyForPrompts: Bool {
+        if isDictationPhaseLive || pill.isInteracting || queuedConfirmation != nil { return true }
+        if Self.holdsPrompts(pill.currentState) { return true }
+        if let shown = lastShown, Date().timeIntervalSince(shown.at) < Self.phaseLandingWindow,
+           Self.holdsPrompts(shown.state) {
+            return true
+        }
+        return false
+    }
+
+    /// The pointer is on the pill: a visible prompt's lifetime waits.
+    var isPointerOverPill: Bool { pill.isPointerOver }
+
+    /// The phases a meeting prompt never replaces. A prompt replaces only the
+    /// resting family (`.hidden`, `.idle`, `.recording`, `.meeting`) or
+    /// another meeting prompt.
+    private static func holdsPrompts(_ state: DictationPillState) -> Bool {
+        switch state {
+        case .armed, .listening, .transcribing, .polishing, .done,
+             .saving, .saved, .meetingSaved, .warning, .failed:
+            return true
+        case .hidden, .idle, .recording, .meeting, .prompt:
+            return false
+        }
+    }
 
     /// Non-nil → `.meeting(since:)` sits between `.recording` and `.idle`.
     /// Call it BEFORE dismissing anything at a meeting's start: the pill's
@@ -167,17 +234,21 @@ final class PillCoordinator {
     /// screen recording runs, the meeting's save sequence is not shown at all
     /// — its bar stays up and the popover / History carry the saved meeting.
     /// (A meeting save already up when the screen recording started was
-    /// withdrawn then, by `clearCapturePhaseBlocking(.recording)`.)
-    /// Returns false when nothing was shown.
+    /// withdrawn then, by `clearCapturePhaseBlocking(.recording)`.) A
+    /// `.prompt` shows only over the resting family or another meeting prompt
+    /// (`isPillBusyForPrompts`). Returns false when nothing was shown — for a
+    /// prompt, a refusal the detector retries.
     @discardableResult
     func showMeetingPhase(_ state: DictationPillState) -> Bool {
         if meetingPhaseYieldsToScreenRecording(state) { return false }
+        if case .prompt = state {
+            guard !isPillBusyForPrompts else { return false }
+        }
         guard !isDictationPhaseLive else {
             if case .meetingSaved = state { queueConfirmation(state, owner: .meeting) }
             return false
         }
-        lastShowOwner = .meeting
-        pill.show(state)
+        present(state, owner: .meeting)
         return true
     }
 
@@ -186,6 +257,22 @@ final class PillCoordinator {
     func dismissMeetingPhase() {
         if queuedConfirmation?.owner == .meeting { cancelQueuedConfirmation() }
         guard !isDictationPhaseLive else { return }
+        if let id = currentMeetingPromptId, pill.currentState.promptId != id {
+            // A prompt asked for this turn has not landed: a `dismiss()` now
+            // finds the pill still on its backdrop and does nothing, and the
+            // prompt would land after it with no one left to take it down.
+            // One turn later it is up (the pill's transition hop was queued
+            // first), unless something replaced it meanwhile.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.currentMeetingPromptId == id else { return }
+                self.dismissLandedMeetingPhase()
+            }
+            return
+        }
+        dismissLandedMeetingPhase()
+    }
+
+    private func dismissLandedMeetingPhase() {
         switch pill.currentState {
         case .saving, .meetingSaved, .warning, .failed, .prompt:
             guard lastShowOwner == .meeting else { return }
@@ -230,7 +317,8 @@ final class PillCoordinator {
     ///   `recordingSince` is still set during that save;
     /// - a meeting `.prompt` (sticky): an offer is withdrawn when a meeting or
     ///   a screen recording starts (§3.2.3), and a stop suggestion must not keep
-    ///   a starting screen recording's bar down for its 60 s.
+    ///   a starting screen recording's bar down for its 60 s. The detector is
+    ///   told (`onMeetingPromptDisplaced`), after the dismiss.
     /// Never touches a dictation phase, and a meeting rising under a running
     /// screen recording changes nothing: the screen bar stays on top.
     private func clearCapturePhaseBlocking(_ rising: Owner) {
@@ -245,8 +333,10 @@ final class PillCoordinator {
              .meeting:
             return
         }
+        let displaced = currentMeetingPromptId
         lastShowOwner = nil
         pill.dismiss()
+        if let displaced { onMeetingPromptDisplaced?(displaced) }
     }
 
     /// Whether a DICTATION phase currently owns the pill — neither capture
@@ -320,8 +410,24 @@ final class PillCoordinator {
         cancelQueuedConfirmation()
         guard Date().timeIntervalSince(queued.at) <= ScreenRecordingDefaults.savedConfirmationMaxDelay else { return }
         if queued.owner == .meeting, meetingPhaseYieldsToScreenRecording(queued.state) { return }
-        lastShowOwner = queued.owner
-        pill.show(queued.state)
+        present(queued.state, owner: queued.owner)
+    }
+
+    // MARK: - Showing
+
+    /// Every `pill.show` the coordinator makes. A meeting prompt this replaces
+    /// is read BEFORE the owner flips (after it, `currentMeetingPromptId` is
+    /// nil) and reported AFTER the new phase is asked for: a detector that
+    /// re-offers on `.displaced` (the stop suggestion does, synchronously)
+    /// then finds the pill busy with the new phase (`lastShown`) and is
+    /// refused — reported first, its prompt would be painted and immediately
+    /// covered by this phase, while the detector believed it visible.
+    private func present(_ state: DictationPillState, owner: Owner) {
+        let displaced = currentMeetingPromptId
+        lastShowOwner = owner
+        lastShown = (state: state, owner: owner, at: Date())
+        pill.show(state)
+        if let displaced, displaced != state.promptId { onMeetingPromptDisplaced?(displaced) }
     }
 
     private func cancelQueuedConfirmation() {
@@ -346,17 +452,21 @@ final class PillCoordinator {
         }
     }
 
-    /// ✕ or a click on a sticky `.failed`. A recording or meeting fault must
-    /// not reach `DictationController.handlePillDismiss`, which would cancel a
-    /// dictation session that has nothing to do with it.
+    /// ✕ or a click on a sticky `.failed`, or a meeting prompt's ✕. A
+    /// recording or meeting fault must not reach
+    /// `DictationController.handlePillDismiss`, which would cancel a dictation
+    /// session that has nothing to do with it.
     private func routeDismiss() {
         if isDictationPhaseLive {
             lastShowOwner = nil
             dictationDismiss?()
             flushQueuedConfirmation()
         } else if lastShowOwner == .meeting {
+            // The pill keeps reporting the dismissed phase for the callback
+            // (`dismissFromUser`), so this is the prompt the ✕ was on.
+            let id = pill.currentState.promptId
             lastShowOwner = nil
-            onMeetingDismiss?()
+            onMeetingDismiss?(id)
         } else {
             lastShowOwner = nil
             cancelQueuedConfirmation()
@@ -365,14 +475,20 @@ final class PillCoordinator {
 
     // MARK: - Dictation side (called by `face`)
 
+    /// `.armed` on every chord: a meeting prompt goes on the first frame and
+    /// comes back once the pill is free (§3.2.3), via `present`'s report.
     fileprivate func dictationDidShow(_ state: DictationPillState) {
-        lastShowOwner = .dictation
-        pill.show(state)
+        present(state, owner: .dictation)
     }
 
+    /// Also reached with no dictation phase up (`DictationController.cancel()`
+    /// in `.idle`, e.g. dictation switched off in Settings): a meeting prompt
+    /// it collapses is reported, so the detector offers it again.
     fileprivate func dictationDidDismiss() {
+        let displaced = currentMeetingPromptId
         lastShowOwner = nil
         pill.dismiss()
+        if let displaced { onMeetingPromptDisplaced?(displaced) }
         // §2.4: the queued confirmation is shown after the dictation's own
         // `dismiss()`, replacing the backdrop it just collapsed onto.
         flushQueuedConfirmation()

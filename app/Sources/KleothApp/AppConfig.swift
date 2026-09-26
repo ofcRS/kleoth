@@ -125,6 +125,13 @@ enum AppConfig {
         if let models = Keychain.get(Keychain.Account.coverModels), !models.isEmpty {
             merged.coverSettings.models = CoverSettings.parseModels(models)
         }
+        // Call detection: strict "true" opt-in; the ignore list is a JSON object string.
+        if let detection = Keychain.get(Keychain.Account.meetingDetection), !detection.isEmpty {
+            merged.meetingDetection = (detection == "true")
+        }
+        if let ignored = Keychain.get(Keychain.Account.meetingDetectionIgnored), !ignored.isEmpty {
+            merged.meetingDetectionIgnored = MeetingDetectionIgnored.parse(ignored)
+        }
         merged.defaultModel = ModelCatalog.migrating(merged.defaultModel)
         // Chains `ModelCatalog.migrating` and the retired polish defaults
         // (`DictationDefaults.retiredPolishModels`).
@@ -138,6 +145,8 @@ enum AppConfig {
             merged.dictationEnabled = false
             merged.autoTranscribe = false
             merged.coverSettings = CoverSettings()
+            merged.meetingDetection = false      // no controller runs on a demo launch anyway
+
         }
         return merged
     }

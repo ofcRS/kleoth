@@ -82,6 +82,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // every meeting, whoever started it (design §3.1.3). After both
         // controllers exist; never on a demo launch (which has no delegate).
         MainActor.assumeIsolated { MeetingPillBridge.install() }
+        // Call detection (phase 2): the mic watcher while detection is on or a
+        // meeting records, the offers and the stop suggestion, the context
+        // every meeting gets. After the bridge (a prompt's answers go through
+        // it); created here if `KleothApp` has not made it yet.
+        MainActor.assumeIsolated { MeetingDetectionController.sharedInstance().start() }
         // Meeting covers: sweep temp files a kill left in meeting folders.
         MainActor.assumeIsolated { CoverController.shared?.sweepTemporaryFilesAtLaunch() }
 

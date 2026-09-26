@@ -8,6 +8,8 @@ import os
 /// §4.4): turns `MeetingCaptureEvent`s into pill phases and pill actions into
 /// `RecordingController` calls. It knows nothing about who started the
 /// meeting — the bar shows for every meeting (§3.1.3), the hot-mic rule.
+/// Phase 2: a prompt's answers (Record, Never, Stop, ✕) go to
+/// `MeetingDetectionController` first, then to the recording (§3.2.3–§3.2.5).
 ///
 /// Created once from `applicationDidFinishLaunching` (never on a `-KleothDemo`
 /// launch, which has no `AppDelegate` and is gated here too).
@@ -55,9 +57,11 @@ final class MeetingPillBridge {
         // `[weak self]` in both: the controller and the coordinator keep their
         // closures for the app's lifetime.
         coordinator.onMeetingAction = { [weak self] action in self?.handle(action) }
-        coordinator.onMeetingDismiss = {
-            // A dismissed fault leaves the History error card and the popover
+        coordinator.onMeetingDismiss = { id in
+            // A prompt's ✕ is "not now" for the detector (§3.2.3). A dismissed
+            // fault (no id) leaves the History error card and the popover
             // line; there is nothing to cancel.
+            if let id { MeetingDetectionController.shared?.answer(offerId: id, .dismissed) }
         }
         recording.addCaptureObserver { [weak self] event in self?.handle(event) }
         // A meeting already running when the bridge is made (never today — the
@@ -77,7 +81,7 @@ final class MeetingPillBridge {
         case .start:
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                switch await self.recording.start() {
+                switch await self.recording.start(origin: .pill) {
                 case .started, .alreadyRecording, .needsConsent:
                     // `.started`: the capture event puts the bar up.
                     // `.alreadyRecording`: the bar is already up.
@@ -97,9 +101,52 @@ final class MeetingPillBridge {
         case .openLast:
             coordinator.dismissMeetingPhase()
             if let directory = lastSavedDirectory { recording.openInHistory(directory: directory) }
-        case .acceptOffer, .neverOffer, .acceptStop:
-            break   // Task 14 forwards these
+        case .acceptOffer(let id):
+            // Only the offer the detector still shows counts: a double click
+            // sends two, and the second must never start a second time.
+            guard MeetingDetectionController.shared?.answer(offerId: id, .accepted) == true else {
+                log.notice("Record on an offer that is no longer up — ignored")
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Exactly the Meeting field's start: the consent guard stays
+                // in `start()` (`.needsConsent` → the "Before you record"
+                // window), nothing of our own.
+                let outcome = await self.recording.start(origin: .offer)
+                if case .failed(let reason) = outcome {
+                    self.log.notice("meeting start from an offer failed: \(reason, privacy: .public)")
+                    self.coordinator.showMeetingPhase(
+                        .failed(.message("Couldn't start the meeting recording — \(reason)"))
+                    )
+                }
+                // `.started` already took the prompt down (the bar's
+                // `clearCapturePhaseBlocking`), and the fault replaced it;
+                // after a consent refusal or "already recording" it is still
+                // up, answered — take it down.
+                self.dismissPrompt(id)
+            }
+        case .neverOffer(let key, let name):
+            MeetingDetectionController.shared?.neverVisibleOffer(key: key, name: name)
+        case .acceptStop(let id):
+            guard MeetingDetectionController.shared?.answer(offerId: id, .accepted) == true else {
+                log.notice("Stop on a suggestion that is no longer up — ignored")
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // `.finalizing` puts `.saving` over the suggestion; a stop that
+                // found nothing recording sends no event — the prompt goes here.
+                await self.recording.stop()
+                self.dismissPrompt(id)
+            }
         }
+    }
+
+    /// Takes the answered prompt `id` down if it is still the one on the pill.
+    private func dismissPrompt(_ id: String) {
+        guard coordinator.currentMeetingPromptId == id else { return }
+        coordinator.dismissMeetingPhase()
     }
 
     // MARK: - Controller → pill
