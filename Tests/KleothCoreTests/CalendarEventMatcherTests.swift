@@ -42,4 +42,14 @@ import Foundation
         #expect(CalendarEventMatcher.best([past, later, soon], at: t, serviceId: nil) == soon)
         #expect(CalendarEventMatcher.best([], at: t, serviceId: nil) == nil)
     }
+
+    /// Task 11 review, minor 3: a blank service is no service — "  " must not
+    /// match the double space an empty location leaves in the link text.
+    @Test func aBlankServiceIdIsNoService() {
+        let solo = c("Focus", start: -60, end: 1800, link: "https://example.com  notes")
+        let sync = c("Weekly sync", start: -120, end: 1800, others: 4)
+        #expect(CalendarEventMatcher.best([solo, sync], at: t, serviceId: "  ") == sync)
+        #expect(CalendarEventMatcher.best([solo, sync], at: t, serviceId: "") == sync)
+        #expect(CalendarEventMatcher.best([solo, sync], at: t, serviceId: nil) == sync)
+    }
 }

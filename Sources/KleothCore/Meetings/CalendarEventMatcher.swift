@@ -29,9 +29,10 @@ public enum CalendarEventMatcher {
     public static let window: TimeInterval = 300
 
     /// `serviceId` is the detected service as an id ("google-meet") or as the
-    /// name the detector reports ("Google Meet"); nil → no service tier.
+    /// name the detector reports ("Google Meet"); nil or blank → no service tier.
     public static func best(_ candidates: [CalendarCandidate], at start: Date, serviceId: String?) -> CalendarCandidate? {
-        let tokens = serviceId.map { MeetingServiceMatcher.linkTokens(forService: $0) } ?? []
+        let service = serviceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens = service.flatMap { $0.isEmpty ? nil : MeetingServiceMatcher.linkTokens(forService: $0) } ?? []
         func tier(_ c: CalendarCandidate) -> Int {
             let link = c.linkText.lowercased()
             if !tokens.isEmpty, tokens.contains(where: { link.contains($0) }) { return 0 }
@@ -62,29 +63,53 @@ public enum CalendarParticipants {
     }
 
     /// Display names: the user and rooms dropped, the organizer added when
-    /// missing, duplicates removed, calendar order kept.
+    /// missing, one entry per person, calendar order kept. The same person =
+    /// the same address, or — when one side has no address — the same name;
+    /// the entry with a real name wins (a one-to-one call counts one other
+    /// person, Q6). Two people who share a name stay two.
     public static func names(attendees: [Attendee], organizer: Attendee?) -> [String] {
-        var out: [String] = []
-        var seen = Set<String>()
+        var out: [(name: String, address: String?, named: Bool)] = []
         let all = attendees + (organizer.map { [$0] } ?? [])
         for attendee in all where !attendee.isUser && !attendee.isRoomOrResource {
             guard let name = displayName(name: attendee.name, email: attendee.email) else { continue }
-            let key = name.lowercased()
-            if seen.insert(key).inserted { out.append(name) }
+            let address = normalizedAddress(attendee.email)
+            let named = !(attendee.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            let same = out.firstIndex { entry in
+                if let address, let other = entry.address { return address == other }
+                return entry.name.lowercased() == name.lowercased()
+            }
+            guard let index = same else {
+                out.append((name, address, named))
+                continue
+            }
+            if named, !out[index].named { out[index].name = name; out[index].named = true }
+            if out[index].address == nil { out[index].address = address }
         }
-        return out
+        return out.map(\.name)
     }
 
     /// A name, else the address's local part made readable when it has a
-    /// separator ("anna.petrova@acme.com" → "Anna Petrova"), else the address.
+    /// separator ("anna.petrova+cal@acme.com" → "Anna Petrova"), else the
+    /// address. Nil without an address: a `urn:uuid:` or a principal path is
+    /// no name.
     public static func displayName(name: String?, email: String?) -> String? {
         if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
         guard var address = email?.trimmingCharacters(in: .whitespacesAndNewlines), !address.isEmpty else { return nil }
         if address.lowercased().hasPrefix("mailto:") { address = String(address.dropFirst(7)) }
-        guard let at = address.firstIndex(of: "@") else { return address }
-        let local = address[..<at]
+        guard let at = address.firstIndex(of: "@"), at != address.startIndex else { return nil }
+        var local = address[..<at]
+        if let plus = local.firstIndex(of: "+") { local = local[..<plus] }   // a +tag is no part of the name
         let parts = local.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" }).filter { !$0.isEmpty }
         guard parts.count >= 2 else { return address }
         return parts.map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }.joined(separator: " ")
+    }
+
+    /// The address that identifies a person: `mailto:` stripped, trimmed,
+    /// lowercased; nil when it is not an address.
+    static func normalizedAddress(_ email: String?) -> String? {
+        guard var address = email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return nil }
+        if address.hasPrefix("mailto:") { address = String(address.dropFirst(7)) }
+        guard let at = address.firstIndex(of: "@"), at != address.startIndex else { return nil }
+        return address
     }
 }
