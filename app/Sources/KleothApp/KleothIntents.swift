@@ -27,7 +27,7 @@ struct StartRecordingIntent: AppIntent {
         guard let controller = RecordingController.shared else {
             return .result(dialog: "Kleoth isn't ready yet — open it and try again.")
         }
-        await controller.start()
+        await controller.start(origin: .shortcut)
         return .result(dialog: IntentDialog(stringLiteral: controller.statusMessage))
     }
 }

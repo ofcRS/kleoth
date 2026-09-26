@@ -37,6 +37,26 @@ import Foundation
         #expect(MeetingMetadata.isPlaceholderTitle(MeetingNaming.placeholderTitle(service: nil, startedAt: start, timeZone: utc)))
     }
 
+    @Test func defaultSpeakerNamesNameTheSoleOtherParticipant() {
+        // No calendar event: the mic is the user, the system channel "Them".
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "Anna", participants: []) == ["speaker_0": "Anna", "speaker_1": "Them"])
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: []) == ["speaker_0": "You", "speaker_1": "Them"])
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "  ", participants: []) == ["speaker_0": "You", "speaker_1": "Them"])
+        // A one-to-one call: the system channel is that one person (Q6).
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: ["Boris"]) == ["speaker_0": "You", "speaker_1": "Boris"])
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: [" "]) == ["speaker_0": "You", "speaker_1": "Them"])
+        // Two or more others: the system channel is everyone else.
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "Anna", participants: ["Boris", "Chris"]) == ["speaker_0": "Anna", "speaker_1": "Them"])
+        // The organizer listed again as a nameless attendee is one person
+        // (`CalendarParticipants.names` dedupes by address), so the call is one-to-one.
+        typealias A = CalendarParticipants.Attendee
+        let me = A(name: "Me", email: "mailto:me@acme.com", isUser: true, isRoomOrResource: false)
+        let boris = A(name: nil, email: "mailto:boris.ivanov@acme.com", isUser: false, isRoomOrResource: false)
+        let organizer = A(name: "Boris Ivanov", email: "mailto:Boris.Ivanov@acme.com", isUser: false, isRoomOrResource: false)
+        let participants = CalendarParticipants.names(attendees: [me, boris], organizer: organizer)
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: participants)["speaker_1"] == "Boris Ivanov")
+    }
+
     @Test func startOriginRawValues() {
         #expect(MeetingStartOrigin.pill.rawValue == "pill")
         #expect(MeetingStartOrigin.offer.rawValue == "offer")

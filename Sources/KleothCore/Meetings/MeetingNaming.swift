@@ -16,4 +16,17 @@ public enum MeetingNaming {
         }
         return "Recording · \(stamp)"
     }
+
+    /// The default speaker map of a two-channel meeting (§3.2.6, Q6): the mic
+    /// (`speaker_0`) is the user — their name, else "You" — and the system
+    /// channel (`speaker_1`) is everyone else: "Them", or the one other
+    /// participant when there is exactly one (a one-to-one calendar call;
+    /// `CalendarParticipants.names` already leaves out the user and rooms and
+    /// counts one person once). Written only when `speakers.json` is absent,
+    /// so a rename still overrides it.
+    public static func defaultSpeakerNames(userName: String, participants: [String]) -> [String: String] {
+        let user = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sole = participants.count == 1 ? participants[0].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        return ["speaker_0": user.isEmpty ? "You" : user, "speaker_1": sole.isEmpty ? "Them" : sole]
+    }
 }

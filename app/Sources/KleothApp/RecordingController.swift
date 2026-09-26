@@ -208,13 +208,27 @@ public final class RecordingController: ObservableObject {
     /// Wall-clock time the in-progress recording began (for `startedAt`).
     private var activeRecordingStartedAt: Date?
 
-    /// How the in-progress recording was started (`start(origin:)`); stored
-    /// only for now — Task 15 writes it into the meeting's context at stop.
+    /// How the in-progress recording was started (`start(origin:)`); `stop()`
+    /// writes it into the meeting's context (`started_from`).
     private var activeRecordingOrigin: MeetingStartOrigin = .menu
+
+    /// The origin of the start that `start()` last refused for consent, until
+    /// a start succeeds. The "Before you record" window that refusal brings up
+    /// starts with it (`consentWindowOrigin`), so a meeting begun by accepting
+    /// an offer is still `offer` — and the hotkey's still `shortcut` — after
+    /// the window asked (meetings-in-the-pill §3.2.6). The guard itself stays
+    /// in `start()`; this only remembers who asked.
+    private var consentRefusedOrigin: MeetingStartOrigin?
+
+    /// The origin the "Before you record" window's start passes: that of the
+    /// start it stands in for, `.menu` when there is none.
+    var consentWindowOrigin: MeetingStartOrigin { consentRefusedOrigin ?? .menu }
 
     /// The meeting's app / service / window title / mic seconds for a
     /// (startedAt, stoppedAt) span — set by `MeetingDetectionController`;
-    /// read at stop by Task 15.
+    /// `stop()` reads it synchronously, before the detector hears the meeting
+    /// end. Nil (no detection controller): the context carries only the origin
+    /// and the calendar.
     var meetingContextProvider: ((Date, Date) -> MeetingContext)?
 
     /// Watches the output directory so externally-created meetings (the CLI, a
@@ -378,31 +392,22 @@ public final class RecordingController: ObservableObject {
             : "Calendar access was not granted."
     }
 
-    /// The title + attendees of the calendar event overlapping `date`, when
-    /// calendar access is granted and a matching event exists.
-    private func calendarMeetingInfo(at date: Date) -> (title: String, participants: [String])? {
+    /// The calendar event a recording that started at `date` belongs to
+    /// (`CalendarEventMatcher` through `CalendarLookup`; `serviceHint` = the
+    /// detected service, whose link in an event wins) — only with calendar
+    /// access already granted: no EventKit call at all otherwise, and never a
+    /// request.
+    private func calendarMeetingInfo(at date: Date, serviceHint: String? = nil) -> CalendarLookup.Info? {
         guard calendarAuthorized else { return nil }
-        let store = EKEventStore()
-        let predicate = store.predicateForEvents(
-            withStart: date.addingTimeInterval(-300),
-            end: date.addingTimeInterval(300),
-            calendars: nil
-        )
-        let events = store.events(matching: predicate)
-        let spanning = events.first { $0.startDate <= date && $0.endDate >= date }
-        let chosen = spanning ?? events.min {
-            abs($0.startDate.timeIntervalSince(date)) < abs($1.startDate.timeIntervalSince(date))
-        }
-        guard let event = chosen, let title = event.title, !title.isEmpty else { return nil }
-        let participants = (event.attendees ?? []).compactMap { $0.name }
-        return (title, participants)
+        return CalendarLookup.meetingInfo(at: date, serviceHint: serviceHint)
     }
 
-    /// Calendar naming for a deferred transcription: an untranscribed folder
-    /// never got the stop-time calendar lookup (with auto-transcribe off,
-    /// `stop()` writes no meta.json), so re-query the event overlapping the
-    /// start time now. A deleted event simply keeps the placeholder title; a
-    /// real (non-placeholder) title is never overwritten.
+    /// Calendar naming for a meeting that has no stop-time naming: a folder
+    /// recorded before `stop()` wrote `meta.json` for every meeting (or whose
+    /// write failed), or one whose stored title is still a placeholder (the
+    /// event may exist now). Re-queries the event overlapping the start time.
+    /// A deleted event simply keeps the placeholder title; a real
+    /// (non-placeholder) title is never overwritten.
     private func recoveredCalendarNaming(
         title: String,
         startedAt: Date
@@ -426,15 +431,16 @@ public final class RecordingController: ObservableObject {
     }
 
     /// Single dispatch point shared by every external surface, so they all run
-    /// the exact same code path.
+    /// the exact same code path. Every one of them — the global hotkey and
+    /// `kleoth://` — starts with origin `shortcut`, as the intent does.
     public func handle(_ command: Command) {
         switch command {
         case .record:
-            Task { await start() }
+            Task { await start(origin: .shortcut) }
         case .stop:
             Task { await stop() }
         case .toggle:
-            Task { if isRecording { await stop() } else { await start() } }
+            Task { if isRecording { await stop() } else { await start(origin: .shortcut) } }
         case .summarizeLatest:
             Task { await summarizeLatestMeeting() }
         }
@@ -820,8 +826,11 @@ public final class RecordingController: ObservableObject {
     ///
     /// Returns what happened (`MeetingStartOutcome`) for the pill's bridge;
     /// every older caller ignores it and reads the published state instead.
-    /// `origin` says which surface started it (the bridge passes `.pill` /
-    /// `.offer`); Task 15 records it in the meeting's context.
+    /// `origin` says which surface started it — the popover and onboarding
+    /// `.menu` (the default), the hotkey / `kleoth://` / the intent
+    /// `.shortcut`, the bridge `.pill` / `.offer`, the "Before you record"
+    /// window the refused start's (`consentWindowOrigin`) — and `stop()`
+    /// writes it into the meeting's context.
     @discardableResult
     public func start(origin: MeetingStartOrigin = .menu) async -> MeetingStartOutcome {
         // No `await` until `isRecording = true`: the consent window's double-click safety needs it.
@@ -829,6 +838,8 @@ public final class RecordingController: ObservableObject {
 
         guard consentAcknowledged else {
             statusMessage = "Acknowledge the recording consent notice first."
+            // The window this brings up starts on the asker's behalf.
+            consentRefusedOrigin = origin
             consentRequest &+= 1
             return .needsConsent
         }
@@ -848,6 +859,7 @@ public final class RecordingController: ObservableObject {
             activeRecordingDir = dir
             activeRecordingStartedAt = since
             activeRecordingOrigin = origin
+            consentRefusedOrigin = nil
             recordingSince = since
             isRecording = true
             statusMessage = "Recording…"
@@ -865,8 +877,10 @@ public final class RecordingController: ObservableObject {
     }
 
     /// Stops the current session, surfaces the meeting in the recent list right
-    /// away (as a spinner row), and queues transcription/summarization in the
-    /// background — the record button is free for the next meeting immediately.
+    /// away (as a spinner row), writes its `meta.json` (name, participants,
+    /// context) once the audio is final, and queues transcription/summarization
+    /// in the background — the record button is free for the next meeting
+    /// immediately.
     ///
     /// Returns a short user-facing description of the outcome (used as the
     /// Shortcuts dialog); the popover reads live state instead.
@@ -880,6 +894,15 @@ public final class RecordingController: ObservableObject {
         isRecording = false
         // The meeting's length ends here, not after the seconds of finalize below.
         let stoppedAt = Date()
+        let startedAt = activeRecordingStartedAt ?? stoppedAt
+        // Where the meeting happened, read NOW: before `recordingSince` goes
+        // nil and before the first `await`. The detection controller hears
+        // that change at this method's first suspension, and its detector then
+        // forgets the meeting's linked source — read after the finalize, a
+        // call that held the mic < 20 s would get no app or service at all
+        // (pre-flight I-10). The origin is this controller's own.
+        var context = meetingContextProvider?(startedAt, stoppedAt) ?? MeetingContext()
+        context.startedFrom = activeRecordingOrigin.rawValue
 
         guard let recorder = recorderBox as? Recorder, let dir = activeRecordingDir else {
             statusMessage = "No active recording to stop."
@@ -890,10 +913,9 @@ public final class RecordingController: ObservableObject {
             return statusMessage
         }
 
-        // Capture everything this meeting needs, then free the capture slot
-        // immediately so the next recording can start while this one finalizes
-        // and transcribes in the background.
-        let startedAt = activeRecordingStartedAt ?? Date()
+        // Capture everything this meeting needs (above), then free the capture
+        // slot immediately so the next recording can start while this one
+        // finalizes and transcribes in the background.
         recorderBox = nil
         activeRecordingDir = nil
         activeRecordingStartedAt = nil
@@ -934,6 +956,34 @@ public final class RecordingController: ObservableObject {
             return statusMessage
         }
 
+        // Every meeting gets its meta.json now — title, date, participants,
+        // consent and where it happened — auto-transcribe on or off, so the
+        // row is named and renameable before transcription and the context
+        // survives until then (§3.2.6, §4.5). Never earlier: a folder listed
+        // mid-recording would cache a partial duration (`durationCache`). The
+        // list keys "processed" on `transcript.json`, so this row stays
+        // Untranscribed. One calendar lookup names the meeting and fills the
+        // context's calendar fields.
+        let calendar = calendarMeetingInfo(at: startedAt, serviceHint: context.service)
+        if let calendar {
+            context.calendarTitle = calendar.title
+            context.calendarStart = Self.isoDateTime(calendar.start)
+            context.calendarEnd = Self.isoDateTime(calendar.end)
+        }
+        let title = calendar?.title ?? MeetingNaming.placeholderTitle(service: context.service, startedAt: startedAt)
+        let participants = calendar?.participants ?? []
+        writeMetadata(
+            MeetingMetadata(
+                title: title,
+                date: Self.dayString(startedAt),
+                startedAt: Self.isoDateTime(startedAt),
+                participants: participants,
+                consentAcknowledged: consentAcknowledged,
+                context: context
+            ),
+            in: dir
+        )
+
         // Saved. No `await` from here to the guard below, so `transcribing` is
         // the same `auto_transcribe` the guard reads.
         notifyCapture(.saved(
@@ -943,22 +993,16 @@ public final class RecordingController: ObservableObject {
         ))
 
         // Auto-transcribe is opt-in: with it off, the audio (including the
-        // combined meeting.m4a built above, needed for playback) is saved and
-        // the row flips to "Untranscribed" until the user picks an engine. No
-        // meta.json is written here — `loadRecentMeetings` keys "processed" on
-        // its existence — so the calendar title is recovered by re-querying
-        // EventKit at transcribe time instead (see `transcribeSaved`).
+        // combined meeting.m4a built above, needed for playback) and the
+        // meta.json above are saved and the row lists as "Untranscribed" until
+        // the user picks an engine (`transcribeSaved` → `runPipeline`, which
+        // reads this meta.json back).
         guard settings.autoTranscribe else {
             unmarkProcessing(dir)
             // Only claim the status line if a newer recording doesn't own it.
             if statusMessage == "Finalizing recording…" { statusMessage = "Recording saved." }
             return "Recording saved."
         }
-
-        // Name the meeting from the overlapping calendar event when available.
-        let calendar = calendarMeetingInfo(at: startedAt)
-        let title = calendar?.title ?? defaultMeetingTitle()
-        let participants = calendar?.participants ?? []
 
         // Hand off to the serial pipeline queue. From here the in-list spinner
         // row is the progress surface, so clear the transient status — unless a
@@ -1112,9 +1156,9 @@ public final class RecordingController: ObservableObject {
     /// same HIG rationale as row deletes) while the audio, `speakers.json`, and
     /// `meta.json` identity (title/date/participants) stay, ready for a fresh
     /// transcription. Skips anything recording or mid-pipeline and reloads the
-    /// list once. Returns how many were actually reverted. Note: re-transcribing
-    /// later via `transcribeSaved` rebuilds metadata fresh, so participants/
-    /// consent are reset then — accepted v1 fidelity loss.
+    /// list once. Returns how many were actually reverted. Re-transcribing later
+    /// via `transcribeSaved` rebuilds the metadata from this kept `meta.json`:
+    /// title, participants and context survive; consent is re-stamped.
     @discardableResult
     public func removeTranscriptions(_ meetings: [RecentMeeting]) -> Int {
         var revertedTitles: [String] = []
@@ -1308,6 +1352,19 @@ public final class RecordingController: ObservableObject {
             let system = meetingDir.appendingPathComponent("system.m4a")
             channelFiles = [mic, system].filter { FileManager.default.fileExists(atPath: $0.path) }
         }
+
+        // The meeting's own meta.json, when it has one (every meeting since
+        // `stop()` writes it; a reverted one keeps it): its context always,
+        // its participants when this naming has none, and its title unless
+        // that is a placeholder while this one is real. Both placeholders →
+        // the stored one, which names the service ("Recording · Zoom · …")
+        // where a recovered title can't.
+        let existing = meetingDir.flatMap { loadMetadataIfPresent(in: $0) }
+        let storedTitle = existing?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let keepsStoredTitle = !storedTitle.isEmpty
+            && (!MeetingMetadata.isPlaceholderTitle(storedTitle) || MeetingMetadata.isPlaceholderTitle(title))
+        let resolvedTitle = keepsStoredTitle ? storedTitle : title
+        let resolvedParticipants = participants.isEmpty ? (existing?.participants ?? []) : participants
         let transcriber: any Transcriber = LocalTranscriber(
             channelFiles: channelFiles,
             language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage),
@@ -1320,9 +1377,10 @@ public final class RecordingController: ObservableObject {
         if channelFiles.count == 2, let meetingDir {
             // Label the local channel with the user's real name (from onboarding)
             // when set, so their own voice reads as e.g. "Anna" rather than "You";
-            // the remote channel stays "Them" until renamed after the meeting.
+            // the remote channel is "Them" — or the one other person of a
+            // one-to-one calendar call — until renamed after the meeting.
             writeDefaultSpeakerMapIfNeeded(
-                ["speaker_0": userName.isEmpty ? "You" : userName, "speaker_1": "Them"],
+                MeetingNaming.defaultSpeakerNames(userName: userName, participants: resolvedParticipants),
                 in: meetingDir
             )
         }
@@ -1343,14 +1401,16 @@ public final class RecordingController: ObservableObject {
         let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
 
         let metadata = MeetingMetadata(
-            title: title,
+            title: resolvedTitle,
             date: Self.dayString(startedAt),
             startedAt: Self.isoDateTime(startedAt),
-            participants: participants,
+            participants: resolvedParticipants,
             consentAcknowledged: consentAcknowledged,
             model: summarySelection?.model,
             transcriptTier: tier,
-            summaryProvider: summarySelection?.provider.rawValue
+            summaryProvider: summarySelection?.provider.rawValue,
+            // Written once, at stop; every rewrite carries it (§4.5).
+            context: existing?.context
         )
 
         // Folder-backed runs surface progress on their in-list spinner row, so
@@ -1384,11 +1444,11 @@ public final class RecordingController: ObservableObject {
                 // could not be made up front saved into one the pipeline derived.
                 reportSummaryFailure(
                     summaryError,
-                    statusPrefix: "Transcribed \"\(title)\"",
+                    statusPrefix: "Transcribed \"\(resolvedTitle)\"",
                     in: result.meetingDir
                 )
             } else {
-                statusMessage = "Saved \"\(title)\"."
+                statusMessage = "Saved \"\(resolvedTitle)\"."
             }
         } catch {
             // The audio is safe on disk — only processing failed. Unmark and
@@ -1441,6 +1501,30 @@ public final class RecordingController: ObservableObject {
         statusMessage = "Preparing audio for ElevenLabs Scribe…"
 
         let transport = URLSessionTransport()
+        let fm = FileManager.default
+
+        // Preserve the meeting's original metadata (its context included);
+        // only the tier, model, and cost change. The pipeline re-applies any
+        // existing speakers.json. A folder without meta.json (recorded before
+        // `stop()` wrote one for every meeting, or whose write failed) would
+        // get a dir-name title dated today from `loadMetadata`'s fallback —
+        // build a real record instead (correct start time, calendar title when
+        // one matches, else the recovered placeholder so the summary's title
+        // can adopt). It has no context to carry: that lives only in meta.json.
+        var metadata: MeetingMetadata
+        if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
+            metadata = loadMetadata(in: dir)
+        } else {
+            let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
+            let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
+            metadata = MeetingMetadata(
+                title: naming.title,
+                date: Self.dayString(started),
+                startedAt: Self.isoDateTime(started),
+                participants: naming.participants,
+                consentAcknowledged: consentAcknowledged
+            )
+        }
 
         // Validated mono-Scribe path: when both per-channel files exist, mix
         // mic+system to mono (1× cost, correct duration) and attribute each word
@@ -1448,7 +1532,6 @@ public final class RecordingController: ObservableObject {
         // Scribe request with its default diarization.
         let mic = dir.appendingPathComponent("mic.m4a")
         let system = dir.appendingPathComponent("system.m4a")
-        let fm = FileManager.default
         let transcriber: any Transcriber
         if fm.fileExists(atPath: mic.path), fm.fileExists(atPath: system.path) {
             transcriber = ChannelAttributedScribeTranscriber(
@@ -1457,7 +1540,7 @@ public final class RecordingController: ObservableObject {
                 systemURL: system
             )
             writeDefaultSpeakerMapIfNeeded(
-                ["speaker_0": userName.isEmpty ? "You" : userName, "speaker_1": "Them"],
+                MeetingNaming.defaultSpeakerNames(userName: userName, participants: metadata.participants),
                 in: dir
             )
         } else {
@@ -1477,27 +1560,6 @@ public final class RecordingController: ObservableObject {
 
         let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
         let pipeline = MeetingPipeline(transcriber: transcriber, summarizer: summarizer, store: store)
-
-        // Preserve the meeting's original metadata; only the tier, model, and
-        // cost change. The pipeline re-applies any existing speakers.json. An
-        // untranscribed folder has no meta.json yet, and `loadMetadata`'s
-        // fallback would fabricate a dir-name title dated today — build a real
-        // record instead (correct start time, calendar title when one matches,
-        // else the recovered placeholder so the summary's title can adopt).
-        var metadata: MeetingMetadata
-        if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
-            metadata = loadMetadata(in: dir)
-        } else {
-            let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
-            let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
-            metadata = MeetingMetadata(
-                title: naming.title,
-                date: Self.dayString(started),
-                startedAt: Self.isoDateTime(started),
-                participants: naming.participants,
-                consentAcknowledged: consentAcknowledged
-            )
-        }
         // Archive the current on-device transcript set as a variant before the
         // cloud rerun overwrites the root files, so the switcher can restore it.
         // Rerunning cloud-on-cloud archives nothing (the root set is about to be
@@ -1622,8 +1684,9 @@ public final class RecordingController: ObservableObject {
 
     /// The queued worker behind `transcribeOnDevice` — runs the local engine
     /// over an already-transcribed meeting. Deliberately does NOT reuse
-    /// `runPipeline`, which fabricates fresh metadata and would drop the
-    /// meeting's participants/consent and title durability.
+    /// `runPipeline`, which archives nothing and rebuilds the metadata (it
+    /// carries only the stored title, participants and context), where this
+    /// keeps the stored record whole.
     private func runOnDeviceTranscription(of meeting: RecentMeeting) async {
         let dir = meeting.directory
         guard let audio = Self.meetingAudioURL(in: dir) else {
@@ -1635,9 +1698,10 @@ public final class RecordingController: ObservableObject {
         let fm = FileManager.default
         let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
 
-        // Preserve the meeting's existing metadata; only tier/model/cost change
-        // (mirrors `runFullTranscription`, including the recovered record for a
-        // meta-less folder — shouldn't happen here, but degrade identically).
+        // Preserve the meeting's existing metadata (its context included); only
+        // tier/model/cost change (mirrors `runFullTranscription`, including the
+        // recovered record for a meta-less folder — shouldn't happen here, but
+        // degrade identically; such a folder has no context to carry).
         var metadata: MeetingMetadata
         if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
             metadata = loadMetadata(in: dir)
@@ -1692,7 +1756,7 @@ public final class RecordingController: ObservableObject {
         )
         if channelFiles.count == 2 {
             writeDefaultSpeakerMapIfNeeded(
-                ["speaker_0": userName.isEmpty ? "You" : userName, "speaker_1": "Them"],
+                MeetingNaming.defaultSpeakerNames(userName: userName, participants: metadata.participants),
                 in: dir
             )
         }
@@ -1797,6 +1861,11 @@ public final class RecordingController: ObservableObject {
         }
         guard !isProcessingMeeting(dir) else { return }  // already queued or running
         let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
+        // A folder with meta.json (every meeting since `stop()` writes it)
+        // keeps its own naming: `runPipeline` reads it back — its context, its
+        // participants, and its title unless that is a placeholder and this
+        // re-query finds an event now. The recovery matters for older
+        // meta-less folders, which never had a stop-time lookup.
         let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
 
         markProcessing(dir)
@@ -1842,8 +1911,10 @@ public final class RecordingController: ObservableObject {
 
     // MARK: - Recent meetings discovery
 
-    /// Scans the output directory for previously saved meetings (each is a
-    /// subdirectory containing a `meta.json`) and populates `recentMeetings`.
+    /// Scans the output directory for saved meetings — subdirectories with a
+    /// `meta.json` (every meeting once `stop()` has finalized it) or with
+    /// audio alone — and populates `recentMeetings`. "Processed" is keyed on
+    /// `transcript.json`, never on `meta.json`.
     public func loadRecentMeetings() {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -1909,11 +1980,13 @@ public final class RecordingController: ObservableObject {
                 return (meeting, started ?? modified)
             }
 
-            // No meta.json but audio present: either a meeting that's mid-pipeline
-            // right now (listed with a spinner — a just-stopped recording lands
-            // here the moment Stop is pressed) or one whose processing failed
-            // (surfaced as transcribable so the audio isn't invisible). Never the
-            // in-progress *recording* itself, whose files are still being written.
+            // No meta.json but audio present: a just-stopped recording still
+            // finalizing (listed with a spinner — it lands here the moment Stop
+            // is pressed, until `stop()` writes its meta.json), one recorded
+            // before meta.json was written at stop, or one whose finalize or
+            // meta.json write failed (surfaced as transcribable so the audio
+            // isn't invisible). Never the in-progress *recording* itself, whose
+            // files are still being written.
             if let active = activeRecordingDir,
                dir.standardizedFileURL == active.standardizedFileURL { return nil }
             guard Self.meetingAudioURL(in: dir) != nil else { return nil }
@@ -2042,6 +2115,30 @@ public final class RecordingController: ObservableObject {
         }
         // Fall back to a minimal record keyed off the directory name.
         return MeetingMetadata(title: dir.lastPathComponent, date: Self.isoDate())
+    }
+
+    /// `meta.json` in `dir`, or nil when absent or unreadable — never a
+    /// fabricated record (`loadMetadata`'s fallback).
+    private func loadMetadataIfPresent(in dir: URL) -> MeetingMetadata? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("meta.json")) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(MeetingMetadata.self, from: data)
+    }
+
+    /// Writes `meta.json` the way `MeetingStore.makeEncoder()` does (pretty,
+    /// sorted keys, unescaped slashes, snake_case) — atomically. A failure is
+    /// logged: the row then lists as a recovered "Recording · …" one, and a
+    /// transcription rebuilds the metadata (the context is lost).
+    private func writeMetadata(_ metadata: MeetingMetadata, in dir: URL) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        do {
+            try encoder.encode(metadata).write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+        } catch {
+            log.error("meta.json write failed in \(dir.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Creates the per-meeting folder that audio is captured into and that the

@@ -314,7 +314,7 @@ final class MeetingDetectionController: ObservableObject {
             case .start:
                 prompt = PillPrompt(
                     id: offer.id,
-                    text: MeetingOfferText.offer(for: offer.source, calendarTitle: currentCalendarTitle()),
+                    text: MeetingOfferText.offer(for: offer.source, calendarTitle: currentCalendarTitle(for: offer.source)),
                     symbolName: "person.2.wave.2.fill", tint: .record,
                     primary: .meeting(.acceptOffer(id: offer.id)),
                     // The display NAME: the pill words the button itself
@@ -392,28 +392,40 @@ final class MeetingDetectionController: ObservableObject {
 
     /// The meeting's app / service / window title / mic seconds (§3.2.6):
     /// the longest holder (≥ 20 s), else the linked source. The origin and
-    /// the calendar are `RecordingController`'s (Task 15).
+    /// the calendar are `RecordingController`'s, which reads this at stop,
+    /// before the detector hears the meeting end.
     func context(startedAt: Date, stoppedAt: Date) -> MeetingContext {
         var context = MeetingContext()
         guard let primary = detector.meetingSource(at: stoppedAt) else { return context }
         let source = primary.source
         context.appName = source.appName
         context.appBundleId = source.appBundleId
-        switch source.sourceClass {
-        case .callApp, .chatApp: context.service = source.name
-        case .browserCall: context.service = source.key.hasPrefix("site:") ? source.name : nil
-        case .browser, .otherApp: context.service = nil
-        }
+        context.service = Self.service(of: source)
         context.windowTitle = source.windowTitle ?? lastTitles[source.appBundleId]
         context.micSeconds = primary.micSeconds.rounded()
         return context
     }
 
-    /// The title of the calendar event on now, for the offer's text — only
-    /// with calendar access already granted, never a prompt. Task 15 fills it
-    /// in (`CalendarLookup.candidates(around:)` → `CalendarEventMatcher.best`);
-    /// until then an offer names the app.
-    private func currentCalendarTitle() -> String? {
-        nil   // Task 15
+    /// The service a source names — a call or chat app, or a browser call on
+    /// a known site — else nil (a browser or an unknown app names none).
+    private static func service(of source: MeetingSource) -> String? {
+        switch source.sourceClass {
+        case .callApp, .chatApp: source.name
+        case .browserCall: source.key.hasPrefix("site:") ? source.name : nil
+        case .browser, .otherApp: nil
+        }
+    }
+
+    /// The title of the calendar event on now for an offer on `source`, for
+    /// its text ("“Weekly sync” on Zoom — record it?") — only with calendar
+    /// access already granted: no EventKit call otherwise, never a prompt.
+    /// The same matcher as the meeting's own naming at stop, with the source's
+    /// service as the link hint. Never logged.
+    private func currentCalendarTitle(for source: MeetingSource) -> String? {
+        guard RecordingController.shared?.calendarAuthorized == true else { return nil }
+        let now = Date()
+        return CalendarLookup.candidates(around: now).flatMap {
+            CalendarEventMatcher.best($0, at: now, serviceId: Self.service(of: source))?.title
+        }
     }
 }
