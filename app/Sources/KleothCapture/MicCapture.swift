@@ -192,6 +192,7 @@ public final class MicCapture {
             tapFormat = nil
         }
         engine.stop()
+        level.reset()   // the bar drops while the tap is reinstalled (as MicrophoneSource does)
         guard format.channelCount > 0, format.sampleRate > 0,
               let writer = TapWriter(file: file, sourceFormat: format, bufferSize: Self.tapBufferSize) else {
             releaseEngine()   // no input left; don't keep the device pinned
