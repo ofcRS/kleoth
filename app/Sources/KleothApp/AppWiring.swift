@@ -78,6 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // current Screen Recording grant.
         MainActor.assumeIsolated { ScreenRecordingController.shared?.startIfNeeded() }
 
+        // Meeting covers: sweep temp files a kill left in meeting folders.
+        MainActor.assumeIsolated { CoverController.shared?.sweepTemporaryFilesAtLaunch() }
+
         // Neither Accessibility trust nor Screen Recording has a change
         // notification: re-check whenever the user comes back from System
         // Settings, so a fresh grant installs the monitors without a relaunch

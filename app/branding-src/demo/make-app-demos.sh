@@ -3,8 +3,11 @@
 #
 #   bash app/branding-src/demo/make-app-demos.sh [data-dir]
 #     → docs/assets/demo-meeting.gif, demo-viewer.gif, screenshot-detail.png
+#   KLEOTH_DEMO_FRAMES=<dir> bash app/branding-src/demo/make-app-demos.sh <data-dir>
+#     → <dir>/frame-000N.png: the meeting page with a cover (verification, no GIF; nothing under docs/)
 #
-# data-dir is what make-demo-data.ts wrote (a stand-in for ~/Kleoth, marked .kleoth-demo); without
+# data-dir is what make-demo-data.ts wrote (a stand-in for ~/Kleoth, marked .kleoth-demo) — or a hand-made
+# folder of fictional copies carrying the same marker, like the covers-hero fixtures; without
 # one it runs make-demo-data.ts into a temp folder first. Nothing of yours is read or written:
 # the films come from a temporary copy of the app, KleothDemo.app, with its own bundle id
 # (dev.kleoth.demo: its own defaults, saved state and privacy grants — none) started with
@@ -13,6 +16,14 @@
 # in the background (open -g) and never takes focus; its playback is muted. Each film runs
 # ~20 s. Needs ffmpeg and bun.
 set -euo pipefail
+
+# Frames mode is chosen by KLEOTH_DEMO_FRAMES being SET. Set but empty is a mistake (an unset
+# variable in a caller's script, say): refuse it before anything is built, never fall through
+# to README mode, which overwrites the tracked GIFs and screenshot under docs/assets.
+if [ -n "${KLEOTH_DEMO_FRAMES+x}" ] && [ -z "${KLEOTH_DEMO_FRAMES}" ]; then
+  echo "KLEOTH_DEMO_FRAMES is set but empty: give it the folder for the frames (or unset it for the README demos)" >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
@@ -38,7 +49,8 @@ if [ -z "$DATA" ]; then
   bun app/branding-src/demo/make-demo-data.ts "$DATA"
 fi
 DATA="$(cd "$DATA" && pwd)"
-# Only a folder make-demo-data.ts made: never ~/Kleoth, whose meetings would land in the README.
+# Only a folder make-demo-data.ts made (or hand-made fictional fixtures, like the covers-hero ones, marked
+# the same way): never ~/Kleoth, whose meetings would land in the README.
 [ -f "$DATA/.kleoth-demo" ] || { echo "$DATA was not made by make-demo-data.ts (no .kleoth-demo)" >&2; exit 1; }
 
 # --- KleothDemo.app: the app under another identity, with nothing it could ask for ---
@@ -74,6 +86,20 @@ encode() { # <film dir> <out.gif>
     -vf "fps=15,split[a][b];[a]palettegen=max_colors=192:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
     "$2"
 }
+
+# Verification frames only (plan 2026-09-25): KLEOTH_DEMO_FRAMES=<dir> films the
+# `cover` script into <dir> as PNGs and stops — nothing under docs/ is touched.
+# (It still needs ffmpeg: the check above runs first.)
+if [ -n "${KLEOTH_DEMO_FRAMES+x}" ]; then
+  mkdir -p "$KLEOTH_DEMO_FRAMES"
+  # Absolute, as -KleothDemoFilm requires (a relative one is from the repo root, like data-dir).
+  FRAMES="$(cd "$KLEOTH_DEMO_FRAMES" && pwd)"
+  # Only the director's own files from an earlier run: a stale frames.txt would hide a failed film.
+  rm -f "$FRAMES"/frame-*.png "$FRAMES/frames.txt" "$FRAMES/director.log"
+  film cover "$FRAMES"
+  ls -1 "$FRAMES"/frame-*.png
+  exit 0
+fi
 
 film meeting "$WORK/meeting"
 film viewer "$WORK/viewer"

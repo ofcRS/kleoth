@@ -11,8 +11,8 @@ import os
 /// A cover is decoration, so this controller never touches the meeting's own
 /// state: it never marks a meeting as processing (rename, re-transcribe,
 /// Remove Transcription and delete stay available), writes no status line and
-/// posts no notification. A failure shows only on the cover's tile, from
-/// `failures`, which is memory only.
+/// posts no notification. A failure shows only on the meeting page's cover
+/// chip and at the top of the cover menu, from `failures`, which is memory only.
 ///
 /// Two queues, one per kind of cost:
 /// - a local-server cover joins `RecordingController`'s pipeline queue,
@@ -30,10 +30,18 @@ import os
 final class CoverController: ObservableObject {
     private(set) static var shared: CoverController?
 
-    /// The current engine; nil = Off, and views hide every cover surface.
+    /// The current engine; nil = Off: nothing can be drawn, and views hide
+    /// every cover surface but the pictures a demo launch shows (`showsCovers`).
     @Published private(set) var engine: CoverEngine?
+    /// Whether History shows any cover surface: an engine is picked, or this
+    /// is a demo launch. A demo launch keeps Covers Off (`AppConfig` forces
+    /// it) so nothing can be drawn — `enqueue` needs an engine and
+    /// `AppConfig.makeSceneWriter()` throws — but the pictures its data folder
+    /// holds are shown, so the films can show the page as it looks with them.
+    var showsCovers: Bool { engine != nil || DemoMode.isOn }
     /// Standardized meeting paths with a cover job queued or running — the
-    /// tile's spinner. Not `processingPaths`: a cover never blocks the meeting.
+    /// spinner on the row tile, the page chip and the band. Not
+    /// `processingPaths`: a cover never blocks the meeting.
     @Published private(set) var busyPaths: Set<String> = []
     /// Standardized meeting path → the §5 line ("Couldn't draw a cover — …").
     /// Memory only: a relaunch forgets every failure, which is the point — a
@@ -74,6 +82,36 @@ final class CoverController: ObservableObject {
         engine = AppConfig.settings().coverSettings.engine
     }
 
+    // MARK: - Launch
+
+    /// Removes stale `.cover-*.tmp` files (a kill mid-install leaves one; design
+    /// §10) from every meeting folder, once, off the main actor. Called from
+    /// `AppDelegate.applicationDidFinishLaunching`, so a demo launch — which
+    /// has no `AppDelegate` — never deletes anything. Files younger than
+    /// `CoverStore.temporaryFileMaxAge` stay: `kleoth illustrate` may be
+    /// drawing into that folder right now. Only `meeting-*` folders are
+    /// visited: a cover is only ever installed in one.
+    func sweepTemporaryFilesAtLaunch() {
+        let outputDir = AppConfig.settings().outputDir
+        let store = self.store
+        Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            guard let folders = try? fm.contentsOfDirectory(
+                at: outputDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            ) else { return }
+            var removed = 0
+            for folder in folders
+            where folder.lastPathComponent.hasPrefix("meeting-")
+                && (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                removed += store.sweepTemporaryFiles(in: folder).count
+            }
+            if removed > 0 {
+                Logger(subsystem: "dev.kleoth", category: "Covers")
+                    .notice("swept \(removed, privacy: .public) stale cover temp files")
+            }
+        }
+    }
+
     // MARK: - Drawing
 
     /// The automatic hook, called by `RecordingController` right after a
@@ -101,6 +139,8 @@ final class CoverController: ObservableObject {
     /// `removed`, so no cover is drawn automatically again (§3.5). Runs
     /// inline: two file moves are not worth a queue.
     func remove(_ meeting: RecentMeeting) {
+        // No engine = Covers Off, which a demo launch forces: its data folder is never written.
+        guard engine != nil else { return }
         let dir = meeting.directory
         let path = key(dir)
         do {
@@ -219,12 +259,13 @@ final class CoverController: ObservableObject {
     }
 
     /// Resolves the scene writer and the image engine, then draws. Every
-    /// failure becomes the tile's line through `fail(_:in:error:)`; the copy
-    /// is §5's, from `CoverDrawing.message(for:engine:)`, except the one line
-    /// that names no engine because no scene could be written at all.
+    /// failure becomes the meeting's cover line (the page chip and the menu)
+    /// through `fail(_:in:error:)`; the copy is §5's, from
+    /// `CoverDrawing.message(for:engine:)`, except the one line that names no
+    /// engine because no scene could be written at all.
     private func perform(dir: URL, style: CoverStyleChoice, engine: CoverEngine) async {
         // Cancelled before it started (Covers → Off right after `runJob`
-        // made it): leave the tile's line to whichever job is current.
+        // made it): leave the failure line to whichever job is current.
         guard !Task.isCancelled else { return }
         failures[key(dir)] = nil
 
@@ -259,7 +300,7 @@ final class CoverController: ObservableObject {
             // while the packages leave `NonisolatedNonsendingByDefault` off.)
             let outcome = try await drawing.draw(request)
             // Written even when cancelled meanwhile: the files changed, so
-            // the list and the tile must say so.
+            // the list and the page must say so.
             revision &+= 1
             RecordingController.shared?.coverChanged(in: dir)
             switch outcome {
@@ -274,9 +315,9 @@ final class CoverController: ObservableObject {
         }
     }
 
-    /// Pins `line` on `dir`'s tile and logs `error` — unless the job was
-    /// cancelled (Covers → Off: §5 shows nothing, and a stale line must not
-    /// land on a job queued after it) or the meeting is gone (deleted
+    /// Pins `line` on `dir`'s cover chip and menu and logs `error` — unless
+    /// the job was cancelled (Covers → Off: §5 shows nothing, and a stale line
+    /// must not land on a job queued after it) or the meeting is gone (deleted
     /// mid-draw: "a deleted meeting shows nothing", and `forget` has already
     /// dropped its line). The log names the error's type `.public`, so
     /// `log stream` shows a reason class, and keeps the §5 line and the full

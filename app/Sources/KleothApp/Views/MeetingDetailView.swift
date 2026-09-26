@@ -1,10 +1,12 @@
 import SwiftUI
 import AppKit
+import QuickLook
 import KleothCore
 
-/// Detail pane for a single meeting: a metadata + cost header card, the rendered
-/// summary + transcript, and toolbar actions (play audio, reveal in Finder, copy
-/// the summary or file paths, rename speakers, delete).
+/// Detail pane for a single meeting: the cover across the top, the title and
+/// TL;DR, the chip row, the audio player, the rendered summary + transcript in
+/// one scroll, and toolbar actions (reveal in Finder, copy the summary or file
+/// paths, rename speakers, transcribe with the other engine, delete).
 struct MeetingDetailView: View {
     @EnvironmentObject private var controller: RecordingController
     @EnvironmentObject private var covers: CoverController
@@ -33,64 +35,54 @@ struct MeetingDetailView: View {
     /// archived `variants/<tier>/` sets. More than one turns the tier badge into
     /// a switcher menu; refreshed by `reload()` (i.e. with `contentRevision`).
     @State private var availableTiers: [String] = []
+    /// The cover to show full size in the Quick Look panel; set by a click on
+    /// the band (`MeetingCoverBand`), cleared by the panel closing, by the
+    /// picture going away (Remove Cover while the panel is open), and by the
+    /// picture changing under the same URL (New Cover).
+    @State private var previewURL: URL?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
-            headerCard
-
-            if let audio = audioURL {
-                MeetingAudioPlayer(url: audio)
-            }
-
-            // Live progress while THIS (already-transcribed) meeting is being
-            // upgraded with ElevenLabs Scribe or summarized: a determinate bar
-            // during the audio upload, indeterminate while Scribe works server-side.
-            // Keyed to this meeting's folder — other meetings processing in the
-            // background don't banner here.
-            if controller.isProcessingMeeting(meeting.directory) && !isUnprocessed {
-                transcriptionProgressBanner
-            }
-
-            // The last failed run's error, pinned to THIS meeting — visible from
-            // the History window, where the popover's status line never is.
-            // Hidden while a retry is queued/running (starting one clears it).
-            if !controller.isProcessingMeeting(meeting.directory),
-               let failure = controller.meetingError(for: meeting.directory) {
-                meetingErrorCard(failure)
-            }
-
-            if isUnprocessed {
-                unprocessedState
-            } else if let loadError {
-                ContentUnavailableCompat(
-                    title: "Could not load meeting",
-                    systemImage: "exclamationmark.triangle",
-                    message: loadError
-                )
-            } else if !fallbackMarkdown.isEmpty {
-                // Rare error path: the structured summary couldn't be loaded, but a
-                // pre-rendered summary.md exists on disk — show it as plain text.
-                ScrollView {
-                    Text(fallbackMarkdown)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, KleothMetrics.spacingXS)
+        // The pane's width drives the band's height (`CoverHeroGeometry`); the
+        // reader sits at the page level, never inside the scroll content.
+        GeometryReader { geometry in
+            // One scroll for every state of the page: the band, the title
+            // block, the player and banners, then the content — so they move
+            // together, and the band can lag the page. One tree, too: the
+            // player keeps its identity (and its playback) when a meeting
+            // finishes transcribing, loses its transcript or restores a
+            // variant. At rest the band's top is `.scrollView` minY 0: the
+            // toolbar's top inset is outside that space (probed on macOS 26,
+            // plan 2026-09-25 Task 6 report, A.5), so the band starts under
+            // the toolbar and is not stretched.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    hero(paneWidth: geometry.size.width)
+                    VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
+                        pageChrome
+                        pageContent
+                    }
+                    .padding([.horizontal, .bottom])
                 }
-                .kleothSoftScrollEdge()
-            } else {
-                ScrollView {
-                    MeetingSummaryView(summary: summary, transcript: transcript)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, KleothMetrics.spacingXS)
-                }
-                .kleothSoftScrollEdge()
+                // The unprocessed and load-error states (plan 2026-09-25
+                // `## Design` 7) centre in the height the header leaves
+                // (`maxHeight: .infinity`) when the page fits, and the page
+                // scrolls when it doesn't: a reverted meeting keeps its cover
+                // (§3.5), and a band up to 400 pt tall above "Not transcribed
+                // yet" would otherwise push the Transcribe buttons below the
+                // bottom of a default-size window.
+                .frame(minHeight: centresContent ? geometry.size.height : nil, alignment: .top)
             }
+            .kleothSoftScrollEdge()
         }
-        .padding()
         .frame(minWidth: 440, minHeight: 320)
         .navigationTitle(meeting.title)
         .toolbar { toolbarContent }
+        .quickLookPreview($previewURL)
+        // Remove Cover (or a Trash move from Finder) while the panel is open:
+        // the URL now points into the Trash. New Cover keeps the URL but
+        // changes the picture. Either way, close the panel.
+        .onChange(of: meeting.coverImageURL) { _, _ in previewURL = nil }
+        .onChange(of: meeting.coverModifiedAt) { _, _ in previewURL = nil }
         .onAppear(perform: reload)
         // Reload from disk when this meeting's content changes in place (speaker
         // rename, re-transcribe, re-summarize). The detail's view identity is
@@ -121,34 +113,103 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// Whether the page's content is a centred state that fills the pane.
+    private var centresContent: Bool { isUnprocessed || loadError != nil }
+
+    /// What the page shows under the header and its chrome: the "Not
+    /// transcribed yet" state, the load error, the rare plain-text fallback,
+    /// or the rendered summary + transcript.
+    @ViewBuilder
+    private var pageContent: some View {
+        if isUnprocessed {
+            unprocessedState
+        } else if let loadError {
+            ContentUnavailableCompat(
+                title: "Could not load meeting",
+                systemImage: "exclamationmark.triangle",
+                message: loadError
+            )
+        } else if !fallbackMarkdown.isEmpty {
+            // Rare error path: the structured summary couldn't be loaded, but
+            // a pre-rendered summary.md exists on disk — show it as plain text.
+            Text(fallbackMarkdown)
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            MeetingSummaryView(summary: summary, transcript: transcript, showsTLDR: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// What the page shows between the header and its content: the audio
+    /// player, the in-flight banner and the last failure's card — the same
+    /// three views as before, now scroll content.
+    @ViewBuilder
+    private var pageChrome: some View {
+        if let audio = audioURL {
+            MeetingAudioPlayer(url: audio)
+        }
+        // Live progress while THIS (already-transcribed) meeting is being
+        // upgraded with ElevenLabs Scribe or summarized: a determinate bar
+        // during the audio upload, indeterminate while Scribe works server-side.
+        // Keyed to this meeting's folder — other meetings processing in the
+        // background don't banner here. The unprocessed state shows its own spinner.
+        if controller.isProcessingMeeting(meeting.directory) && !isUnprocessed {
+            transcriptionProgressBanner
+        }
+        // The last failed run's error, pinned to THIS meeting — visible from
+        // the History window, where the popover's status line never is.
+        // Hidden while a retry is queued/running (starting one clears it).
+        if !controller.isProcessingMeeting(meeting.directory),
+           let failure = controller.meetingError(for: meeting.directory) {
+            meetingErrorCard(failure)
+        }
+    }
+
     // MARK: - Header
 
-    /// Metadata header for the meeting, in a Kleoth content card: the prominent
-    /// title and a wrapping row of metadata chips (date · time, duration, model,
-    /// color-coded tier badge, and a "No summary yet" hint — with a Summarize
-    /// button on a transcribed meeting). With Covers on, the 112 pt cover tile
-    /// and its menu sit on the trailing side. Deliberately money-free — per-meeting
-    /// costs stay in `meta.json`, and account usage lives in Settings → Usage.
-    private var headerCard: some View {
-        HStack(alignment: .top, spacing: KleothMetrics.spacingL) {
-            VStack(alignment: .leading, spacing: KleothMetrics.spacingM) {
-                Text(meeting.title)
-                    .font(.title2.weight(.semibold))
+    /// The page's header (plan 2026-09-25 `## Design` 1–2, 6): the cover across
+    /// the full width when the meeting has one and covers are shown, then the
+    /// title, the TL;DR as the headline, and the wrapping chip row — on the page
+    /// background, no card. Deliberately money-free — per-meeting costs stay in
+    /// `meta.json`, and account usage lives in Settings → Usage.
+    @ViewBuilder
+    private func hero(paneWidth: CGFloat) -> some View {
+        // `summary` is this view's loaded state, not the list's `hasSummary`:
+        // a summary that just landed enables Draw Cover on the same
+        // `contentRevision` reload that shows it.
+        if covers.showsCovers, let picture = meeting.coverImageURL {
+            MeetingCoverBand(
+                meeting: meeting, picture: picture, width: paneWidth, hasSummary: summary != nil,
+                previewURL: $previewURL
+            )
+        }
+        VStack(alignment: .leading, spacing: KleothMetrics.spacingS) {
+            Text(meeting.title)
+                .font(.title.weight(.semibold))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let headline {
+                Text(headline)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                metaChipRow
             }
-            if covers.engine != nil {
-                Spacer(minLength: 0)
-                // `summary` is this view's loaded state, not the list's
-                // `hasSummary`: a summary that just landed enables Draw Cover
-                // on the same `contentRevision` reload that shows it.
-                MeetingCoverMenu(meeting: meeting, hasSummary: summary != nil, size: 112)
-            }
+            metaChipRow
+                .padding(.top, KleothMetrics.spacingXS)
         }
-        .kleothCard()
+        .padding(.horizontal)
+        .padding(.top, KleothMetrics.spacingL)
+        .padding(.bottom, KleothMetrics.spacingM)
+    }
+
+    /// The TL;DR, when the summary has one: the headline under the title.
+    private var headline: String? {
+        guard let tldr = summary?.tldr.trimmingCharacters(in: .whitespacesAndNewlines), !tldr.isEmpty else { return nil }
+        return tldr
     }
 
     /// The wrapping row of metadata chips that sits under the title.
@@ -184,6 +245,11 @@ struct MeetingDetailView: View {
                 if transcript != nil {
                     summarizeButton
                 }
+            }
+            // The cover's control when there is no picture (the band has its
+            // own menu): Draw Cover / No cover / Cover failed / a spinner.
+            if covers.showsCovers, meeting.coverImageURL == nil {
+                MeetingCoverChip(meeting: meeting, hasSummary: summary != nil)
             }
         }
     }

@@ -160,6 +160,72 @@ final class RecordingTrash: @unchecked Sendable {
         #expect(names == ["cover.jpg"])
     }
 
+    // MARK: - Temp files
+
+    private func age(_ name: String, by seconds: TimeInterval, in dir: URL) throws {
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-seconds)],
+            ofItemAtPath: dir.appendingPathComponent(name).path
+        )
+    }
+
+    /// A kill between `install`'s temp write and its rename leaves
+    /// `.cover-<uuid>.tmp` behind (design §10, known gap). The sweep takes the
+    /// stale ones; a young one may be a draw in flight (the CLI's while the app
+    /// launches), so it stays; nothing else in the folder is touched.
+    @Test func sweepRemovesOnlyStaleTempFiles() throws {
+        let dir = try makeMeetingDir()
+        defer { removeRoot(of: dir) }
+        try write("x", ".cover-0F3A6A3E-1F2B-4C5D-8E9F-0A1B2C3D4E5F.tmp", in: dir)
+        try age(".cover-0F3A6A3E-1F2B-4C5D-8E9F-0A1B2C3D4E5F.tmp", by: 2 * 3_600, in: dir)
+        try write("x", ".cover-11111111-2222-3333-4444-555555555555.tmp", in: dir)   // fresh
+        try write("jpg", "cover.jpg", in: dir)
+        try write("notes", ".cover-notes", in: dir)                                    // not a temp file
+
+        let removed = store.sweepTemporaryFiles(in: dir)
+
+        #expect(removed == [dir.appendingPathComponent(".cover-0F3A6A3E-1F2B-4C5D-8E9F-0A1B2C3D4E5F.tmp")])
+        #expect(!exists(".cover-0F3A6A3E-1F2B-4C5D-8E9F-0A1B2C3D4E5F.tmp", in: dir))
+        #expect(exists(".cover-11111111-2222-3333-4444-555555555555.tmp", in: dir))
+        #expect(exists("cover.jpg", in: dir))
+        #expect(exists(".cover-notes", in: dir))
+
+        // A missing folder sweeps nothing and throws nothing.
+        let gone = dir.deletingLastPathComponent().appendingPathComponent("meeting-gone", isDirectory: true)
+        #expect(store.sweepTemporaryFiles(in: gone).isEmpty)
+    }
+
+    /// `install` only ever writes a regular file, so anything else with the
+    /// temp name is the user's: a stale directory called `.cover-x.tmp` (and
+    /// what is in it) stays, however old.
+    @Test func sweepLeavesAStaleDirectoryWithTheTempName() throws {
+        let dir = try makeMeetingDir()
+        defer { removeRoot(of: dir) }
+        let folder = dir.appendingPathComponent(".cover-x.tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try write("keep", "inside.txt", in: folder)
+        try age(".cover-x.tmp", by: 2 * 3_600, in: dir)
+
+        let removed = store.sweepTemporaryFiles(in: dir)
+
+        #expect(removed.isEmpty)
+        #expect(exists(".cover-x.tmp", in: dir))
+        #expect(exists("inside.txt", in: folder))
+    }
+
+    @Test func installSweepsItsFolderFirst() throws {
+        let dir = try makeMeetingDir()
+        defer { removeRoot(of: dir) }
+        try write("x", ".cover-0F3A6A3E-1F2B-4C5D-8E9F-0A1B2C3D4E5F.tmp", in: dir)
+        try age(".cover-0F3A6A3E-1F2B-4C5D-8E9F-0A1B2C3D4E5F.tmp", by: 2 * 3_600, in: dir)
+        let trash = RecordingTrash()
+
+        try store.install(jpeg: Data("new".utf8), record: drawnRecord(), in: dir, trash: { try trash($0) })
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+        #expect(names == ["cover.jpg", "cover.json"])
+    }
+
     // MARK: - Remove
 
     @Test func removeTrashesThePictureAndWritesRemoved() throws {

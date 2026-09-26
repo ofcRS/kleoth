@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (677 tests)
+swift build && swift test                        # core + CLI (688 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -67,7 +67,7 @@ KeyboardShortcuts, WhisperKit 0.18)
   `DictationController`, `FocusedTextReader` (the only code that reads another app's text),
   `ScreenRecordingController`, `PillCoordinator` (single face in front of the
   pill), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
-  Meetings | Dictations | Recordings scopes, `MeetingCoverTile`, SettingsView = flat `HStack` sidebar over
+  Meetings | Dictations | Recordings scopes, `MeetingCoverTile`/`MeetingCoverBand`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
   No test target.
 - Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`.
@@ -182,7 +182,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   failure (HTTP engines only); budgets: scene 60 s (never retried), image local 300 / Codex 240 / OpenRouter
   90 s. Cloud jobs run on `CoverController`'s own serial tail, local ones via `enqueuePipelineJob`; a cover
   never marks a meeting processing. Money only in Settings → Usage (the covers row sums `cover.json` `cost`).
-  Design: `docs/plans/2026-09-24-meeting-illustrations.md`.
+  Presentation (2026-09-25): the meeting page is one scroll (player included) that opens with the cover full width
+  (`CoverHeroGeometry`: width ÷ 2 clamped 200–400 pt, parallax 0.35 with 80 pt of hidden reveal, overscroll
+  stretch, none under Reduce Motion; `visualEffect` + `.scrollView`, macOS 14), title + TL;DR under it, Quick Look
+  on click, the menu on right-click / `…` or a header chip without a picture; rows 56 pt only with a picture or a
+  job; a demo launch shows covers (`showsCovers`) and draws none. Design: `docs/plans/2026-09-24-meeting-illustrations.md`
+  (§10 addendum for the full-width cover).
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -197,6 +202,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Off-main audio work: `Recorder.combine`, `ChannelAudio.mixToMono` take seconds — `Task.detached`.
 - `CoverDrawing.draw` runs off the main actor as a nonisolated async call — never wrap it in `Task.detached`
   (cancellation would not propagate). Holds while `NonisolatedNonsendingByDefault` stays off.
+- The meeting page's `NSScrollView` runs under the toolbar (`contentInsets.top` 52 pt on macOS 26): at rest its
+  clip sits at y = -inset, so AppKit scroll offsets (`DemoDirector`) add the inset back; SwiftUI's `.scrollView`
+  minY is already 0 at rest (probed on 26 only).
 - `vDSP_measqv` is the MEAN of squares; `sqrt` of it is the RMS. Not a bug.
 - `NSEvent.keyCode`/`characters` on a mouse event raise and AppKit swallows the exception WITH the
   event (a dead click, no log). Check `event.type` first in any monitor matching both.
@@ -253,10 +261,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   "Before you record" window, meeting covers (opt-in), the secure-input holder named, macOS 15 first-launch copy.
   The user verified hands-free and dictation retry in daily use and waived the other manual checklists
   (providers, pill menu, screen recording, recordings viewer, summary §6) on 2026-09-25.
-- Covers, next (the user, 2026-09-25): keep the cute animals (even more abstract is welcome); the tile is too small
-  to notice and can't be opened full size. Wanted: a full-width cover at the top of the meeting page, title and
-  headline under it, parallax on scroll; try a few patterns. Small fixes with it: the scene prompt should avoid
-  photos and picture frames; `cover.json` escapes `/`; `.cover-*.tmp` is never swept.
+- Covers hero (2026-09-25, unreleased; CHANGELOG `[Unreleased]`): full-width band + parallax + Quick Look + 56 pt
+  rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
+  before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).
+  Not yet human-verified: the Quick Look click, Reduce Motion, the rubber band, a window resize, "Show scroll bars:
+  Always", the chip states with Covers on, macOS 14–15. Follow-ups: landscape covers (needs a paid look test), a
+  bottom-pinned mini-player, a cover in the README demo data.
 - Context-aware dictation (merged for 0.5.1; design `docs/plans/2026-09-24-dictation-context.md`): the field's
   selection + 1,500/500 chars around the cursor go to OpenRouter/Claude Code with the words; a selection merges in
   place. The user dictates with it daily; the design §6 checklist (1–24) was not run item by item.
@@ -264,7 +274,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   .speechRuns` (word alignment, one entry per run of speech) and `TranscriptNormalizer` splits a `local-whisper`
   channel's turn where another channel spoke entirely inside the pause; Scribe grouping unchanged. Verified on
   fictional audio only (5/6 exact turn order); not yet on a real meeting or end to end in Russian.
-- Next, in order (for 0.5.1): the covers redesign; meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
+- Next, in order (for 0.5.1): meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand

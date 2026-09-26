@@ -130,8 +130,9 @@ enum AppConfig {
         // (`DictationDefaults.retiredPolishModels`).
         merged.dictationModel = DictationDefaults.migratingPolishModel(merged.dictationModel)
         // Demo mode: whatever `config.json` says, every folder is the demo
-        // folder and nothing starts on its own. Covers stay Off, so the films
-        // show History as it is without them and no cover is ever drawn.
+        // folder and nothing starts on its own. Covers stay Off, so no cover is
+        // ever drawn; `CoverController.showsCovers` still shows the pictures
+        // the folder holds.
         if DemoMode.isOn {
             merged.outputDir = DemoMode.outputDir
             merged.dictationEnabled = false

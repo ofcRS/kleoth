@@ -232,7 +232,7 @@ as summaries.
 ### 3.4 The picture
 
 The wording below is the look test's settled text (Lane 0, the user's verdict of 2026-09-25: prompt
-revision 3). It replaces this section's first draft in two places: the image template drops "generous
+revision 3; the scene prompt has since moved to revision 4, §10 addendum). It replaces this section's first draft in two places: the image template drops "generous
 margins" and adds the edge-to-edge sentence (a baked-in mat, card or border showed in 10 of 23 test images,
 and a matted picture reads as a pale square at 40 pt), and Sketch's washes now fill the square ("on warm
 off-white paper" drew a paper margin in 3 of 4 sketches).
@@ -248,8 +248,8 @@ off-white paper" drew a paper margin in 3 of 4 sketches).
   - Sketch: "friendly hand-drawn pencil sketch with light watercolour washes that fill the square, warm
     off-white paper tone."
   - Clay: "handmade clay-and-felt miniature diorama, stop-motion look, tactile textures, soft studio light."
-- **The scene prompt:** its current text is `CoverSceneWriter.systemPrompt` (revision 3). It is §3.3's rules
-  plus what the test images showed: leave out things that usually carry writing or numbers (clocks,
+- **The scene prompt:** its current text is `CoverSceneWriter.systemPrompt` (revision 4; the §10 addendum
+  quotes the two bullets it added to revision 3). Revision 3 is §3.3's rules plus what the test images showed: leave out things that usually carry writing or numbers (clocks,
   calendars, banners, flags, maps, tickets, boxes, books or packages with printed covers, app icons, buttons
   or menus); show the topic as a physical situation, never as software; show feelings through posture, never
   with question marks or other symbols; one close moment with at most two props against a simple backdrop; no
@@ -959,4 +959,127 @@ in §3.4 itself.
 - The covers Usage row sums the current `drawn` records: a replaced or removed cover, and a sensitive skip's
   scene call, drop out, so it can count less than was spent. It is computed when Settings opens and on Refresh.
 - A Codex run that hits its budget can leave its thread folder behind.
-- A kill in the millisecond between the temp file and the rename can leave a `.cover-<uuid>.tmp` in the folder.
+- A kill in the millisecond between the temp file and the rename can leave a `.cover-<uuid>.tmp` in the folder
+  until it is an hour old; then the next launch, or the next cover saved in that folder, removes it (addendum).
+
+**Addendum (2026-09-25): the full-width cover** — plan `.scratch/step1/2026-09-25-covers-hero-plan.md` (local).
+The user's verdict after a day with covers: the animals are the best part ("even more abstract" is welcome); the
+tile was too small to notice and could not be opened full size. Wanted: the cover full width at the top of the
+meeting page, the title and headline under it, parallax on scroll. Each deviation this brought from §3–§7, with
+its reason:
+
+*Meeting page (§3.5 "Detail header", §4.4)*
+
+- The 112 pt header tile is gone. The page opens with the cover across the detail pane's full width, cropped to
+  a 2:1 band: height = width ÷ 2, clamped to 200–400 pt (`CoverHeroGeometry`). Under it, on the page background
+  (no card): the title (`.title`, semibold), the TL;DR as its headline, then the chip row. The picture is drawn
+  band height + 2 × 80 pt tall and lags the page by 0.35 into that hidden 80 pt, so the slide never shows a gap;
+  pulled past the top, the band stretches about its bottom edge. Neither happens under Reduce Motion. Measured
+  with `visualEffect` + `.scrollView` (macOS 14), with no `GeometryReader` in the scroll content. Why this and not
+  a blurred ambient band or the title over the picture: the user asked for the picture itself full width, with
+  the text under it (the plan records both rejected patterns).
+- The band rests below the toolbar, not under it: the toolbar keeps the title legible, macOS 26's soft scroll
+  edge would fog the top of the art, and the crop already shows only the middle half of the square. On macOS 26
+  the band's `.scrollView` minY is 0 at rest although the page's `NSScrollView` has a 52 pt top inset (probed).
+- The band takes the width the scroll content offers (narrower with "Show scroll bars: Always"); only its height
+  follows the pane. The picture is decoded once, at the file's own size (a constant 2,048 px request), so a live
+  resize never decodes it again.
+- One scroll for every page state: the audio player, the progress banner and the failure card are scroll content
+  now (they were pinned above the summary), and "Not transcribed yet" and the load error scroll too, centred when
+  they fit. The plan kept those two states out of the scroll; but a reverted meeting keeps its cover, and a 400 pt
+  band would push the Transcribe buttons off a default-size window. One view tree also keeps the player playing
+  when a meeting finishes transcribing, loses its transcript or switches variant.
+- The TL;DR card is dropped on this page (`MeetingSummaryView.showsTLDR`): the headline is the TL;DR. Copy Summary
+  still includes it.
+- Quick Look is in (§7 had it out of scope): a click on the band shows the picture full size in the system panel
+  (`.quickLookPreview`; Esc closes it). The panel closes when the picture changes or goes (New Cover, Remove
+  Cover). `import QuickLook` autolinks `_QuickLook_SwiftUI`, which links QuickLookUI; no
+  Quartz link is needed.
+- The menu keeps its wording (`MeetingCoverMenuItems`); the items that change a cover now also need an engine
+  (a demo launch has none), behind three doors: the band's
+  right-click, a `…` button in its bottom-trailing corner, and, without a picture, a chip in the chip row:
+  "Draw Cover", "No cover" (skipped; its menu leads with "Skipped: the meeting looked personal"), "Cover failed"
+  (orange; its menu leads with the reason and Try Again), or a "Drawing cover…" spinner. A New Cover over a
+  picture keeps the old one and shows a "Drawing a new cover…" capsule by the `…` button, not a wash: a wash over
+  a 400 pt band is heavy. The band's tooltip is the scene, as before.
+- No chip without a summary: there is nothing to draw from, and the "No summary yet" pill already says so. §3.5's
+  disabled Draw Cover with the "Needs a summary" tooltip can no longer be reached. A running job still shows its
+  spinner chip.
+- No chip while Covers is Off, a demo launch included: nothing can be drawn there. The menu entries that change a
+  cover (Draw Cover, New Cover, Remove Cover, Try Again) are disabled with no engine, and `CoverController.remove`
+  returns without one; Show in Finder stays.
+- VoiceOver: the band is one button, "Meeting cover, show full size", with the click as its action; the chip says
+  its state as its value.
+
+*History (§3.5 "Rows")*
+
+- The tile is 56 pt, not 40, and only on rows with a picture or a running job; a row with neither has no tile.
+  At 56 pt the neutral lyre repeated down the list would be the loudest thing in the sidebar, and the art is what
+  should be noticed. The lyre stays under a first cover's spinner (and for an unreadable file).
+- A failure no longer dots the row's tile: the page's chip carries it.
+- The context menu's Draw Cover / Draw Covers for N Meetings still needs an engine, so a demo launch shows neither.
+
+*Scene prompt (§3.3, §3.4): revision 4*
+
+`CoverSceneWriter.systemPrompt` gains two bullets, verbatim (each one line in the prompt):
+
+> - No photos, photographs, picture frames, framed pictures, posters, paintings, portraits, mirrors, or screens
+>   showing a picture — a picture inside the picture invites faces and lettering, and often comes out blank.
+>   Never these words in the scene, even when the meeting is about them.
+> - Prefer the abstract to the literal: one physical metaphor for the main topic, built from the characters and
+>   their one or two props, rather than a re-staging of the conversation. Take the setting from the meeting's
+>   own world (a riverbank, a workshop, a garden, a kitchen, a hillside) and let the action carry the idea —
+>   something joined, balanced, mended, carried across, shared out, sorted, grown or set free. Invent it for this
+>   meeting; do not repeat a stock image. Never a meeting room, office, desk, conference table or laptop.
+
+- Why: one live run drew blank picture frames. "Never these words…" came after a dry run named photos because
+  the summary was about a photo upload queue. The metaphor bullet names kinds of action, not objects: a first
+  draft's example objects (stacked stones, a lantern, nests) came back in every dry-run scene.
+- Checked free with `kleoth illustrate --dry-run --provider claude-code` on three fictional fixture meetings,
+  before and after: no scene names a picture, a screen, a room or a desk, and the sensitive meeting stays
+  `skipped`. Still loose, as in revision 3: the prop cap and "no lighting words". The model still reaches for
+  nests and lanterns unprompted, and once drew a fictional product's name as a picture puzzle.
+- Unchanged: the characters, the sensitivity rule, the style rules, the schema and the "tiny thumbnail" line (the
+  row tile still needs it). The image prompt (§3.4) is unchanged.
+
+*Core (§4.1)*
+
+- `MeetingStore.makeEncoder()` writes `.withoutEscapingSlashes`, so `cover.json` no longer reads `google\/gemini…`.
+  It is the encoder of every meeting file and, through `DictationLogStore`, of the dictation day files; every
+  reader decodes both forms.
+- `CoverStore.sweepTemporaryFiles(in:now:maxAge:)` removes `.cover-*.tmp` files older than an hour (a younger one
+  may be a draw in flight, the CLI's or the app's). `install` sweeps its own folder first; the app sweeps every
+  `meeting-*` folder once at launch, off the main actor (`CoverController.sweepTemporaryFilesAtLaunch()`, called
+  from `AppDelegate`, so a demo launch never sweeps). This closes the last known gap above for files an hour old.
+- `CoverHeroGeometry` added: the band's rules as pure, tested math. Core tests: 664 → 675 (688 once main's on-device-turns tests merged in).
+
+*Demo mode (`docs/plans/2026-09-24-demo-mode.md`)*
+
+- `CoverController.showsCovers` (an engine is picked, or this is a demo launch) gates every surface that only
+  shows a cover. A demo launch keeps Covers Off, so it shows the pictures its folder holds and can draw or remove
+  none.
+- A `cover` director script films the page with a cover at rest, at 140 pt and at 320 pt, in light and dark, then
+  a page without one: seven stills, written by `make-app-demos.sh` when `KLEOTH_DEMO_FRAMES=<dir>` is set.
+  Scroll offsets are now measured from the page at rest (the toolbar inset added back): the one-scroll page
+  runs under the toolbar, and the `meeting` film's scroll stops need the same correction.
+
+*Manual checklist (§6)*
+
+- Item 11 now reads: click the band → Quick Look with the full square, Esc closes it; right-click and `…` open the
+  menu; a summarized meeting without a picture has the chip. Add: Reduce Motion (no slide, no stretch), the rubber
+  band at the top, a window resize, "Show scroll bars: Always", a History row at 56 pt.
+
+- The Settings → Meetings → Covers caption with no engine now reads "Draws one picture per meeting from its
+  summary, across the top of the meeting page." (§3.1 quoted "small picture … shown in History").
+- Only one header pattern was built (the full-width band); the ambient band and the overlaid poster were compared
+  on paper (plan `## Design`) and rejected. Another pattern is a follow-up if the band disappoints on screen.
+
+*Follow-ups, not built*
+
+- Landscape (16:9) covers: a paid look test (OpenRouter `aspect_ratio`, Codex `image_gen` sizes, and whether "one
+  close moment" survives the format), a change to `CoverImageFile.normalize` (it centre-crops to a square) and a
+  rule for the 56 pt row tile (crop or letterbox).
+- A bottom-pinned mini-player (`safeAreaInset(edge: .bottom)`), now that the player scrolls away with the page.
+- A cover in the README demo data and screenshot: `make-demo-data.ts` draws none, since that is a paid call.
+- The band's rest position on macOS 14–15: probed on macOS 26 only. If those report the toolbar inset inside
+  `.scrollView`, the band would rest slightly stretched (about 1.16 at a 330 pt band).
