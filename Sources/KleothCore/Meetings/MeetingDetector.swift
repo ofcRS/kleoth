@@ -64,6 +64,13 @@ public struct MeetingDetector: Sendable {
             (a.source.sourceClass.rank, a.startedAt, a.source.key, a.source.appBundleId)
                 < (b.source.sourceClass.rank, b.startedAt, b.source.key, b.source.appBundleId)
         }
+
+        /// A browser that has not named its call's site yet: `browser:` can
+        /// still become `webcall:` or `site:`, and `webcall:` can become
+        /// `site:` (`MeetingSource.make`). An app's key and a site's never change.
+        var canStillChangeKey: Bool {
+            (source.sourceClass == .browser || source.sourceClass == .browserCall) && source.windowTitle == nil
+        }
     }
 
     private struct Visible: Sendable {
@@ -285,20 +292,22 @@ public struct MeetingDetector: Sendable {
     }
 
     /// A session that could still be offered: held, not offered yet (or
-    /// offered and displaced / refused), not silenced, not "never", no older
-    /// than `maxOfferAge` — with offers enabled. A suppression, a cooldown or a
-    /// busy retry does not count against it: those lift while it is still
-    /// young. The host keeps re-reading titles and web-call assertions only
-    /// while this holds (or a meeting records), so its class can still go up
-    /// before the offer; an app holding the mic all day stops that after
-    /// `maxOfferAge`. False → true only through `handle`; with time, only
-    /// true → false.
+    /// offered and displaced / refused), not silenced, no older than
+    /// `maxOfferAge` — with offers enabled — and not "never", unless it is a
+    /// browser that can still move to a key the user never refused ("Never
+    /// for Chrome", then a tab joins a call: `webcall:` / `site:`). A
+    /// suppression, a cooldown or a busy retry does not count against it:
+    /// those lift while it is still young. The host keeps re-reading titles
+    /// and web-call assertions only while this holds (or a meeting records),
+    /// so its class can still go up before the offer; an app holding the mic
+    /// all day stops that after `maxOfferAge`. False → true only through
+    /// `handle`; with time, only true → false.
     public func hasOfferableSession(at now: Date) -> Bool {
         guard environment.offersEnabled else { return false }
         return sessions.values.contains { session in
             session.releasedAt == nil && !session.offered && !session.silenced
-                && !environment.ignoredKeys.contains(session.source.key)
                 && now.timeIntervalSince(session.startedAt) <= MeetingDetectionDefaults.maxOfferAge
+                && (!environment.ignoredKeys.contains(session.source.key) || session.canStillChangeKey)
         }
     }
 

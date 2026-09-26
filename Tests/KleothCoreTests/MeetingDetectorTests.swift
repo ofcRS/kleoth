@@ -457,6 +457,29 @@ import Foundation
         #expect(!ignoredZoom.hasOfferableSession(at: at(1)))                // "never" for it
     }
 
+    /// "Never for Chrome" (a `browser:` key) must not stop the re-resolve that
+    /// finds the call a tab joins later: the session can still move to a
+    /// `webcall:` / `site:` key the user never refused (Task 14 review I1).
+    /// A key the session can't leave (an app's, a named site's) ends it.
+    @Test func anIgnoredKeyCountsOnlyWhileTheBrowserSessionCanStillNameACall() throws {
+        func offerable(_ held: MeetingSource, ignoring key: String) -> Bool {
+            var d = MeetingDetector()
+            _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, ignoredKeys: [key]), at: t0))
+            _ = d.handle(.observed([held], at: at(0)))
+            return d.hasOfferableSession(at: at(1))
+        }
+        #expect(offerable(chrome, ignoring: chrome.key))           // browser: → webcall: / site: later
+        #expect(offerable(chromeCall, ignoring: chromeCall.key))   // webcall: → site: once a title names it
+        #expect(!offerable(meet, ignoring: meet.key))              // site: is as far as it goes
+        #expect(!offerable(zoom, ignoring: zoom.key))              // an app's key never changes
+
+        // …and the upgrade it waits for is offered.
+        var d = MeetingDetector()
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, ignoredKeys: [chrome.key]), at: t0))
+        #expect(run(&d, [chrome], from: 0, to: 70).isEmpty)
+        #expect(shownOffer(d.handle(.observed([chromeCall], at: at(71))))?.source == chromeCall)
+    }
+
     @Test func anOfferedOrAnsweredSessionIsNotOfferableUntilItComesBack() throws {
         var d = detector()
         let offer = try #require(shownOffer(run(&d, [zoom], from: 0, to: 5)))
