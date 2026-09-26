@@ -111,6 +111,11 @@ public final class RecordingController: ObservableObject {
     /// — `onChange` never fires when the same meeting is clicked twice, and
     /// "Show all" sets it to nil.
     @Published public var meetingsHistoryRequest: Int = 0
+
+    /// The running meeting's fixed start, or nil — mirrors `activeRecordingStartedAt`
+    /// for observers (the pill's meeting backdrop, phase 2's detector environment).
+    @Published public private(set) var recordingSince: Date?
+
     @Published public var consentAcknowledged: Bool = false
 
     /// Bumped by `start()` each time it refuses because the recording-consent
@@ -240,6 +245,26 @@ public final class RecordingController: ObservableObject {
     /// memory and contend for the ANE; a strict FIFO keeps exactly one engine
     /// alive while letting any number of meetings queue up behind it.
     private var pipelineQueueTail: Task<Void, Never>?
+
+    /// Capture observers (`MeetingCaptureEvent`), called on the main actor.
+    private var captureObservers: [@MainActor (MeetingCaptureEvent) -> Void] = []
+
+    func addCaptureObserver(_ observer: @escaping @MainActor (MeetingCaptureEvent) -> Void) {
+        captureObservers.append(observer)
+    }
+
+    private func notifyCapture(_ event: MeetingCaptureEvent) {
+        for observer in captureObservers { observer(event) }
+    }
+
+    /// The live meters, `.zero` between meetings (`Recorder.levels`). Reads
+    /// `recorderBox` afresh on every call, so a level poll never holds a
+    /// `Recorder` across ticks: `stop()` clears the box before its detached
+    /// finalize, and from then on this is `.zero`.
+    var meetingLevels: AudioLevels {
+        if #available(macOS 14.4, *), let recorder = recorderBox as? Recorder { return recorder.levels }
+        return .zero
+    }
 
     /// Finds each listed meeting's cover picture and summary
     /// (`loadRecentMeetings`) — the same checks `CoverController` draws by.
@@ -783,19 +808,23 @@ public final class RecordingController: ObservableObject {
     /// `consentRequest`, which brings up the "Before you record" window, so
     /// every start path — the hotkey, `kleoth://`, the intent, and any new one
     /// — gets a visible refusal without checking consent itself.
-    public func start() async {
+    ///
+    /// Returns what happened (`MeetingStartOutcome`) for the pill's bridge;
+    /// every older caller ignores it and reads the published state instead.
+    @discardableResult
+    public func start() async -> MeetingStartOutcome {
         // No `await` until `isRecording = true`: the consent window's double-click safety needs it.
-        guard !isRecording else { return }
+        guard !isRecording else { return .alreadyRecording }
 
         guard consentAcknowledged else {
             statusMessage = "Acknowledge the recording consent notice first."
             consentRequest &+= 1
-            return
+            return .needsConsent
         }
 
         guard #available(macOS 14.4, *) else {
             statusMessage = "Recording requires macOS 14.4 or later."
-            return
+            return .failed(statusMessage)
         }
 
         do {
@@ -803,17 +832,23 @@ public final class RecordingController: ObservableObject {
             let recorder = Recorder()
             recorder.inputDeviceId = AppConfig.settings().inputDeviceId
             try recorder.start(outputDir: dir)
+            let since = Date()
             recorderBox = recorder
             activeRecordingDir = dir
-            activeRecordingStartedAt = Date()
+            activeRecordingStartedAt = since
+            recordingSince = since
             isRecording = true
             statusMessage = "Recording…"
+            notifyCapture(.started(since: since, directory: dir))
+            return .started(since: since)
         } catch {
             recorderBox = nil
             activeRecordingDir = nil
             activeRecordingStartedAt = nil
+            recordingSince = nil
             isRecording = false
             statusMessage = "Could not start recording: \(error.localizedDescription)"
+            return .failed(error.localizedDescription)
         }
     }
 
@@ -831,11 +866,15 @@ public final class RecordingController: ObservableObject {
         }
 
         isRecording = false
+        // The meeting's length ends here, not after the seconds of finalize below.
+        let stoppedAt = Date()
 
         guard let recorder = recorderBox as? Recorder, let dir = activeRecordingDir else {
             statusMessage = "No active recording to stop."
             recorderBox = nil
             activeRecordingDir = nil
+            recordingSince = nil
+            notifyCapture(.stopFailed(message: statusMessage, directory: nil))
             return statusMessage
         }
 
@@ -846,12 +885,14 @@ public final class RecordingController: ObservableObject {
         recorderBox = nil
         activeRecordingDir = nil
         activeRecordingStartedAt = nil
+        recordingSince = nil
 
         // Mark the folder as processing *before* the scan: that's what flips
         // `loadRecentMeetings` from hiding it (active recording) to listing it
         // as an in-flight row with a spinner.
         statusMessage = "Finalizing recording…"
         markProcessing(dir)
+        notifyCapture(.finalizing(directory: dir))
 
         // Finalize capture entirely off the main actor: both stopping the audio
         // devices and — far heavier — decoding both sources and re-encoding the
@@ -877,8 +918,17 @@ public final class RecordingController: ObservableObject {
             reportMeetingError("Recording stopped with errors: \(error.localizedDescription)", in: dir)
             // Resurfaces the saved audio as an "Untranscribed" row.
             unmarkProcessing(dir)
+            notifyCapture(.stopFailed(message: error.localizedDescription, directory: dir))
             return statusMessage
         }
+
+        // Saved. No `await` from here to the guard below, so `transcribing` is
+        // the same `auto_transcribe` the guard reads.
+        notifyCapture(.saved(
+            directory: dir,
+            seconds: stoppedAt.timeIntervalSince(startedAt),
+            transcribing: settings.autoTranscribe
+        ))
 
         // Auto-transcribe is opt-in: with it off, the audio (including the
         // combined meeting.m4a built above, needed for playback) is saved and
@@ -1764,6 +1814,18 @@ public final class RecordingController: ObservableObject {
             log.notice("prewarmTranscriptionModel failed: \(String(describing: error), privacy: .public)")
         }
         modelDownloadProgress = nil
+    }
+
+    /// A click on the pill's "Meeting saved" confirmation: History on that
+    /// meeting. The popover's idiom (`selectedMeetingID` + the scope request);
+    /// `HistoryRouting.requestedScope` covers a window that is not open yet
+    /// (`onChange` never fires for a mount value — CLAUDE.md).
+    func openInHistory(directory: URL) {
+        loadRecentMeetings()
+        let key = directory.standardizedFileURL.path
+        selectedMeetingID = recentMeetings.first { $0.directory.standardizedFileURL.path == key }?.id
+        HistoryRouting.requestedScope = .meetings
+        meetingsHistoryRequest &+= 1
     }
 
     // MARK: - Recent meetings discovery
