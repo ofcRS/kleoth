@@ -1031,6 +1031,14 @@ public final class DictationPillController: DictationPillPresenting {
         // it is under a pointer that left long ago).
         model.apply(hovered: false)
         model.apply(pointer: nil)
+        // The peek goes with it (raw, not `setPeeking`, which would re-show
+        // `.idle`): "Hide for 1 hour" from the menu hides a peeking pill, and
+        // it must not come back an hour later with the dock out — reading
+        // `isInteracting` all along, which holds every call offer back.
+        peekTask?.cancel()
+        peekTask = nil
+        peeking = false
+        model.apply(peeking: false)
         pendingPhase = nil
         // A backdrop that rose while the panel faded out was only stored (the
         // old phase was still up); it takes over now, so a capture that

@@ -146,7 +146,6 @@ enum AppConfig {
             merged.autoTranscribe = false
             merged.coverSettings = CoverSettings()
             merged.meetingDetection = false      // no controller runs on a demo launch anyway
-
         }
         return merged
     }

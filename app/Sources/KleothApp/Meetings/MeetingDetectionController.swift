@@ -56,13 +56,21 @@ final class MeetingDetectionController: ObservableObject {
     /// lands after a stop + restart is dropped (the new run only reports a
     /// CHANGE, so a stale set would stand).
     private var monitorRun = 0
-    /// Bumped by every observation and by a monitor stop: only the newest
-    /// resolution is fed.
+    /// Bumped by every resolution started and by a monitor stop: only the
+    /// newest resolution is fed.
     private var resolveGeneration = 0
-    private var resolveTask: Task<Void, Never>?
     private var tickTask: Task<Void, Never>?
+    /// The mic clients the monitor last reported (it reports only CHANGES);
+    /// re-resolved every `pollWhileHeld` s while non-empty (`scheduleRefresh`).
+    private var heldClients: [MicClient] = []
+    /// The next re-resolution of `heldClients`, chained after each one.
+    private var refreshTask: Task<Void, Never>?
+    /// The source keys last logged, so the 3 s refresh logs only a change.
+    private var loggedKeys: String?
 
-    /// Titles per owner pid, reused for `titleCacheSeconds` (§4.4).
+    /// Titles per owner pid, reused for `titleCacheSeconds` (§4.4); expired
+    /// entries are dropped at every merge and all of it when the monitor
+    /// stops — titles that matched nothing are used for the match only.
     private var titleCache: [pid_t: CachedTitles] = [:]
     /// The matched window title per app bundle id seen during the current
     /// meeting — the context's fallback when the primary source carries none.
@@ -134,7 +142,8 @@ final class MeetingDetectionController: ObservableObject {
 
     private func syncMonitor() {
         guard started else { return }
-        if wantsMonitor, !monitorRunning {
+        if wantsMonitor {
+            guard !monitorRunning else { return }
             monitorRun += 1
             let run = monitorRun
             do {
@@ -153,12 +162,19 @@ final class MeetingDetectionController: ObservableObject {
                 unavailableReason = "Call detection isn't available: \(error.localizedDescription)"
                 log.error("mic activity monitor failed: \(String(describing: error), privacy: .public)")
             }
-        } else if !wantsMonitor, monitorRunning {
+        } else {
+            // A failure to start no longer matters once nothing wants the
+            // monitor; the next start tries again and says so again.
+            if unavailableReason != nil { unavailableReason = nil }
+            guard monitorRunning else { return }
             monitor.stop()
             monitorRunning = false
             resolveGeneration += 1
-            resolveTask?.cancel()
-            resolveTask = nil
+            refreshTask?.cancel()
+            refreshTask = nil
+            heldClients = []
+            titleCache = [:]
+            loggedKeys = nil
             log.notice("mic activity monitor stopped")
             // Nothing is watched now: every session is released, and expires
             // after its grace like any other.
@@ -219,18 +235,48 @@ final class MeetingDetectionController: ObservableObject {
         var hasWebCall = false
     }
 
+    /// The monitor's report: the full set of clients, on a change only.
     private func observed(_ clients: [MicClient], run: Int) {
         guard run == monitorRun, monitorRunning else { return }
-        resolveTask?.cancel()
+        heldClients = clients
+        startResolution(clients, run: run)
+    }
+
+    /// Resolves `clients` off the main actor: owners, assertions and titles —
+    /// AX can block up to 0.5 s per window. A newer resolution supersedes this
+    /// one without cancelling it (its titles still reach the cache); only the
+    /// newest is fed.
+    private func startResolution(_ clients: [MicClient], run: Int) {
+        refreshTask?.cancel()
+        refreshTask = nil
         resolveGeneration += 1
         let generation = resolveGeneration
         let cache = titleCache
-        resolveTask = Task.detached(priority: .utility) { [weak self] in
-            // Owners, assertions and titles off the main actor: AX can block
-            // up to 0.5 s per window.
+        Task.detached(priority: .utility) { [weak self] in
             let (holders, fresh) = Self.resolve(clients, cache: cache, now: Date())
-            guard !Task.isCancelled else { return }
-            await self?.sourcesResolved(holders, freshTitles: fresh, generation: generation)
+            await self?.sourcesResolved(holders, freshTitles: fresh, generation: generation, run: run)
+        }
+    }
+
+    /// While anything holds the mic, the same clients are resolved again every
+    /// `pollWhileHeld` s: a meeting title or a web-call assertion that appears
+    /// after the mic was taken (a lobby, then the call; a switch to the Meet
+    /// tab) moves the session up a class (§3.2.2, §3.2.4) and reaches the
+    /// context (§3.2.6). The monitor itself reports only a change of the SET,
+    /// which a call joined in the same Chrome audio service never is. Titles
+    /// come from the `titleCacheSeconds` cache, so a window is read at most
+    /// every 30 s. Chained after each resolution — a slow title read is never
+    /// cancelled by the next refresh, and refreshes can't pile up.
+    private func scheduleRefresh() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        guard monitorRunning, !heldClients.isEmpty else { return }
+        let run = monitorRun
+        refreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(MeetingDetectionDefaults.pollWhileHeld))
+            guard !Task.isCancelled, let self, run == self.monitorRun, self.monitorRunning,
+                  !self.heldClients.isEmpty else { return }
+            self.startResolution(self.heldClients, run: run)
         }
     }
 
@@ -267,13 +313,17 @@ final class MeetingDetectionController: ObservableObject {
         return (holders, fresh)
     }
 
-    private func sourcesResolved(_ holders: [String: Holder], freshTitles: [pid_t: CachedTitles], generation: Int) {
-        guard generation == resolveGeneration else { return }
+    private func sourcesResolved(
+        _ holders: [String: Holder], freshTitles: [pid_t: CachedTitles], generation: Int, run: Int
+    ) {
+        // A run the monitor has since stopped: nothing of it stays.
+        guard run == monitorRun, monitorRunning else { return }
         let now = Date()
-        titleCache.merge(freshTitles) { _, new in new }
-        if titleCache.count > 64 {
-            titleCache = titleCache.filter { now.timeIntervalSince($0.value.at) < MeetingDetectionDefaults.titleCacheSeconds }
-        }
+        // Even a superseded resolution's titles are kept: the next one reads
+        // them from the cache instead of asking AX again.
+        titleCache.merge(freshTitles) { old, new in new.at >= old.at ? new : old }
+        titleCache = titleCache.filter { now.timeIntervalSince($0.value.at) < MeetingDetectionDefaults.titleCacheSeconds }
+        guard generation == resolveGeneration else { return }
         var sources = Set<MeetingSource>()
         for (bundleId, holder) in holders {
             guard let source = MeetingSource.make(
@@ -284,8 +334,12 @@ final class MeetingDetectionController: ObservableObject {
             if recordingSince != nil, let title = source.windowTitle { lastTitles[bundleId] = title }
         }
         let keys = sources.map(\.key).sorted().joined(separator: ",")
-        log.info("mic held by \(sources.count, privacy: .public) source(s): \(keys, privacy: .public)")
+        if keys != loggedKeys {
+            loggedKeys = keys
+            log.info("mic held by \(sources.count, privacy: .public) source(s): \(keys, privacy: .public)")
+        }
         feed(.observed(sources, at: now))
+        scheduleRefresh()
     }
 
     // MARK: - The machine

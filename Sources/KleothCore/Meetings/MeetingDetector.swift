@@ -187,6 +187,10 @@ public struct MeetingDetector: Sendable {
             case (.start, .accepted):
                 pendingAcceptedApp = app
                 sessions[app]?.silenced = true
+                // The meeting it starts reaches the machine a turn later (the
+                // host's environment hop): no next offer in the same breath
+                // (Task 14 review M3).
+                retryAt = now.addingTimeInterval(MeetingDetectionDefaults.busyRetry)
             case (.start, .dismissed):
                 sessions[app]?.silenced = true
                 dismissedUntil[key] = now.addingTimeInterval(MeetingDetectionDefaults.dismissCooldown)
@@ -244,9 +248,10 @@ public struct MeetingDetector: Sendable {
     /// offer's deadline, a busy retry, a held session's dwell (no earlier than
     /// its cooldown or the retry; none while an offer is up or once the session
     /// is too old to offer), a released session's grace, the linked release's
-    /// stop grace (detection on). Nil when nothing is pending. After a `.tick`
-    /// at `now` it is never `<= now` — the host re-arms on it, so a past
-    /// instant would be a hot loop (`MeetingDetectorDeadlineTests`).
+    /// stop grace (detection on, no screen recording). Nil when nothing is
+    /// pending. After a `.tick` at `now` it is never `<= now` — the host
+    /// re-arms on it, so a past instant would be a hot loop
+    /// (`MeetingDetectorDeadlineTests`).
     public var nextDeadline: Date? {
         var candidates: [Date] = []
         if let visible { candidates.append(visible.deadline) }
@@ -269,7 +274,7 @@ public struct MeetingDetector: Sendable {
         }
         // Gated exactly as `evaluate` gates the suggestion, or detection-off
         // would leave a past stop-grace deadline here (a hot loop in the host).
-        if environment.meetingSince != nil, environment.offersEnabled,
+        if environment.meetingSince != nil, environment.offersEnabled, !environment.screenRecording,
            let releasedAt = linkedReleasedAt, stopOfferedForRelease != releasedAt {
             candidates.append(max(releasedAt.addingTimeInterval(MeetingDetectionDefaults.stopGrace), retryAt ?? .distantPast))
         }
@@ -373,8 +378,11 @@ public struct MeetingDetector: Sendable {
         // goes too, and is not repeated for the same release (review M-2).
         if !environment.offersEnabled { effects += withdrawVisible(kind: .stop) }
         // The stop suggestion (§3.2.5) — only with call detection on (the
-        // controller's ruling: detection off = no unasked prompts). The relink
-        // runs either way: it keeps the meeting's context right.
+        // controller's ruling: detection off = no unasked prompts), and not
+        // while a screen recording runs: the pill yields every prompt to the
+        // screen bar, so it would be refused every second for the whole
+        // recording (Task 14 review M1); it comes once that ends, if still
+        // due. The relink runs either way: it keeps the meeting's context right.
         if environment.meetingSince != nil, let linkedNow = linked, let releasedAt = linkedReleasedAt {
             let otherCall = sessions.values.filter {
                 $0.releasedAt == nil && $0.source.appBundleId != linkedNow.appBundleId
@@ -385,7 +393,8 @@ public struct MeetingDetector: Sendable {
                 linkedReleasedAt = nil
                 stopOfferedForRelease = nil
                 effects += withdrawVisible(kind: .stop)
-            } else if environment.offersEnabled, visible == nil, stopOfferedForRelease != releasedAt,
+            } else if environment.offersEnabled, !environment.screenRecording, visible == nil,
+                      stopOfferedForRelease != releasedAt,
                       now.timeIntervalSince(releasedAt) >= MeetingDetectionDefaults.stopGrace,
                       retryAt.map({ now >= $0 }) ?? true {
                 retryAt = nil

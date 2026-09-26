@@ -320,6 +320,44 @@ import Foundation
         #expect(run(&e, [zoom], from: 302, to: 400).isEmpty)
     }
 
+    /// Task 14 review M1: no stop suggestion while a screen recording runs —
+    /// the pill yields every prompt to the screen bar, so it would be refused
+    /// every second for the whole recording — and no deadline asks for one.
+    /// It comes once the screen recording ends, if the release still stands.
+    @Test func noStopSuggestionWhileAScreenRecordingRuns() throws {
+        var d = detector()
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+        _ = run(&d, [zoom], from: 1, to: 10)
+        _ = d.handle(.environment(
+            MeetingDetector.Environment(offersEnabled: true, screenRecording: true, meetingSince: at(0)), at: at(10.5)))
+        #expect(run(&d, [], from: 11, to: 200).isEmpty)     // released at 11: long past the 20 s grace
+        #expect(d.visibleOffer == nil)
+        #expect(d.nextDeadline == nil)
+        let stop = try #require(shownOffer(d.handle(.environment(
+            MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(201)))))
+        #expect(stop.kind == .stop)
+        #expect(stop.source == zoom)
+    }
+
+    /// Task 14 review M3: accepting an offer does not put the next due
+    /// source's offer up in the same breath (the host hears the meeting start
+    /// a turn later) — a busy retry first, then the meeting suppresses it.
+    @Test func acceptingAnOfferHoldsTheNextDueSourceForABusyRetry() throws {
+        var d = detector()
+        let offer = try #require(shownOffer(run(&d, [zoom, chromeCall], from: 0, to: 9)))   // both due by 8
+        #expect(offer.source == zoom)
+        #expect(d.handle(.answered(offerId: offer.id, .accepted, at: at(9))).isEmpty)
+        #expect(d.nextDeadline == at(9 + MeetingDetectionDefaults.busyRetry))
+        #expect(d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(9.2)), at: at(9.2))).isEmpty)
+        #expect(d.handle(.tick(at: at(10), pointerOnPill: false)).isEmpty)
+        #expect(settles(&d, at: 10))
+        // Without a meeting (a consent refusal), the next due source is offered after the retry.
+        var e = detector()
+        let first = try #require(shownOffer(run(&e, [zoom, chromeCall], from: 0, to: 9)))
+        #expect(e.handle(.answered(offerId: first.id, .accepted, at: at(9))).isEmpty)
+        #expect(shownOffer(e.handle(.tick(at: at(10), pointerOnPill: false)))?.source == chromeCall)
+    }
+
     @Test func relinksToAnotherCallClassSourceInsteadOfSuggestingStop() {
         var d = detector()
         _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
