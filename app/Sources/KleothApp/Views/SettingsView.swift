@@ -267,6 +267,7 @@ struct SettingsView: View {
                 coverModel: $coverModel
             )
             calendarSection
+            SettingsMeetingDetectionSection()
             historySection("Open Meetings", target: .meetings)
         case .dictation:
             SettingsDictationSection(
