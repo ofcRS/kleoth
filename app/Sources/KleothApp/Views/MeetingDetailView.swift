@@ -145,7 +145,20 @@ struct MeetingDetailView: View {
                 // `summary` is this view's loaded state, not the list's
                 // `hasSummary`: a summary that just landed enables Draw Cover
                 // on the same `contentRevision` reload that shows it.
-                MeetingCoverMenu(meeting: meeting, hasSummary: summary != nil, size: 112)
+                // Interim (plan 2026-09-25, Task 6 replaces this header with the
+                // band + chip page): today's tile behind the shared menu entries.
+                Menu {
+                    MeetingCoverMenuItems(
+                        meeting: meeting, hasSummary: summary != nil,
+                        record: covers.record(for: meeting.directory))
+                } label: {
+                    MeetingCoverTile(meeting: meeting, size: 112)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("Meeting cover")
             }
         }
         .kleothCard()
