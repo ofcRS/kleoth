@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (773 tests)
+swift build && swift test                        # core + CLI (777 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -214,10 +214,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   deadline was a main-actor busy loop). `IsRunningInput` is read on every re-read, never listened to; held mics
   are re-resolved every 3 s (titles from a 30 s per-pid cache) so a tab that joins a call upgrades — only while a
   meeting records or `MeetingDetector.hasOfferableSession` holds (an app holding the mic all day stops after
-  10 min). The monitor also runs during every meeting for `context`, which `stop()` captures SYNCHRONOUSLY right
-  after `isRecording = false` (before the combine's first `await`, or the detector forgets the linked app) and
-  writes into `meta.json` once; every later writer carries it whole (`runPipeline` reads the existing `meta.json`
-  first). A `PillPrompt` prints as its id only: the opt-in pill trace must never log an offer's text.
+  10 min). The monitor itself (detection on, or a meeting recording) still re-reads Core Audio every 3 s on its
+  own queue while ANY process holds the mic (10 s when none does), waking the main actor only on a change. It runs
+  during every meeting for `context`, which `stop()` captures SYNCHRONOUSLY right after `isRecording = false`
+  (before the combine's first `await`, or the detector forgets the linked app) and writes into `meta.json` once;
+  every later writer carries it whole (`runPipeline` reads the existing `meta.json` first). A `PillPrompt` prints
+  as its id only: the opt-in pill trace must never log an offer's text.
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -284,7 +286,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   takes over only a resting-family phase (otherwise it just stores it) and the pill applies `model.phase` a
   main-queue turn late, so a capture start sets its backdrop FIRST, then dismisses its own leftover phase
   (`MeetingPillBridge` `.started`); `clearCapturePhaseBlocking` withdraws the other capture's. The other order
-  leaves a hot mic with no bar.
+  leaves a hot mic with no bar. A rising bar clears ANY sticky `.failed` (a dictation's is terminal), and both
+  `setBackdrop` and the coordinator read the phase still to land (`pendingPhase` / `upcomingState`).
 - `referenceSize` is resolved against the four-field dock (275 pt, every edge) and, on bottom/top, the meeting
   bar (240 pt): a new longest shape must be folded in there, or a pill parked near a corner creeps.
 - Core Audio: per-process `IsRunningInput` listeners register and never fire (listen to `IsRunning`/`Devices`,
@@ -318,11 +321,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   fictional audio only (5/6 exact turn order); not yet on a real meeting or end to end in Russian.
 - Meetings in the pill (for 0.5.1; `feat/meetings-in-the-pill`, in review): phase 1 = the four-field dock, the meeting
   bar for every meeting, "Meeting saved"; phase 2 = call detection (offers, the stop suggestion, Settings → Meetings →
-  Call detection) and `meta.json` with `context` at stop. Verified: core tests, both builds, code-read traces, a
-  `micopen` calibration on a locked screen (listener trigger 0.05–0.21 s on take, ≤ 0.34 s on release; a bare binary
-  resolves to no owner, so no offer). Not yet: the pill films, the calibration on an awake Mac, design §6 manual
-  items 1–11 and the real-call list (§6 step 9), the Settings section by eye. The README pill GIFs
-  (`make-demos.sh`) still show the three-field dock.
+  Call detection) and `meta.json` with `context` at stop. Both whole-branch reviews' fixes are in (design §10 items
+  47–55). Verified: core tests, both builds, code-read traces, a `micopen` calibration on a locked screen (listener
+  trigger 0.05–0.21 s on take, ≤ 0.34 s on release; a bare binary resolves to no owner, so no offer). Not yet: the
+  pill films, the calibration on an awake Mac, design §6 manual items 1–11 and the real-call list (§6 step 9), the
+  Settings section by eye. The README pill GIFs (`make-demos.sh`) still show the three-field dock.
 - Next (for 0.5.1): verify and merge meetings in the pill. Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.

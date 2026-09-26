@@ -170,6 +170,13 @@ Precedence of backdrops: **screen recording > meeting > resting pill > nothing**
 | Meeting stops while a dictation phase is up | the dictation continues; `.meetingSaved` waits ≤ 10 s for it (the queued `.saved` rule) | `.idle` |
 | Dictation off, or hidden for the hour | no resting pill; the meeting bar while recording | `.hidden` ↔ `.meeting` |
 
+- **An old fault never hides a new bar.** When a meeting or a screen recording starts, a sticky `.failed` on
+  the pill goes, a dictation's too ("Add an ElevenLabs key to dictate", "… — saved to History"): it is
+  terminal (its session has ended; a kept dictation's Retry is also History's "Try again"). A live dictation
+  phase and a dictation `.warning` (3 s) stay; the bar lands after them.
+- **A dictation over the meeting's `.saving`** takes the stopped meeting's bar down with it: the dictation
+  collapses onto the resting pill (or nothing), never back onto a running clock, and "Meeting saved" follows.
+  From the stop on, the pill menu's meeting row reads "Record meeting".
 - **Microphone sharing.** The meeting's `MicCapture`, the dictation's `DictationCapture` and the screen
   recorder's `MicrophoneSource` each open their own `AVAudioEngine` on the same device (screen-recording
   §4.6: two engines proven, three extrapolated — §6 manual step 5 covers it). Nothing is handed over;
@@ -243,8 +250,10 @@ offer:
 Service names come from window titles (`MeetingServiceMatcher`, patterns taken from the open-source
 detectors above and re-checked in step 9): Google Meet "Meet - abc-defg-hij" / "<event> - Google Meet";
 Teams "<name> | Microsoft Teams", except the idle "Microsoft Teams", "Chat | …", "Calendar | …"; Zoom web
-"<name>'s Zoom Meeting"; Webex "… - Webex" / "Meeting | …"; plus Whereby, Jitsi Meet, Yandex Telemost,
-Kontur.Talk, VK Calls and Jazz by name. For apps, titles only feed context (Zoom "Zoom Meeting" /
+"<name>'s Zoom Meeting" (the whole title); Webex "… - Webex" / "Meeting | …"; plus Whereby, Jitsi Meet, Yandex
+Telemost, Kontur.Talk, VK Calls and Jazz by name — only as the title's last words after a separator
+("standup | Jitsi Meet"), never elsewhere in it, and never the bare name: a search page puts the query first
+("jitsi meet - Google Search") and its title would be stored as the meeting's. For apps, titles only feed context (Zoom "Zoom Meeting" /
 "Zoom Webinar", the Slack huddle window "Huddle in <channel>").
 
 The false positives this is built against: Kleoth's own captures (PID), other dictation apps (never list),
@@ -258,8 +267,10 @@ calls-not-seen in Chrome only).
 - **Text**: "Zoom call — record it?", "Google Meet call — record it?", "Slack huddle — record it?",
   "FaceTime call — record it?"; a browser call without a service name, "Call in Chrome — record it?"; a
   browser with no call seen, "Chrome is using the mic — record it?"; another app, "<App> is using the mic
-  — record it?". With a calendar event on now (calendar access given): "“Weekly sync” on Zoom — record
-  it?" (the event title cut at 40 characters).
+  — record it?". For a call — a call app, or a `site:` / `webcall:` browser call — with a calendar event on
+  now (calendar access given): "“Weekly sync” on Zoom — record it?" (the event title cut at 40 characters).
+  A browser with no call seen, a chat app or another app never names the event: voice typing during "Focus
+  time" is not that event.
 - **Buttons**: **Record** (primary), **Never for Zoom** (quiet), ✕ (not now). Record starts the meeting
   exactly like the Meeting tile — without consent, track 4's window asks first.
 - **Recording starts at the click.** The seconds of the call before it are not captured — Kleoth never
@@ -345,8 +356,9 @@ organizer if missing; an attendee with no name shows as the address's local part
 ("anna.petrova@acme.com" → "Anna Petrova") when it has a separator, else the full address. Participants
 already flow into the summary prompt and the Markdown header unchanged.
 
-**Speakers**: when the event has exactly one other attendee, the system channel's default name is that
-person instead of "Them" (the mic channel is the user, the system channel is everyone else — for a
+**Speakers**: when the event has exactly one other attendee — every attendee with an identity counts, named
+or not (`calendar_other_attendees`), so one readable name among two people is not one-to-one — the system
+channel's default name is that person instead of "Them" (the mic channel is the user, the system channel is everyone else — for a
 one-to-one call, that one person) (Q6). A rename still overrides it.
 
 **Screenshots are not needed.** App, service and calendar event come from Core Audio, window titles and
@@ -400,6 +412,7 @@ public struct MeetingContext: Codable, Sendable, Equatable {
     public var calendarTitle: String?
     public var calendarStart: String?   // ISO 8601
     public var calendarEnd: String?
+    public var calendarOtherAttendees: Int?  // the event's other people, nameless ones too (Q6)
     public var micSeconds: Double?      // how long the app held the mic during the recording
 }
 public enum MeetingStartOrigin: String, Sendable { case pill, offer, menu, shortcut }
@@ -527,6 +540,8 @@ public enum CalendarParticipants {
     public struct Attendee: Sendable { public var name: String?; public var email: String?; public var isUser: Bool; public var isRoomOrResource: Bool }
     /// Display names, the user and rooms dropped, organizer added if missing, deduplicated, calendar order.
     public static func names(attendees: [Attendee], organizer: Attendee?) -> [String]
+    /// `names` plus each attendee it can't name with another URL (a `urn:uuid:`), once per URL (Q6).
+    public static func otherAttendeeCount(attendees: [Attendee], organizer: Attendee?) -> Int
     public static func displayName(name: String?, email: String?) -> String?
 }
 ```
@@ -583,7 +598,8 @@ public enum WebCallAssertions {
 public enum WindowTitleReader {
     /// Titles of `pid`'s normal-layer windows, front to back, any Space (a full-screen call is on its
     /// own): CGWindowListCopyWindowInfo(.optionAll) names when CGPreflightScreenCaptureAccess() is true,
-    /// else AXWindows/AXTitle when AXIsProcessTrusted() (AXUIElementSetMessagingTimeout 0.5 s), else [].
+    /// else AXWindows/AXTitle when AXIsProcessTrusted() (AXUIElementSetMessagingTimeout 0.5 s on the
+    /// app AND on each window read), else [].
     /// Never prompts. Call off the main actor.
     public static func titles(ofProcess pid: pid_t) -> [String]
 }
@@ -786,7 +802,9 @@ decline); `isDictationPhaseLive` is false for it.
     naming has none, its title when that is not a placeholder. `transcribeSaved`'s calendar recovery
     stays for folders without `meta.json` (older meetings).
   - The default speaker map (three sites, :1047, :1175, :1402) names `speaker_1` after the only
-    participant when there is exactly one (participants already exclude the user and rooms) (Q6).
+    participant when there is exactly one (participants already exclude the user and rooms) and the event
+    had exactly one other attendee with any identity (`calendar_other_attendees`; nil = an older meeting,
+    the names decide) (Q6).
 - `Keychain.Account.meetingDetection = "meeting_detection"`, `.meetingDetectionIgnored =
   "meeting_detection_ignored"`; `AppConfig.mergeSettingsFromKeychain` reads both.
 - `Views/SettingsMeetingDetectionSection.swift` (new); `SettingsView.pageSections(.meetings)` gains one
@@ -802,6 +820,7 @@ acronym-free and round-tripping:
   "app_bundle_id": "com.google.Chrome",
   "app_name": "Google Chrome",
   "calendar_end": "2026-09-24T10:30:00Z",
+  "calendar_other_attendees": 3,
   "calendar_start": "2026-09-24T10:00:00Z",
   "calendar_title": "Weekly sync",
   "mic_seconds": 1712,
@@ -912,7 +931,8 @@ Core (swift-testing, `Tests/KleothCoreTests`):
 - `MeetingServiceMatcherTests`: "Meet - abc-defg-hij" and "Weekly sync - Google Meet" → Google Meet; Teams
   "Weekly sync | Microsoft Teams" → Teams, but "Microsoft Teams", "Chat | …", "Calendar | …" → nil; "Anna's
   Zoom Meeting" → Zoom, but "Zoom", "Zoom Workplace", "Home" → nil; "… - Webex" → Webex; Whereby, Jitsi
-  Meet, Telemost; a plain page title → nil; case and whitespace; a stored title capped at 120 characters.
+  Meet, Telemost as the title's last words, but their search pages, mentions and bare names → nil; a plain page
+  title → nil; case and whitespace; a stored title capped at 120 characters.
 - `MeetingSourceTests`: `make` for an app; a browser with a matched title (`site:` key, service name, title
   kept); with only a web-call assertion (`webcall:` key, "Call in Chrome"); with neither (`browser:` key,
   no title); a never-class app → nil.
@@ -967,7 +987,9 @@ Phase 2 (detection on):
    Dictation, Siri — the last four must show no offer. Check: owners and methods (Safari through the
    responsible process, FaceTime through `avconferenced`), the WebRTC assertion during Meet in Chrome and
    its absence during voice typing, how fast a start is seen with the poll at 10 s. Fix the catalog from
-   what it prints.
+   what it prints. Also the window-title shapes of a Whereby, Jitsi Meet, Telemost, Kontur.Talk, VK Calls and
+   Jazz call and of the Zoom web client (matched only as the title's last words / the whole title), and that
+   the services' own non-call pages ("Pricing | Whereby") don't read as calls.
 10. A calendar event with one other attendee → title = event, participants = that person, `speaker_1` =
     that person; an all-day event on the same day is not chosen.
 11. Auto-transcribe off: stop → the row is still "Recording · …" and can be renamed; transcribe it later →
@@ -1097,10 +1119,11 @@ Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fix
    "no active recording" guard, the one `.stopFailed` with no `.finalizing` before it) takes the bar down and
    shows nothing.
 7. **A rising capture clears the other side's leftover phase** (`PillCoordinator.clearCapturePhaseBlocking`,
-   after `recompute()`): either side's sticky `.failed`, and the meeting's own `.saving` / `.meetingSaved` /
-   `.warning`, are withdrawn when a capture's bar becomes due — otherwise the backdrop is only stored behind
-   them and a hot microphone has no bar. `ScreenRecordingController.start(from:)`'s rule, extended to both
-   captures. Never a dictation phase; a meeting rising under a running screen recording changes nothing.
+   after `recompute()`): any sticky `.failed` (a dictation's too, since item 47), and the meeting's own
+   `.saving` / `.meetingSaved` / `.warning`, are withdrawn when a capture's bar becomes due — otherwise the
+   backdrop is only stored behind them and a hot microphone has no bar. `ScreenRecordingController.start(from:)`'s
+   rule, extended to both captures. Never a live dictation phase or a dictation `.warning`; a meeting rising
+   under a running screen recording changes nothing.
 8. **`finishHide` shows a backdrop that rose during the fade-out** (the 0.18 s `hideCompletely` window): it
    was only stored behind the fading phase, so a capture started in that window got no bar.
 9. **`.saving` over a meeting keeps the 240 pt meeting bar** (not the screen bar's 222 pt), so the stop does
@@ -1120,10 +1143,6 @@ Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fix
 **Known gaps, phase 1 (for the §6 checklist)**
 
 - A fresh fault from one capture covers the other capture's live bar until ✕ (item 5).
-- A dictation-owned sticky `.failed` ("… — saved to History") blocks both capture bars until ✕: "never paint
-  over a dictation phase" wins over "a bar for every meeting", as it already did for the screen bar.
-- A meeting whose `.saving` a dictation replaced (or pre-empted) shows the bar with a running clock until its
-  `.saved`, and that bar's Stop does nothing — the meeting has already stopped and is being combined.
 
 **Changed while building phase 2** (768 core tests at the end)
 
@@ -1216,12 +1235,48 @@ Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fix
     older than `maxOfferAge`, with detection on; an ignored key counts only while a browser session can still
     move to a `webcall:`/`site:` key. An app holding the mic all day stops waking Kleoth after 10 min or an
     answer; the chain restarts from any event that makes a session offerable again (a displaced offer, detection
-    switched on). The title cache empties once nothing holds the mic.
+    switched on). The title cache empties once nothing holds the mic. The back-off is the controller's: the
+    monitor itself (detection on, or a meeting recording) still re-reads Core Audio every 3 s on its own queue
+    while ANY process holds the mic — an app never listed included — and every 10 s when none does; it wakes the
+    main actor only when the set of holders changes.
 46. **Final fix batch, the rest:** a new meeting's mic seconds start at the meeting, not at the poll before it;
     the deadline sweep allows one tick (the real bound); a `PillPrompt` prints as its id only, so the opt-in pill
     trace can never log an offer's text (a calendar title); the web-call assertion lookup reads a bare pid's
     executable path, so an accessory app resolves; the Raycast extension lists only meetings with a
     `transcript.json` (an untranscribed one has `meta.json` since stop, and was listed as "On-device").
+
+**Branch fix round** (2026-09-26, after both whole-branch reviews; 777 core tests)
+
+47. **A rising bar clears any sticky `.failed`**, a dictation's too (§3.1.5): it is terminal. A stale "Add an
+    ElevenLabs key" no longer hides a new meeting's bar, clock and Stop until ✕ — the phase-1 gap is closed, for
+    the screen bar too. A live dictation phase and a dictation `.warning` stay.
+48. **The phase still to land counts.** `setBackdrop` reads `pendingPhase ?? model.phase`; the coordinator's
+    `isDictationPhaseLive` and `clearCapturePhaseBlocking` read the pill's `upcomingState` (`dismissingState ??
+    pendingPhase ?? model.phase`). A backdrop no longer paints over an `.armed` asked for in the same turn, and a
+    meeting `.saving` no longer pre-empts it.
+49. **No live-looking bar after the stop.** A dictation over the meeting's `.saving` drops the meeting's
+    backdrop, so it collapses onto the resting pill; from `.finalizing` the pill menu's meeting row reads
+    "Record meeting" (`PillCoordinator.meetingDidStopRecording`), no longer "Stop meeting recording" for a
+    meeting that is being combined. The phase-1 gap is closed.
+50. **An offer the pill would refuse is refused before it is composed** (`PillCoordinator.acceptsMeetingPrompt`):
+    the 1 s busy retry ran an `EKEventStore` fetch on the main actor every second while a dictation held the offer
+    back. The calendar title is also kept per source key for `offerLifetime`, so an offer shown again (displaced,
+    then back) doesn't ask EventKit again.
+51. **AX title reads time out per window**: `AXUIElementSetMessagingTimeout` 0.5 s on each window element too, not
+    only the app's, so a hung app costs 0.5 s per read instead of the ~6 s default.
+52. **Service titles by their last words** (§3.2.2): Whereby, Jitsi Meet, Telemost, Kontur.Talk, VK Calls and Jazz
+    match only as "<head> <separator> <service>", Zoom web only as the whole title. A search page no longer counts
+    as a call or has its title stored; the old guessed shapes "Jitsi Meet", "Контур.Толк — встреча", "VK Звонки"
+    and "SberJazz: Sync" no longer match (step 9 checks the real ones).
+53. **The calendar event names calls only** (`MeetingOfferText.namesCalendarEvent`): a call app or a
+    `site:`/`webcall:` browser call. There is no lookup at all for a browser without a call, a chat app or an
+    unknown app — a Slack huddle is not named after the event either (the call class, as the stop suggestion's
+    relink uses it).
+54. **Q6 counts people** (`CalendarParticipants.otherAttendeeCount`, stored as `context.calendar_other_attendees`):
+    an attendee with no readable name but another URL (`urn:uuid:`, a principal path) counts, so a three-person
+    event with one readable name keeps "Them". Older meetings (no count) keep the names rule.
+55. **Docs:** README "What does leave" names the title, date and participants that go to the summary provider
+    with the transcript; item 45 and CLAUDE.md cover the monitor's own 3 s re-read.
 
 **Known gaps, phase 2 (for the §6 checklist)**
 

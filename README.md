@@ -268,7 +268,8 @@ server — there isn't one. What does leave, and when:
 - **Audio** goes only to ElevenLabs Scribe, with your key: each dictation, and a meeting or
   recording you choose to transcribe in the cloud.
 - **Transcripts** go to your AI provider: a meeting's, for its summary, right after it is
-  transcribed; a dictation's, for clean-up. On **Automatic** (the default) that is the first
+  transcribed, with its title, date and participants (with calendar access: the event's other attendees,
+  by name or, without one, by email address); a dictation's, for clean-up. On **Automatic** (the default) that is the first
   provider Kleoth finds — local server, Claude Code, Codex, OpenRouter, Apple — so with no local
   server running and the Claude Code or Codex CLI signed in, your transcripts go to Anthropic or
   OpenAI under your account.
@@ -281,7 +282,7 @@ server — there isn't one. What does leave, and when:
   the microphone (Core Audio reports that; no audio is read) and, with Accessibility or Screen
   Recording already allowed, reads the titles of those apps' windows to tell a meeting tab from
   other sites. A title that names no meeting is only matched against, never saved or logged. With
-  calendar access, the offer names the event on now. The same watch runs during every meeting you
+  calendar access, an offer for a call names the event on now. The same watch runs during every meeting you
   record, whether call detection is on or off, so the meeting's `meta.json` notes where it happened
   (below).
 

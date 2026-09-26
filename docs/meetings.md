@@ -56,8 +56,8 @@ starts using the microphone, the pill asks:
 - **"Zoom call — record it?"**, with **Record**, **Never for Zoom** and ✕. Call apps (Zoom, Teams,
   FaceTime, Webex) are asked about after 5 seconds, Google Meet and other calls in a browser after
   8, chat apps (a Slack huddle, Discord, Telegram) after 30, and any other app, or a browser where
-  no call was seen, after a minute. With calendar access, the offer names the event on now:
-  "“Weekly sync” on Zoom — record it?".
+  no call was seen, after a minute. With calendar access, an offer for a call (a call app, or a call
+  in a browser) names the event on now: "“Weekly sync” on Zoom — record it?".
 - **Nothing is recorded until you click Record**, and the seconds of the call before the click are
   not captured. If you haven't acknowledged recording consent yet, the consent notice asks first.
 - **✕, or no answer for 30 seconds**, means not for this call: no second offer while it lasts, and
@@ -115,7 +115,9 @@ folders, and so do the Raycast extension and the `kleoth://` URL scheme.
 - **Recording and on-device transcription** stay on your Mac. The only network use is the
   one-time model download.
 - **Cloud transcription**, if you click it: the meeting's audio goes to ElevenLabs Scribe with your key.
-- **Summaries**: after each transcription, the transcript goes to your AI provider. On Automatic
+- **Summaries**: after each transcription, the transcript goes to your AI provider, with the meeting's
+  title, date and participants (with calendar access: the event's other attendees, by name or, without
+  one, by email address). On Automatic
   that is the first one found (local server, Claude Code, Codex, OpenRouter). With no local server
   running and the Claude Code or Codex CLI signed in, that means Anthropic's or OpenAI's servers,
   under your account. To keep transcripts on the Mac, pick a local server in Settings → Accounts.
@@ -123,7 +125,8 @@ folders, and so do the Raycast extension and the `kleoth://` URL scheme.
   and only that scene goes to the image engine you pick: to OpenAI through Codex, or to
   OpenRouter. A local image server keeps it on your Mac.
 - **Call detection** sends nothing anywhere: which app holds the microphone, the matched window
-  title and the calendar event are read on your Mac and kept only in the meeting's `meta.json`.
+  title and the calendar event are read on your Mac and kept in the meeting's `meta.json` (its title
+  and participants also go with the transcript for the summary, above).
 
 ## Consent
 
