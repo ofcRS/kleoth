@@ -40,9 +40,9 @@ The clean-up runs on whichever AI you already use: a local Ollama or LM Studio s
 OpenRouter, or Apple's on-device model on macOS 26. With none of them, the raw Scribe transcript is
 pasted as it is. See [AI providers](ai-providers.md).
 
-## When transcription fails (next release)
+## When transcription fails
 
-From the next release, a dictation that cannot be transcribed keeps its audio: Scribe timed out
+A dictation that cannot be transcribed keeps its audio: Scribe timed out
 twice, the network dropped, or the key was rejected. The pill says what happened ("Timed out —
 saved to History") and offers **Retry**, which sends the same audio again and pastes the result.
 Pressing Esc while it transcribes stops waiting and keeps the audio too ("Stopped — saved to

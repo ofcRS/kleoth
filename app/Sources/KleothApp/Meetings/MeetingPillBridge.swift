@@ -39,7 +39,13 @@ final class MeetingPillBridge {
     private var current: (directory: URL?, isRecording: Bool)?
 
     static func install() {
-        guard !DemoMode.isOn, shared == nil, let recording = RecordingController.shared else { return }
+        guard !DemoMode.isOn, shared == nil else { return }
+        guard let recording = RecordingController.shared else {
+            // Without the controller no meeting bar would ever rise — say so.
+            Logger(subsystem: "dev.kleoth", category: "MeetingPill")
+                .fault("RecordingController.shared is nil at launch — the meeting bar is not wired")
+            return
+        }
         shared = MeetingPillBridge(recording: recording, coordinator: PillCoordinator.shared)
     }
 
@@ -103,8 +109,10 @@ final class MeetingPillBridge {
             // A stale meeting phase (the previous meeting's `.saving`, its
             // confirmation or its fault) keeps `setBackdrop` from taking over —
             // it only takes a resting-family phase — so it has to go (the
-            // `ScreenRecordingController.start(from:)` rule). Backdrop FIRST,
-            // then the dismissal, which collapses straight onto the new bar.
+            // `ScreenRecordingController.start(from:)` rule). Backdrop FIRST:
+            // the coordinator's `clearCapturePhaseBlocking` then withdraws a
+            // leftover phase and the pill collapses onto the new bar; the
+            // dismissal after it only cancels a queued meeting confirmation.
             // The other order loses the bar: `dismiss()` springs to the OLD
             // backdrop, and the pill's `model.phase` only changes on the
             // transition's next main-queue turn, so a `setBackdrop` right after
@@ -131,8 +139,13 @@ final class MeetingPillBridge {
             current = (directory: directory, isRecording: false)
             stopLevelPump()
             // Over the still-`.meeting` backdrop, so the wave shows in the
-            // meeting-sized bar.
-            coordinator.showMeetingPhase(.saving)
+            // meeting-sized bar. When it can't show (a dictation is up, or the
+            // screen bar is on top), the meeting's backdrop goes now: the mic
+            // is already off, and a live-looking clock with a Stop that answers
+            // "Nothing is recording" must not come back after the dictation.
+            if !coordinator.showMeetingPhase(.saving) {
+                coordinator.setMeetingBackdrop(since: nil)
+            }
 
         case .saved(let directory, let seconds, let transcribing):
             lastSavedDirectory = directory
