@@ -11,8 +11,8 @@ import os
 /// A cover is decoration, so this controller never touches the meeting's own
 /// state: it never marks a meeting as processing (rename, re-transcribe,
 /// Remove Transcription and delete stay available), writes no status line and
-/// posts no notification. A failure shows only on the cover's tile, from
-/// `failures`, which is memory only.
+/// posts no notification. A failure shows only on the meeting page's cover
+/// chip and at the top of the cover menu, from `failures`, which is memory only.
 ///
 /// Two queues, one per kind of cost:
 /// - a local-server cover joins `RecordingController`'s pipeline queue,
@@ -30,7 +30,8 @@ import os
 final class CoverController: ObservableObject {
     private(set) static var shared: CoverController?
 
-    /// The current engine; nil = Off, and views hide every cover surface.
+    /// The current engine; nil = Off: nothing can be drawn, and views hide
+    /// every cover surface but the pictures a demo launch shows (`showsCovers`).
     @Published private(set) var engine: CoverEngine?
     /// Whether History shows any cover surface: an engine is picked, or this
     /// is a demo launch. A demo launch keeps Covers Off (`AppConfig` forces
@@ -39,7 +40,8 @@ final class CoverController: ObservableObject {
     /// holds are shown, so the films can show the page as it looks with them.
     var showsCovers: Bool { engine != nil || DemoMode.isOn }
     /// Standardized meeting paths with a cover job queued or running — the
-    /// tile's spinner. Not `processingPaths`: a cover never blocks the meeting.
+    /// spinner on the row tile, the page chip and the band. Not
+    /// `processingPaths`: a cover never blocks the meeting.
     @Published private(set) var busyPaths: Set<String> = []
     /// Standardized meeting path → the §5 line ("Couldn't draw a cover — …").
     /// Memory only: a relaunch forgets every failure, which is the point — a
@@ -257,12 +259,13 @@ final class CoverController: ObservableObject {
     }
 
     /// Resolves the scene writer and the image engine, then draws. Every
-    /// failure becomes the tile's line through `fail(_:in:error:)`; the copy
-    /// is §5's, from `CoverDrawing.message(for:engine:)`, except the one line
-    /// that names no engine because no scene could be written at all.
+    /// failure becomes the meeting's cover line (the page chip and the menu)
+    /// through `fail(_:in:error:)`; the copy is §5's, from
+    /// `CoverDrawing.message(for:engine:)`, except the one line that names no
+    /// engine because no scene could be written at all.
     private func perform(dir: URL, style: CoverStyleChoice, engine: CoverEngine) async {
         // Cancelled before it started (Covers → Off right after `runJob`
-        // made it): leave the tile's line to whichever job is current.
+        // made it): leave the failure line to whichever job is current.
         guard !Task.isCancelled else { return }
         failures[key(dir)] = nil
 
@@ -297,7 +300,7 @@ final class CoverController: ObservableObject {
             // while the packages leave `NonisolatedNonsendingByDefault` off.)
             let outcome = try await drawing.draw(request)
             // Written even when cancelled meanwhile: the files changed, so
-            // the list and the tile must say so.
+            // the list and the page must say so.
             revision &+= 1
             RecordingController.shared?.coverChanged(in: dir)
             switch outcome {
@@ -312,9 +315,9 @@ final class CoverController: ObservableObject {
         }
     }
 
-    /// Pins `line` on `dir`'s tile and logs `error` — unless the job was
-    /// cancelled (Covers → Off: §5 shows nothing, and a stale line must not
-    /// land on a job queued after it) or the meeting is gone (deleted
+    /// Pins `line` on `dir`'s cover chip and menu and logs `error` — unless
+    /// the job was cancelled (Covers → Off: §5 shows nothing, and a stale line
+    /// must not land on a job queued after it) or the meeting is gone (deleted
     /// mid-draw: "a deleted meeting shows nothing", and `forget` has already
     /// dropped its line). The log names the error's type `.public`, so
     /// `log stream` shows a reason class, and keeps the §5 line and the full

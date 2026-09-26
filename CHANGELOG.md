@@ -24,6 +24,24 @@ All notable changes to Kleoth are documented here. The format is based on
   cursor is never stored. It's on by default; turn off **Use the text you're dictating into** in
   Settings → Dictation to read nothing (stored as `dictation_context`: `"false"`).
 
+### Changed
+
+- **Meeting covers, full width.** A cover now runs across the top of the meeting page — the whole
+  width, cropped to a wide band — with the title and the TL;DR under it; as you scroll, the picture
+  slides a little slower than the page. Click the cover to see it full size (the Quick Look panel;
+  Esc closes it). Right-click it, or use the `…` button in its corner, for **New Cover**, **Remove
+  Cover** and **Show in Finder**. A summarized meeting without a picture shows a **Draw Cover** chip
+  beside its other details ("No cover" when the meeting looked personal, "Cover failed" with the
+  reason and **Try Again**). The whole page now scrolls as one, the audio player included, and the
+  TL;DR is no longer repeated as the summary's first card. History rows show a bigger thumbnail,
+  only on meetings that have a cover or are getting one. With Reduce Motion on, the picture scrolls
+  with the page.
+- **Scenes lean abstract.** The scene written for a cover now leaves out photos, picture frames,
+  posters, paintings and mirrors, even when the meeting is about them: a picture inside the picture
+  invited faces and lettering, and often came out blank. It also pictures the meeting's topic as
+  one physical metaphor — something joined, balanced, mended or carried across, in the meeting's
+  own world — rather than a re-staged meeting room.
+
 ### Fixed
 
 - **Telegram Desktop messages were restructured like prompts.** Kleoth knew Telegram for macOS and
@@ -31,6 +49,12 @@ All notable changes to Kleoth are documented here. The format is based on
   Telegram Desktop now gets the light touch of the other messengers: pasted as heard at the cursor
   (unless "Also clean up short dictations and chat messages" is on), and a merged selection keeps
   its wording and your voice.
+- **`\/` in Kleoth's JSON files.** `cover.json`, `meta.json`, the other meeting files and the
+  dictation day files wrote every `/` as `\/`, so a model name read `z-ai\/glm-5.3-flash`. They are
+  written plainly now; files written before still read fine.
+- **A leftover `.cover-…tmp` file.** A crash or a force quit at the instant a cover was being
+  saved could leave that hidden temp file in the meeting folder for good. Once it is an hour old it
+  is now removed at the next launch, or before the next cover is saved there.
 
 ## [0.5.0] — 2026-09-25
 

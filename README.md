@@ -209,11 +209,12 @@ Keys are stored in the macOS Keychain.
 ### Meeting covers
 
 Off by default. Turn covers on in Settings → Meetings → Covers and each summarized meeting gets a
-small square picture on its History row and in its header: cute animals or everyday objects acting
-out what the meeting was about, as Animation, Illustration, Sketch or Clay. Your AI provider first
-writes a one-sentence scene from the meeting's title, TL;DR and the start of its overview — no
-names, quotes or transcript — and only that scene goes to the image engine. A meeting that looks
-personal (health, performance, pay, hiring, legal matters, family) gets no picture.
+picture across the top of its page — cute animals or everyday objects acting out what the meeting
+was about, as Animation, Illustration, Sketch or Clay — and a thumbnail on its History row. Click
+the picture to see it full size. Your AI provider first writes a one-sentence scene from the
+meeting's title, TL;DR and the start of its overview — no names, quotes or transcript — and only
+that scene goes to the image engine. A meeting that looks personal (health, performance, pay,
+hiring, legal matters, family) gets no picture.
 
 | Engine | What it needs | What leaves your Mac |
 |---|---|---|
@@ -221,9 +222,9 @@ personal (health, performance, pay, hiring, legal matters, family) gets no pictu
 | Codex | the `codex` CLI installed and signed in | the scene, to OpenAI over your ChatGPT login — about a minute per cover, within your plan's limits |
 | OpenRouter | an API key | the scene — each cover is billed to your OpenRouter account |
 
-The summary itself goes only to the provider that already summarized the transcript. Click a
-cover for **New Cover** or **Remove Cover**; select older meetings and choose **Draw Covers** to
-give them one.
+The summary itself goes only to the provider that already summarized the transcript. Right-click a
+cover (or use its `…` button) for **New Cover** or **Remove Cover**; a meeting without one has a
+**Draw Cover** chip; select older meetings and choose **Draw Covers** to give them one.
 
 ## CLI
 

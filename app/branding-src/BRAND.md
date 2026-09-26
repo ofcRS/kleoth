@@ -96,9 +96,10 @@ family**. Each one pictures one of the user's meetings, drawn by the image engin
 so none of the rules above applies to them. They never stand in for brand imagery (the icon, the
 empty states, the README hero) and never appear in Settings. Where the family is sculptural objects
 on transparent alpha with a generous margin, a cover is a coloured scene of cute animals or everyday
-objects that fills its square edge to edge — a matted picture reads as a pale square in the 40 pt
-History tile.
-The in-app neutral tile (no cover, or a skipped meeting) is the vector `LyreMark`, never generated.
+objects that fills its square edge to edge — a matted picture reads as a pale square in the 56 pt
+History tile and as a pale frame inside the meeting page's full-width band.
+The in-app neutral tile (a History row whose first cover is being drawn) is the vector `LyreMark`,
+never generated; a meeting with no cover, or a skipped one, shows no tile.
 
 The image prompt is "A square cover illustration for a meeting. ‹scene› Style: ‹style sentence›
 ‹composition› ‹guardrail›" (`CoverPrompt.imagePrompt`). The style sentences
