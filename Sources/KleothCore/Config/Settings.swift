@@ -31,6 +31,11 @@ public struct Settings: Sendable {
     /// password fields are never read. The reverse of the strict opt-ins: only
     /// the literal `"false"` turns it off.
     public var dictationContext: Bool
+    /// Offer to record calls when another app takes the microphone
+    /// (meetings-in-the-pill §3.2.7). Strict opt-in (`"true"` only), off by default.
+    public var meetingDetection: Bool
+    /// Sources never offered: key → name (`meeting_detection_ignored`, a JSON object string).
+    public var meetingDetectionIgnored: [String: String]
     /// The microphone every capture opens — a CoreAudio device UID — or nil
     /// for "Automatic" (the system input). Picked from the pill's menu or
     /// Settings; honoured by meeting recordings, dictation and screen
@@ -51,6 +56,8 @@ public struct Settings: Sendable {
         dictationModel: String = DictationDefaults.polishModel,
         dictationPolishAlways: Bool = false,
         dictationContext: Bool = true,
+        meetingDetection: Bool = false,
+        meetingDetectionIgnored: [String: String] = [:],
         inputDeviceId: String? = nil,
         providerSettings: ProviderSettings = ProviderSettings(),
         coverSettings: CoverSettings = CoverSettings()
@@ -63,6 +70,8 @@ public struct Settings: Sendable {
         self.dictationModel = dictationModel
         self.dictationPolishAlways = dictationPolishAlways
         self.dictationContext = dictationContext
+        self.meetingDetection = meetingDetection
+        self.meetingDetectionIgnored = meetingDetectionIgnored
         self.inputDeviceId = inputDeviceId
         self.providerSettings = providerSettings
         self.coverSettings = coverSettings
@@ -135,6 +144,11 @@ public struct Settings: Sendable {
         // literal "false" turns it off; absent or any other value keeps it on.
         let dictationContext = (config["dictation_context"] != "false")
 
+        // Call detection: the same strict opt-in; the ignore list is a JSON
+        // object string, malformed → empty.
+        let meetingDetection = (config["meeting_detection"] == "true")
+        let meetingDetectionIgnored = MeetingDetectionIgnored.parse(config["meeting_detection_ignored"])
+
         // The microphone pick: empty or "auto" both mean the system input,
         // the `transcription_language` normalization.
         var inputDeviceId: String?
@@ -153,6 +167,8 @@ public struct Settings: Sendable {
             dictationModel: dictationModel,
             dictationPolishAlways: dictationPolishAlways,
             dictationContext: dictationContext,
+            meetingDetection: meetingDetection,
+            meetingDetectionIgnored: meetingDetectionIgnored,
             inputDeviceId: inputDeviceId,
             providerSettings: providerSettings,
             coverSettings: CoverSettings.load(config: config)
@@ -181,5 +197,25 @@ public struct Settings: Sendable {
             }
         }
         return result
+    }
+}
+
+/// The `meeting_detection_ignored` value: a JSON object, key → name.
+/// Malformed JSON or a non-object → empty, never a crash; an entry whose
+/// value is not a string is skipped.
+public enum MeetingDetectionIgnored {
+    public static func parse(_ json: String?) -> [String: String] {
+        guard let json, let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        var out: [String: String] = [:]
+        for (key, value) in object { if let name = value as? String { out[key] = name } }
+        return out
+    }
+
+    /// Sorted keys, no whitespace; `"{}"` for an empty map (a non-empty write keeps the key).
+    public static func encode(_ map: [String: String]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: map, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
     }
 }

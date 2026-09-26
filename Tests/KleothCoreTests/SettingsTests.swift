@@ -91,4 +91,23 @@ import Foundation
         #expect(Settings.load(config: [:]).defaultModel == ModelCatalog.defaultModel)
         #expect(Settings.load(config: [:]).defaultModel == "z-ai/glm-5.3-flash")
     }
+
+    // MARK: - Call detection (meetings-in-the-pill §4.1)
+
+    @Test func meetingDetectionIsAStrictOptIn() {
+        #expect(Settings.load(config: [:]).meetingDetection == false)
+        #expect(Settings.load(config: ["meeting_detection": "true"]).meetingDetection == true)
+        #expect(Settings.load(config: ["meeting_detection": "1"]).meetingDetection == false)
+        #expect(Settings.load(config: ["meeting_detection": "TRUE"]).meetingDetection == false)
+    }
+
+    @Test func meetingDetectionIgnoredParsesAndTolerates() {
+        #expect(Settings.load(config: [:]).meetingDetectionIgnored.isEmpty)
+        let parsed = Settings.load(config: ["meeting_detection_ignored": #"{"app:com.hnc.Discord":"Discord","browser:com.google.Chrome":"Chrome"}"#]).meetingDetectionIgnored
+        #expect(parsed == ["app:com.hnc.Discord": "Discord", "browser:com.google.Chrome": "Chrome"])
+        #expect(Settings.load(config: ["meeting_detection_ignored": "not json"]).meetingDetectionIgnored.isEmpty)
+        #expect(Settings.load(config: ["meeting_detection_ignored": #"["a"]"#]).meetingDetectionIgnored.isEmpty)
+        #expect(MeetingDetectionIgnored.parse(MeetingDetectionIgnored.encode(parsed)) == parsed)
+        #expect(MeetingDetectionIgnored.encode([:]) == "{}")
+    }
 }
