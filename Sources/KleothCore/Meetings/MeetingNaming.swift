@@ -22,11 +22,14 @@ public enum MeetingNaming {
     /// channel (`speaker_1`) is everyone else: "Them", or the one other
     /// participant when there is exactly one (a one-to-one calendar call;
     /// `CalendarParticipants.names` already leaves out the user and rooms and
-    /// counts one person once). Written only when `speakers.json` is absent,
-    /// so a rename still overrides it.
-    public static func defaultSpeakerNames(userName: String, participants: [String]) -> [String: String] {
+    /// counts one person once) and the event has exactly one other person
+    /// (`otherAttendees`, which also counts the attendees no name could be
+    /// read for; nil = not known, a meeting from before it: the names decide).
+    /// Written only when `speakers.json` is absent, so a rename still overrides it.
+    public static func defaultSpeakerNames(userName: String, participants: [String], otherAttendees: Int? = nil) -> [String: String] {
         let user = userName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sole = participants.count == 1 ? participants[0].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let oneToOne = participants.count == 1 && (otherAttendees ?? 1) == 1
+        let sole = oneToOne ? participants[0].trimmingCharacters(in: .whitespacesAndNewlines) : ""
         return ["speaker_0": user.isEmpty ? "You" : user, "speaker_1": sole.isEmpty ? "Them" : sole]
     }
 }

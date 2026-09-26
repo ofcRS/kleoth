@@ -57,4 +57,31 @@ import Testing
         let other = try #require(MeetingSource.make(bundleId: "com.example.x", appName: "Telemost", windowTitles: [], hasWebCall: false))
         #expect(MeetingOfferText.offer(for: other, calendarTitle: nil) == "Telemost is using the mic — record it?")
     }
+
+    /// Branch review (phase 2) M7: the calendar event on now names a CALL
+    /// only — a call app, a `site:` or `webcall:` browser call. Voice typing
+    /// in a browser during "Focus time" is not that event, and neither is a
+    /// chat app's voice note nor an unknown app.
+    @Test func offerNamesTheCalendarEventForCallsOnly() throws {
+        let zoom = try #require(MeetingSource.make(bundleId: "us.zoom.xos", appName: "zoom.us", windowTitles: [], hasWebCall: false))
+        let meet = try #require(MeetingSource.make(bundleId: "com.google.Chrome", appName: "Google Chrome",
+                                                   windowTitles: ["Weekly sync - Google Meet"], hasWebCall: false))
+        let webCall = try #require(MeetingSource.make(bundleId: "com.google.Chrome", appName: "Google Chrome", windowTitles: [], hasWebCall: true))
+        let browser = try #require(MeetingSource.make(bundleId: "com.google.Chrome", appName: "Google Chrome", windowTitles: [], hasWebCall: false))
+        let chat = try #require(MeetingSource.make(bundleId: "ru.keepcoder.Telegram", appName: "Telegram", windowTitles: [], hasWebCall: false))
+        let other = try #require(MeetingSource.make(bundleId: "com.example.x", appName: "Telemost", windowTitles: [], hasWebCall: false))
+
+        #expect(MeetingOfferText.namesCalendarEvent(for: zoom))
+        #expect(MeetingOfferText.namesCalendarEvent(for: meet))
+        #expect(MeetingOfferText.namesCalendarEvent(for: webCall))
+        #expect(!MeetingOfferText.namesCalendarEvent(for: browser))
+        #expect(!MeetingOfferText.namesCalendarEvent(for: chat))
+        #expect(!MeetingOfferText.namesCalendarEvent(for: other))
+
+        #expect(MeetingOfferText.offer(for: meet, calendarTitle: "Weekly sync") == "“Weekly sync” on Google Meet — record it?")
+        #expect(MeetingOfferText.offer(for: webCall, calendarTitle: "Weekly sync") == "“Weekly sync” on Chrome — record it?")
+        #expect(MeetingOfferText.offer(for: browser, calendarTitle: "Focus time") == "Chrome is using the mic — record it?")
+        #expect(MeetingOfferText.offer(for: chat, calendarTitle: "Focus time") == "Telegram call — record it?")
+        #expect(MeetingOfferText.offer(for: other, calendarTitle: "Focus time") == "Telemost is using the mic — record it?")
+    }
 }

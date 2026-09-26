@@ -35,19 +35,43 @@ public enum MeetingServiceMatcher {
             if !idle.contains(head) { return Match(id: "teams", name: "Teams") }
             return nil
         }
-        if lower.range(of: #"zoom (meeting|webinar)\b"#, options: .regularExpression) != nil {
+        // "<name>'s Zoom Meeting", or the app's bare "Zoom Meeting" / "Zoom
+        // Webinar" — the whole title, so "how to schedule a zoom meeting -
+        // Google Search" or a help page's "How to Schedule a Zoom Meeting" is no call.
+        if lower.range(of: #"^(?:.+['’]s\s+)?zoom (meeting|webinar)$"#, options: .regularExpression) != nil {
             return Match(id: "zoom", name: "Zoom")
         }
         if lower.hasSuffix("- webex") || lower.hasSuffix("– webex") || lower.range(of: #"^meeting\s\|.*webex"#, options: .regularExpression) != nil {
             return Match(id: "webex", name: "Webex")
         }
-        if lower.contains("whereby") { return Match(id: "whereby", name: "Whereby") }
-        if lower.contains("jitsi meet") { return Match(id: "jitsi", name: "Jitsi Meet") }
-        if lower.contains("telemost") || lower.contains("телемост") { return Match(id: "telemost", name: "Telemost") }
-        if lower.contains("kontur.talk") || lower.contains("контур.толк") { return Match(id: "kontur-talk", name: "Kontur.Talk") }
-        if lower.contains("vk calls") || lower.contains("vk звонки") { return Match(id: "vk-calls", name: "VK Calls") }
-        if lower.contains("sberjazz") || lower.contains("jazz by sber") { return Match(id: "jazz", name: "Jazz") }
+        // The rest by name, only as the title's LAST words ("standup | Jitsi
+        // Meet", "Планёрка — Яндекс Телемост"). The shapes are unverified (§6
+        // step 9); any other place is unsafe: a search page puts the query
+        // first ("jitsi meet - Google Search"), and its title would be stored.
+        for (id, name, suffixes) in suffixServices where endsWithService(lower, suffixes) {
+            return Match(id: id, name: name)
+        }
         return nil
+    }
+
+    /// Services matched only by `endsWithService`: id, name, lowercase title endings.
+    private static let suffixServices: [(id: String, name: String, suffixes: [String])] = [
+        ("whereby", "Whereby", ["whereby"]),
+        ("jitsi", "Jitsi Meet", ["jitsi meet"]),
+        ("telemost", "Telemost", ["yandex telemost", "яндекс телемост", "telemost", "телемост"]),
+        ("kontur-talk", "Kontur.Talk", ["kontur.talk", "контур.толк"]),
+        ("vk-calls", "VK Calls", ["vk calls", "vk звонки"]),
+        ("jazz", "Jazz", ["sberjazz", "jazz by sber"]),
+    ]
+
+    /// "<head> <separator> <service>": something, a space, a dash or a bar,
+    /// then one of `suffixes` as the title's last words. Never the bare name
+    /// (a landing page, like Meet's) and never the name followed by anything else.
+    private static func endsWithService(_ lower: String, _ suffixes: [String]) -> Bool {
+        suffixes.contains { suffix in
+            let pattern = #"^.*\S\s+[-–—|]\s*"# + NSRegularExpression.escapedPattern(for: suffix) + "$"
+            return lower.range(of: pattern, options: .regularExpression) != nil
+        }
     }
 
     /// Lowercase tokens a calendar event's URL / location / notes would carry

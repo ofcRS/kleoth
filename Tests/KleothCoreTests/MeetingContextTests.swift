@@ -8,12 +8,12 @@ import Foundation
         context.startedFrom = "offer"; context.appName = "Google Chrome"; context.appBundleId = "com.google.Chrome"
         context.service = "Google Meet"; context.windowTitle = "Weekly sync - Google Meet"
         context.calendarTitle = "Weekly sync"; context.calendarStart = "2026-09-24T10:00:00Z"; context.calendarEnd = "2026-09-24T10:30:00Z"
-        context.micSeconds = 1712
+        context.micSeconds = 1712; context.calendarOtherAttendees = 2
         let metadata = MeetingMetadata(title: "Weekly sync", date: "2026-09-24", context: context)
         let data = try MeetingStore.makeEncoder().encode(metadata)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let stored = try #require(json["context"] as? [String: Any])
-        #expect(Set(stored.keys) == ["app_bundle_id", "app_name", "calendar_end", "calendar_start", "calendar_title", "mic_seconds", "service", "started_from", "window_title"])
+        #expect(Set(stored.keys) == ["app_bundle_id", "app_name", "calendar_end", "calendar_other_attendees", "calendar_start", "calendar_title", "mic_seconds", "service", "started_from", "window_title"])
         let back = try MeetingStore.makeDecoder().decode(MeetingMetadata.self, from: data)
         #expect(back.context == context)
     }
@@ -55,6 +55,25 @@ import Foundation
         let organizer = A(name: "Boris Ivanov", email: "mailto:Boris.Ivanov@acme.com", isUser: false, isRoomOrResource: false)
         let participants = CalendarParticipants.names(attendees: [me, boris], organizer: organizer)
         #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: participants)["speaker_1"] == "Boris Ivanov")
+    }
+
+    /// Branch review (phase 2) M4 / Q6: one readable name is not one person.
+    /// A three-person event with one nameless attendee (`otherAttendees` 2)
+    /// keeps "Them"; a `meta.json` from before the count (nil) keeps the
+    /// names rule.
+    @Test func defaultSpeakerNamesNeedExactlyOneOtherAttendee() {
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: ["Boris"], otherAttendees: 2)["speaker_1"] == "Them")
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: ["Boris"], otherAttendees: 1)["speaker_1"] == "Boris")
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: ["Boris"], otherAttendees: nil)["speaker_1"] == "Boris")
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "", participants: [], otherAttendees: 1)["speaker_1"] == "Them")
+        typealias A = CalendarParticipants.Attendee
+        let me = A(name: "Me", email: "mailto:me@acme.com", isUser: true, isRoomOrResource: false)
+        let boris = A(name: "Boris", email: "mailto:b@acme.com", isUser: false, isRoomOrResource: false)
+        let nameless = A(name: nil, email: "urn:uuid:5A1C", isUser: false, isRoomOrResource: false)
+        let names = CalendarParticipants.names(attendees: [me, boris, nameless], organizer: nil)
+        let count = CalendarParticipants.otherAttendeeCount(attendees: [me, boris, nameless], organizer: nil)
+        #expect(MeetingNaming.defaultSpeakerNames(userName: "Anna", participants: names, otherAttendees: count)
+            == ["speaker_0": "Anna", "speaker_1": "Them"])
     }
 
     @Test func startOriginRawValues() {

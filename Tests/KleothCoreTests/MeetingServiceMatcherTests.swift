@@ -24,6 +24,7 @@ import Testing
         #expect(id("Anna's Zoom Meeting") == "zoom")
         #expect(id("Anna’s Zoom Meeting") == "zoom")
         #expect(id("Zoom Webinar") == "zoom")
+        #expect(id("Zoom Meeting") == "zoom")
         #expect(id("Zoom") == nil)
         #expect(id("Zoom Workplace") == nil)
         #expect(id("Home") == nil)
@@ -34,13 +35,46 @@ import Testing
         #expect(id("Meeting | Webex") == "webex")
         #expect(id("Meeting | Something") == nil)
         #expect(id("team-room – Whereby") == "whereby")
-        #expect(id("Jitsi Meet") == "jitsi")
+        #expect(id("team-room | Whereby") == "whereby")
+        #expect(id("standup | Jitsi Meet") == "jitsi")
         #expect(id("Планёрка — Яндекс Телемост") == "telemost")
         #expect(id("Sync - Yandex Telemost") == "telemost")
-        #expect(id("Контур.Толк — встреча") == "kontur-talk")
-        #expect(id("VK Звонки") == "vk-calls")
-        #expect(id("SberJazz: Sync") == "jazz")
+        #expect(id("Планёрка — Контур.Толк") == "kontur-talk")
+        #expect(id("Созвон — VK Звонки") == "vk-calls")
+        #expect(id("Sync | VK Calls") == "vk-calls")
+        #expect(id("Sync — SberJazz") == "jazz")
+        #expect(id("Sync | Jazz by Sber") == "jazz")
         #expect(id("All That Jazz - YouTube") == nil)
+    }
+
+    /// Branch review (phase 2) M3: the service's name must END the title,
+    /// after a separator and a head — its own call-window shape. A search
+    /// page puts the query first and the engine last, so it never counts as a
+    /// call (and its title is never stored); neither does a page that merely
+    /// mentions the service, or its bare landing page.
+    @Test func searchPagesAndMentionsNeverMatch() {
+        let titles = [
+            "whereby pricing - Google Search",
+            "jitsi meet - Google Search",
+            "Jitsi Meet self-hosting guide",
+            "телемост — Яндекс: нашлось 3 млн результатов",
+            "yandex telemost - Поиск в Google",
+            "контур.толк — Яндекс: нашлось 120 тыс. результатов",
+            "vk звонки - Google Search",
+            "sberjazz at DuckDuckGo",
+            "how to schedule a zoom meeting - Google Search",
+            "Zoom Meeting tips and tricks",
+            "How to Schedule a Zoom Meeting",
+            "google meet - Google Search",
+            "microsoft teams - Google Search",
+            // Bare names: a landing page, not a call.
+            "Whereby", "Jitsi Meet", "Телемост", "Яндекс Телемост", "Контур.Толк", "VK Звонки", "SberJazz",
+            // The name first, a separator, then something else.
+            "Контур.Толк — встреча", "SberJazz: Sync",
+        ]
+        for title in titles {
+            #expect(id(title) == nil, "\(title)")
+        }
     }
 
     /// Review M-6: every dash the code regex accepts works in the suffix too.

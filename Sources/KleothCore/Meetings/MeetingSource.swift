@@ -65,8 +65,19 @@ public struct MeetingSource: Sendable, Hashable {
 public enum MeetingOfferText {
     public static let maxCalendarTitle = 40
 
+    /// Whether an offer on `source` may name the calendar event on now: a
+    /// call only — a call app, or a `site:` / `webcall:` browser call. A
+    /// browser without a call, a chat app (a voice note) or an unknown app is
+    /// no event ("“Focus time” on Chrome" is voice typing). The host skips the
+    /// calendar lookup for the rest.
+    public static func namesCalendarEvent(for source: MeetingSource) -> Bool {
+        source.sourceClass == .callApp || source.sourceClass == .browserCall
+    }
+
+    /// `calendarTitle` is used only when `namesCalendarEvent(for:)`.
     public static func offer(for source: MeetingSource, calendarTitle: String?) -> String {
-        if let title = calendarTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+        if namesCalendarEvent(for: source),
+           let title = calendarTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             let cut = title.count > maxCalendarTitle ? String(title.prefix(maxCalendarTitle)) + "…" : title
             return "“\(cut)” on \(source.name) — record it?"
         }

@@ -65,4 +65,30 @@ import Testing
         let boris = A(name: "Boris", email: "b@acme.com", isUser: false, isRoomOrResource: false)
         #expect(CalendarParticipants.names(attendees: [urn, boris], organizer: nil) == ["Boris"])
     }
+
+    /// Branch review (phase 2) M4 / Q6: the one-to-one rule counts PEOPLE —
+    /// anyone with an identity (a name, an address, or another URL such as a
+    /// `urn:uuid:`) — not the names `names` can read. A three-person event
+    /// with one nameless attendee has two other people.
+    @Test func otherAttendeeCountCountsEveryIdentity() {
+        let me = A(name: "Me", email: "mailto:me@acme.com", isUser: true, isRoomOrResource: false)
+        let room = A(name: "Room 4", email: "mailto:room4@acme.com", isUser: false, isRoomOrResource: true)
+        let boris = A(name: "Boris", email: "mailto:b@acme.com", isUser: false, isRoomOrResource: false)
+        let urn = A(name: nil, email: "urn:uuid:5A1C", isUser: false, isRoomOrResource: false)
+        let path = A(name: nil, email: "/principals/users/chris/", isUser: false, isRoomOrResource: false)
+
+        // User + Boris + a nameless attendee: two others, one readable name.
+        #expect(CalendarParticipants.names(attendees: [me, boris, urn], organizer: nil) == ["Boris"])
+        #expect(CalendarParticipants.otherAttendeeCount(attendees: [me, boris, urn], organizer: nil) == 2)
+        #expect(CalendarParticipants.otherAttendeeCount(attendees: [me, boris, path], organizer: nil) == 2)
+        // The user and rooms never count; the organizer counts once.
+        #expect(CalendarParticipants.otherAttendeeCount(attendees: [me, room, boris], organizer: boris) == 1)
+        #expect(CalendarParticipants.otherAttendeeCount(
+            attendees: [me, boris], organizer: A(name: nil, email: "MAILTO:B@acme.com", isUser: false, isRoomOrResource: false)) == 1)
+        // The same URL twice is one person; no identity at all is no one.
+        #expect(CalendarParticipants.otherAttendeeCount(attendees: [me, urn], organizer: urn) == 1)
+        let blank = A(name: " ", email: " ", isUser: false, isRoomOrResource: false)
+        #expect(CalendarParticipants.otherAttendeeCount(attendees: [me, boris, blank], organizer: nil) == 1)
+        #expect(CalendarParticipants.otherAttendeeCount(attendees: [], organizer: nil) == 0)
+    }
 }

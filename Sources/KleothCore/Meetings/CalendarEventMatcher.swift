@@ -88,6 +88,24 @@ public enum CalendarParticipants {
         return out.map(\.name)
     }
 
+    /// How many other people the event has, for the one-to-one rule (Q6):
+    /// everyone `names` counts, plus each attendee it can't name who still
+    /// has an identity — another URL (a `urn:uuid:`, a principal path),
+    /// counted once per URL. The user and rooms never count. A nameless
+    /// attendee may be someone `names` already has: counting them again only
+    /// costs a "Them" where a name would do, never a wrong name.
+    public static func otherAttendeeCount(attendees: [Attendee], organizer: Attendee?) -> Int {
+        let all = attendees + (organizer.map { [$0] } ?? [])
+        var unnamed = Set<String>()
+        for attendee in all where !attendee.isUser && !attendee.isRoomOrResource
+            && displayName(name: attendee.name, email: attendee.email) == nil {
+            guard let url = attendee.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !url.isEmpty else { continue }
+            unnamed.insert(url)
+        }
+        return names(attendees: attendees, organizer: organizer).count + unnamed.count
+    }
+
     /// A name, else the address's local part made readable when it has a
     /// separator ("anna.petrova+cal@acme.com" → "Anna Petrova"), else the
     /// address. Nil without an address: a `urn:uuid:` or a principal path is

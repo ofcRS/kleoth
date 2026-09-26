@@ -17,15 +17,19 @@ public struct MeetingContext: Codable, Sendable, Equatable {
     /// ISO 8601.
     public var calendarStart: String?
     public var calendarEnd: String?
+    /// The event's other people (`CalendarParticipants.otherAttendeeCount`:
+    /// the user and rooms out, a nameless attendee in) — whether the meeting
+    /// is one-to-one (Q6). Nil without an event, and in a meeting from before it.
+    public var calendarOtherAttendees: Int?
     /// How long the app held the mic during the recording.
     public var micSeconds: Double?
 
     public init(startedFrom: String? = nil, appName: String? = nil, appBundleId: String? = nil, service: String? = nil,
                 windowTitle: String? = nil, calendarTitle: String? = nil, calendarStart: String? = nil,
-                calendarEnd: String? = nil, micSeconds: Double? = nil) {
+                calendarEnd: String? = nil, calendarOtherAttendees: Int? = nil, micSeconds: Double? = nil) {
         self.startedFrom = startedFrom; self.appName = appName; self.appBundleId = appBundleId; self.service = service
         self.windowTitle = windowTitle; self.calendarTitle = calendarTitle; self.calendarStart = calendarStart
-        self.calendarEnd = calendarEnd; self.micSeconds = micSeconds
+        self.calendarEnd = calendarEnd; self.calendarOtherAttendees = calendarOtherAttendees; self.micSeconds = micSeconds
     }
 }
 
