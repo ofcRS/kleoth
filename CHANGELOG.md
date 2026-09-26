@@ -49,8 +49,8 @@ All notable changes to Kleoth are documented here. The format is based on
   Telegram Desktop now gets the light touch of the other messengers: pasted as heard at the cursor
   (unless "Also clean up short dictations and chat messages" is on), and a merged selection keeps
   its wording and your voice.
-- **`\/` in Kleoth's JSON files.** `cover.json`, `meta.json`, the other meeting files and the
-  dictation day files wrote every `/` as `\/`, so a model name read `z-ai\/glm-5.3-flash`. They are
+- **`\/` in meeting and dictation files.** `cover.json`, `meta.json`, the other meeting files and
+  the dictation day files wrote every `/` as `\/`, so a model name read `z-ai\/glm-5.3-flash`. They are
   written plainly now; files written before still read fine.
 - **A leftover `.cover-…tmp` file.** A crash or a force quit at the instant a cover was being
   saved could leave that hidden temp file in the meeting folder for good. Once it is an hour old it

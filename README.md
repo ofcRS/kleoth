@@ -222,8 +222,8 @@ hiring, legal matters, family) gets no picture.
 | Codex | the `codex` CLI installed and signed in | the scene, to OpenAI over your ChatGPT login — about a minute per cover, within your plan's limits |
 | OpenRouter | an API key | the scene — each cover is billed to your OpenRouter account |
 
-The summary itself goes only to the provider that already summarized the transcript. Right-click a
-cover (or use its `…` button) for **New Cover** or **Remove Cover**; a meeting without one has a
+The summary itself goes only to the provider that already summarized the transcript. Right-click the
+cover on the meeting page (or use its `…` button) for **New Cover** or **Remove Cover**; a meeting without one has a
 **Draw Cover** chip; select older meetings and choose **Draw Covers** to give them one.
 
 ## CLI

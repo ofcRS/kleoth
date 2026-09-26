@@ -137,7 +137,7 @@ struct SettingsCoversSection: View {
     private var caption: String {
         switch pickedEngine {
         case nil:
-            return "Draws one small picture per meeting from its summary, shown in History. Pick an engine to turn it on."
+            return "Draws one picture per meeting from its summary, across the top of the meeting page. Pick an engine to turn it on."
         case .localServer?:
             return "Drawn on this Mac by your local server. The scene is written from the summary by your summary provider."
         case .codex?:

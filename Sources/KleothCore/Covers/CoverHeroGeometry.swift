@@ -16,7 +16,8 @@ public enum CoverHeroGeometry {
     public static let aspect: CGFloat = 2
     /// The narrowest detail pane (440 pt) still gets a band worth looking at.
     public static let minHeight: CGFloat = 200
-    /// Wide panes stop here, so the crop never thins past a third of the square.
+    /// Wide panes stop here, so the band stays a readable header; past a 1,200 pt pane the
+    /// crop is a little under a third of the square (1,400 pt shows 29 %).
     public static let maxHeight: CGFloat = 400
     /// Extra picture above and below the band, hidden at rest, that the
     /// parallax slides into — so the slide never uncovers a gap, whatever the

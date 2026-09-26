@@ -995,7 +995,8 @@ its reason:
   (`.quickLookPreview`; Esc closes it). The panel closes when the picture changes or goes (New Cover, Remove
   Cover). `import QuickLook` autolinks `_QuickLook_SwiftUI`, which links QuickLookUI; no
   Quartz link is needed.
-- The menu is unchanged in wording and enablement (`MeetingCoverMenuItems`), behind three doors: the band's
+- The menu keeps its wording (`MeetingCoverMenuItems`); the items that change a cover now also need an engine
+  (a demo launch has none), behind three doors: the band's
   right-click, a `…` button in its bottom-trailing corner, and, without a picture, a chip in the chip row:
   "Draw Cover", "No cover" (skipped; its menu leads with "Skipped: the meeting looked personal"), "Cover failed"
   (orange; its menu leads with the reason and Try Again), or a "Drawing cover…" spinner. A New Cover over a
@@ -1067,6 +1068,11 @@ its reason:
 - Item 11 now reads: click the band → Quick Look with the full square, Esc closes it; right-click and `…` open the
   menu; a summarized meeting without a picture has the chip. Add: Reduce Motion (no slide, no stretch), the rubber
   band at the top, a window resize, "Show scroll bars: Always", a History row at 56 pt.
+
+- The Settings → Meetings → Covers caption with no engine now reads "Draws one picture per meeting from its
+  summary, across the top of the meeting page." (§3.1 quoted "small picture … shown in History").
+- Only one header pattern was built (the full-width band); the ambient band and the overlaid poster were compared
+  on paper (plan `## Design`) and rejected. Another pattern is a follow-up if the band disappoints on screen.
 
 *Follow-ups, not built*
 
