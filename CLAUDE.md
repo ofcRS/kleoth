@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (768 tests)
+swift build && swift test                        # core + CLI (773 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -212,10 +212,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   Screen Recording/Accessibility grant, the calendar only with access given. `MeetingDetector` is pure and owns
   every timing; after a tick `nextDeadline` is nil or > now, and the host still floors its wait at 0.25 s (a past
   deadline was a main-actor busy loop). `IsRunningInput` is read on every re-read, never listened to; held mics
-  are re-resolved every 3 s (titles from a 30 s per-pid cache) so a tab that joins a call upgrades. The monitor
-  also runs during every meeting for `context`, which `stop()` captures SYNCHRONOUSLY right after `isRecording =
-  false` (before the combine's first `await`, or the detector forgets the linked app) and writes into `meta.json`
-  once; every later writer carries it whole (`runPipeline` reads the existing `meta.json` first).
+  are re-resolved every 3 s (titles from a 30 s per-pid cache) so a tab that joins a call upgrades — only while a
+  meeting records or `MeetingDetector.hasOfferableSession` holds (an app holding the mic all day stops after
+  10 min). The monitor also runs during every meeting for `context`, which `stop()` captures SYNCHRONOUSLY right
+  after `isRecording = false` (before the combine's first `await`, or the detector forgets the linked app) and
+  writes into `meta.json` once; every later writer carries it whole (`runPipeline` reads the existing `meta.json`
+  first). A `PillPrompt` prints as its id only: the opt-in pill trace must never log an offer's text.
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop

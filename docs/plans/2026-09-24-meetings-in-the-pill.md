@@ -754,9 +754,10 @@ decline); `isDictationPhaseLive` is false for it.
 
   It runs the monitor while enabled or a meeting records; with each change resolves owners, reads
   `WebCallAssertions.pids()` and window titles (every non-never holder) — off the main actor. As built (§10):
-  while anything holds the mic, the held set is re-resolved every `pollWhileHeld` (3 s), titles coming from a
-  `titleCacheSeconds` (30 s) per-PID cache, so a tab whose meeting title or web-call assertion appears after
-  it took the mic still upgrades its source; builds `MeetingSource`s; feeds `MeetingDetector`; schedules
+  while a meeting records or the detector still has a session it could offer (`hasOfferableSession`), the held
+  set is re-resolved every `pollWhileHeld` (3 s), titles coming from a `titleCacheSeconds` (30 s) per-PID cache
+  (emptied once nothing holds the mic), so a tab whose meeting title or web-call assertion appears after it took
+  the mic still upgrades its source; builds `MeetingSource`s; feeds `MeetingDetector`; schedules
   `.tick` at `nextDeadline` (the wait floored at 0.25 s, capped at 1 s while a prompt is up); turns
   `.show`/`.withdraw` into `showMeetingPhase(.prompt(…))` / `dismissMeetingPhase()` — a refused show becomes
   `.answered(.refused)`; persists `.ignore`; builds the
@@ -1210,6 +1211,17 @@ Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fix
     · Zoom · …" is not traded for the service-less recovered form; `meta.json` at stop uses `MeetingStore`'s
     encoder options (`.withoutEscapingSlashes`); `localtranscribe` carries `context`.
 44. **Settings** as in §3.2.7's "As built" note.
+45. **The 3 s re-resolve backs off** (final fix batch): it runs only while a meeting records or
+    `MeetingDetector.hasOfferableSession(at:)` holds — a held session not yet offered, silenced or answered, no
+    older than `maxOfferAge`, with detection on; an ignored key counts only while a browser session can still
+    move to a `webcall:`/`site:` key. An app holding the mic all day stops waking Kleoth after 10 min or an
+    answer; the chain restarts from any event that makes a session offerable again (a displaced offer, detection
+    switched on). The title cache empties once nothing holds the mic.
+46. **Final fix batch, the rest:** a new meeting's mic seconds start at the meeting, not at the poll before it;
+    the deadline sweep allows one tick (the real bound); a `PillPrompt` prints as its id only, so the opt-in pill
+    trace can never log an offer's text (a calendar title); the web-call assertion lookup reads a bare pid's
+    executable path, so an accessory app resolves; the Raycast extension lists only meetings with a
+    `transcript.json` (an untranscribed one has `meta.json` since stop, and was listed as "On-device").
 
 **Known gaps, phase 2 (for the §6 checklist)**
 
@@ -1221,7 +1233,8 @@ Phase 1: items 1–13; phase 2 (plan Tasks 9–16, the pre-flight's verified fix
 - With consent never given, Record on an offer delays the next due source by only 1 s: a second offer can
   rise beside the "Before you record" window.
 - During every meeting (detection off too), while an app holds the mic, the host wakes every 3 s for the
-  assertion read and the cached owner lookups.
+  assertion read and the cached owner lookups. Outside a meeting it does so only while a session can still be
+  offered (item 45).
 - The `browser:` caption is written twice: in Settings and in the pill's tooltip.
 - Unverified until the §6 step 9 calibration on an awake Mac: every real call, WebKit → Safari live, the Safari
   web-app ids, FaceTime through `avconferenced`, the catalog ids marked "unverified". The `micopen` timings so
