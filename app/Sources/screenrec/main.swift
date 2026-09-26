@@ -21,7 +21,7 @@ import KleothCore
 ///
 /// `--extract` and `--words` are the recordings-viewer lane's probes:
 /// `RecordingAudioExtractor` (movie → `.m4a`) and `LocalTranscriber` with
-/// `wordTimestamps: true` (the per-word timings the viewer highlights).
+/// `timing: .words` (the per-word timings the viewer highlights).
 /// `--sidecar` runs both the way the app does after a recording is saved and
 /// writes the `<stem>.json` sidecar the viewer reads — how the README demo's
 /// recording gets real on-device word timings (`make-demo-data.ts`).
@@ -53,7 +53,7 @@ struct ScreenRecMain {
             await Words.run(
                 audio: URL(fileURLWithPath: words),
                 language: arguments.language,
-                wordTimestamps: !arguments.segments
+                timing: arguments.segments ? .segments : .words
             )
             return
         }
@@ -324,9 +324,9 @@ private struct Arguments {
           --inspect   print bitrate, fps and track durations of an existing file, then exit
           --extract   pull a movie's audio out to an .m4a (RecordingAudioExtractor), then exit
           --words     transcribe an audio file on-device with per-WORD timings
-                      (LocalTranscriber wordTimestamps: true), then exit
-          --segments  with --words: the OLD per-SEGMENT path (wordTimestamps: false),
-                      i.e. what meetings still get — run both to diff them
+                      (LocalTranscriber timing: .words), then exit
+          --segments  with --words: the per-SEGMENT path (timing: .segments, what
+                      dictation gets) — run both to diff them
           --language  pin the --words / --sidecar language (e.g. ru); default is auto-detect
           --sidecar   transcribe a movie on device as the app does after saving one, and
                       write its "<stem>.json" sidecar beside it, then exit
@@ -500,7 +500,7 @@ private enum Sidecar {
             // The app's normalization: empty or "auto" is nil (detect).
             let pinned = language?.trimmingCharacters(in: .whitespaces).lowercased()
             let transcriber = LocalTranscriber(
-                language: (pinned?.isEmpty ?? true) || pinned == "auto" ? nil : pinned, wordTimestamps: true)
+                language: (pinned?.isEmpty ?? true) || pinned == "auto" ? nil : pinned, timing: .words)
             let options = ScribeOptions()
             let response = try await transcriber.transcribe(fileURL: audio, options: options)
             var record = ScreenRecordingRecord()
@@ -528,13 +528,13 @@ private enum Sidecar {
 
 // MARK: - Words
 
-/// `--words`: `LocalTranscriber` with `wordTimestamps: true`, i.e. one entry
+/// `--words`: `LocalTranscriber` with `timing: .words`, i.e. one entry
 /// per WORD rather than per segment. Prints the timings so a run can be eyeballed
 /// for "is this really per-word" (consecutive entries a few hundred ms apart,
 /// one token each) rather than per-segment. `--segments` runs the SAME file down
-/// the old path, so the two can be diffed to show meetings are unaffected.
+/// the per-segment path (dictation's), so the two can be diffed.
 private enum Words {
-    static func run(audio: URL, language: String?, wordTimestamps: Bool) async {
+    static func run(audio: URL, language: String?, timing: LocalTranscriber.Timing) async {
         guard FileManager.default.fileExists(atPath: audio.path) else {
             Swift.print("words      : no file at \(audio.path)")
             return
@@ -544,11 +544,11 @@ private enum Words {
             return
         }
         Swift.print("words      : \(audio.lastPathComponent) · model \(LocalTranscriber.defaultModel)"
-            + " · language \(language ?? "auto") · \(wordTimestamps ? "per word" : "per segment")")
+            + " · language \(language ?? "auto") · \(timing == .words ? "per word" : "per segment")")
         let transcriber = LocalTranscriber(
             model: LocalTranscriber.defaultModel,
             language: language,
-            wordTimestamps: wordTimestamps
+            timing: timing
         )
         let started = Date()
         let response: ScribeResponse

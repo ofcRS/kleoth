@@ -1051,7 +1051,7 @@ its reason:
   may be a draw in flight, the CLI's or the app's). `install` sweeps its own folder first; the app sweeps every
   `meeting-*` folder once at launch, off the main actor (`CoverController.sweepTemporaryFilesAtLaunch()`, called
   from `AppDelegate`, so a demo launch never sweeps). This closes the last known gap above for files an hour old.
-- `CoverHeroGeometry` added: the band's rules as pure, tested math. Core tests: 664 → 673.
+- `CoverHeroGeometry` added: the band's rules as pure, tested math. Core tests: 664 → 675 (688 once main's on-device-turns tests merged in).
 
 *Demo mode (`docs/plans/2026-09-24-demo-mode.md`)*
 

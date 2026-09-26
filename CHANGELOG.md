@@ -55,6 +55,18 @@ All notable changes to Kleoth are documented here. The format is based on
 - **A leftover `.cover-…tmp` file.** A crash or a force quit at the instant a cover was being
   saved could leave that hidden temp file in the meeting folder for good. Once it is an hour old it
   is now removed at the next launch, or before the next cover is saved there.
+- **On-device meeting transcripts came out as a few long blocks.** A meeting transcribed on device
+  showed each side in one or two long paragraphs — most of what you said, then most of what the
+  other person said — sometimes with a "Thank you." nobody said. The words and who said them were
+  right; the order of the turns was lost. Whisper's own timestamps stretch each sentence over the
+  silence after it, so the transcript never saw where anyone stopped. The on-device engine now
+  times each stretch of speech by its words, as it already did for screen recordings, and a new
+  turn starts wherever the other side spoke in the pause, even for a one-word "Sure." in a quick
+  exchange (a reply that talks over you keeps your turn whole). The "Thank you." Whisper made up
+  in a silence goes too: timing by words drops a sentence with no speech under it. Transcribing
+  takes about as long as before. Cloud (Scribe) transcripts are unchanged. A meeting transcribed
+  on device before this keeps its old blocks until it is transcribed again: **Remove
+  transcription**, then **Transcribe**.
 
 ## [0.5.0] — 2026-09-25
 
