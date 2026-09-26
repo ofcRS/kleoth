@@ -26,8 +26,8 @@ toggle; it asks "Transcribe this meeting with Wispr?" and records only on yes; i
 the call ends; dictating during the meeting shares the mic instead of pausing it. How it detects a call is
 not documented.
 
-Recorded meetings per month: June 44, July 33, August 19, September 10 so far — plausibly meetings that
-happened but were never recorded. Only 4 of 95 transcribed meetings carry attendee names.
+The motivation: meetings that happen but never get recorded because starting one takes a trip to the menu
+bar, and recorded meetings that rarely know who was in them.
 
 1. **Phase 1 — meetings in the pill.** A Meeting button in the peek dock and the pill menu; while a
    meeting records, the pill is its control bar (elapsed time, levels, Stop), exactly as it already is
@@ -93,7 +93,7 @@ a dispatch queue. The selectors carry no `API_AVAILABLE` in the 26.5 or 15.4 hea
 lists no introduction version; they are absent from the macOS 13.3 SDK and present from 14 on — inside
 the app's 14.4 floor either way. Permission and listener behaviour: §3.2.1.
 
-**Calendar.** Opt-in (Settings → Meetings → Calendar → Enable). Four of 95 meetings have attendee names:
+**Calendar.** Opt-in (Settings → Meetings → Calendar → Enable). Few meetings end up with attendee names:
 the lookup runs only at stop with auto-transcribe on or at transcription of a placeholder-titled folder,
 and even then keeps only attendees whose `name` is set.
 
