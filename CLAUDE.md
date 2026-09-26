@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (677 tests)
+swift build && swift test                        # core + CLI (681 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -65,8 +65,9 @@ KeyboardShortcuts, WhisperKit 0.18)
   `PillTypes` = the contract). Shared by the app and `pillsandbox`.
 - `KleothApp`: `MenuBarExtra` agent; `RecordingController` (meetings + serial pipeline queue),
   `DictationController`, `FocusedTextReader` (the only code that reads another app's text),
-  `ScreenRecordingController`, `PillCoordinator` (single face in front of the
-  pill), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
+  `ScreenRecordingController`, `PillCoordinator` (single face in front of the pill: dictation, screen
+  recording, meetings), `Meetings/` (`MeetingCaptureTypes`, `MeetingPillBridge` = the meeting side's face
+  in front of the pill), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
   Meetings | Dictations | Recordings scopes, `MeetingCoverTile`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
   No test target.
@@ -76,7 +77,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
 `docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`,
 `docs/plans/2026-09-24-positioning.md`, `docs/plans/2026-09-24-demo-mode.md` (`-KleothDemo`: what a demo launch must never do),
-`docs/plans/2026-09-24-meeting-illustrations.md`, `docs/plans/2026-09-24-dictation-context.md`.
+`docs/plans/2026-09-24-meeting-illustrations.md`, `docs/plans/2026-09-24-dictation-context.md`,
+`docs/plans/2026-09-24-meetings-in-the-pill.md`.
 
 ## Data on disk
 - Meeting = `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`: `mic.m4a`, `system.m4a`, `meeting.m4a`,
@@ -144,7 +146,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - **Microphone:** one app-wide input-device pick (`input_device`, empty = Automatic) honoured by all
   three captures, set via `kAudioOutputUnitProperty_CurrentDevice` before reading `inputFormat(forBus:)`.
 - **Pill:** dark capsule docked to a screen edge (`PillPlacement.edge` + fraction), tucked half off-screen
-  when idle, hover → peek dock (Dictate · Record · More), own `PillMenuPanel` (never `NSMenu` — refused
+  when idle, hover → peek dock (Dictate · Meeting · Screen · More), own `PillMenuPanel` (never `NSMenu` — refused
   for inactive apps). Panel frames are set by the controller; SwiftUI never animates the window.
 - **Screen recording:** SCStream screen + audio + a third `AVAudioEngine` mic tap mixed to ONE AAC track;
   H.264 ≤ 1920 px, 30 fps, fMP4 10 s fragments (player compatibility unverified — `fragmentInterval`
@@ -183,6 +185,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   90 s. Cloud jobs run on `CoverController`'s own serial tail, local ones via `enqueuePipelineJob`; a cover
   never marks a meeting processing. Money only in Settings → Usage (the covers row sums `cover.json` `cost`).
   Design: `docs/plans/2026-09-24-meeting-illustrations.md`.
+- **Meetings in the pill (2026-09-25):** the meeting bar shows for EVERY meeting (any start path; dictation off
+  or the pill hidden for the hour too — the hot-mic rule). `.saving` is owner-checked (both captures use it);
+  one queued confirmation slot with its owner. The pill's Meeting button just calls `start()` (consent = the
+  "Before you record" window, nothing of its own). Phase 2 (call detection) not built yet. Design:
+  `docs/plans/2026-09-24-meetings-in-the-pill.md` (§10 lists the deviations).
 
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
@@ -242,6 +249,13 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - `DictationPrompt.system`/`schemaJSON` are SHA-256-pinned: no-context polish requests stay
   byte-identical (providers cache the prefix). `contextSystem` is `system` plus string replacements
   (the `\nOUTPUT\n` line, `language`'s wording): keep those anchors, and re-pin only on purpose.
+- Pill backdrops (`PillCoordinator.recompute()`): screen recording > meeting > resting pill > hidden. `setBackdrop`
+  takes over only a resting-family phase (otherwise it just stores it) and the pill applies `model.phase` a
+  main-queue turn late, so a capture start sets its backdrop FIRST, then dismisses its own leftover phase
+  (`MeetingPillBridge` `.started`); `clearCapturePhaseBlocking` withdraws the other capture's. The other order
+  leaves a hot mic with no bar.
+- `referenceSize` is resolved against the four-field dock (275 pt, every edge) and, on bottom/top, the meeting
+  bar (240 pt): a new longest shape must be folded in there, or a pill parked near a corner creeps.
 
 ## Security (hard rules)
 - API keys are never printed or committed. `.env` and `config.json` are gitignored; inspect `.env`
@@ -264,7 +278,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   .speechRuns` (word alignment, one entry per run of speech) and `TranscriptNormalizer` splits a `local-whisper`
   channel's turn where another channel spoke entirely inside the pause; Scribe grouping unchanged. Verified on
   fictional audio only (5/6 exact turn order); not yet on a real meeting or end to end in Russian.
-- Next, in order (for 0.5.1): the covers redesign; meetings in the pill (phase 1) + call detection (phase 2). Designs (local until each branch lands):
+- Meetings in the pill, phase 1 (for 0.5.1; `feat/meetings-in-the-pill`, in review): the four-field dock, the meeting
+  bar for every meeting, "Meeting saved". Verified: core tests, both builds, code-read traces; the pill films are
+  still to run. Not human-verified: design §6 manual items 1–6. The README pill GIFs (`make-demos.sh`) still show
+  the three-field dock.
+- Next, in order (for 0.5.1): the covers redesign; call detection (meetings in the pill, phase 2). Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand

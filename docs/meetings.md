@@ -15,11 +15,16 @@ server. It is free and open source (Apache-2.0).
 
 ## How it works
 
-1. **Record.** Click **Start Recording** in the menu bar, press your global hotkey, or use
+1. **Record.** Click **Start Recording** in the menu bar, hover the pill at the edge of your screen
+   (shown while dictation is on) and click **Meeting**, press your global hotkey, or use
    `kleoth://record` from a script or Raycast. Kleoth records two tracks: your mic, and the audio
    your Mac plays (through a Core Audio process tap, macOS 14.4+). The first time you record, a consent
    notice asks you to confirm that everyone agrees; the acknowledgement is stamped into each
-   meeting's `meta.json`.
+   meeting's `meta.json`. However the meeting started, the pill shows its bar while it records, even
+   with dictation off: the elapsed time, a meter for your mic and one for the system audio, and
+   **Stop**. A system meter that stays flat while others talk means Kleoth isn't allowed to record
+   system audio (*Privacy & Security → Screen & System Audio Recording*). Stopping shows "Meeting
+   saved" for a few seconds; click it to open the meeting in History.
 2. **Transcribe.** On device by default, with Whisper large-v3 turbo through
    [WhisperKit](https://github.com/argmaxinc/WhisperKit) on the Apple Neural Engine. It is free,
    offline after a one-time ~600 MB model download, and needs no key. The language is detected

@@ -23,6 +23,18 @@ All notable changes to Kleoth are documented here. The format is based on
   managers (1Password, Bitwarden, Passwords, Keychain Access) are never read. The text around the
   cursor is never stored. It's on by default; turn off **Use the text you're dictating into** in
   Settings → Dictation to read nothing (stored as `dictation_context`: `"false"`).
+- **Meetings from the pill.** Hover the pill: the dock now has four fields — Dictate · Meeting ·
+  Screen · More ("Record" is now "Screen", now that two fields record). **Meeting** starts a
+  meeting recording exactly like Start Recording in the menu bar, and the pill's menu has **Record
+  meeting**, or **Stop meeting recording** while one runs. While a meeting records — started from
+  the pill, the menu bar, the global hotkey or a `kleoth://` link, even with dictation off or the
+  pill hidden for an hour — the pill is its control bar: elapsed time, a microphone and a
+  system-audio meter, and **Stop**. A system meter that stays flat while others talk is the sign that
+  System Audio Recording isn't allowed. Once the meeting is saved, the pill says "Meeting saved ·
+  12:03" for a few seconds; click it to open the meeting in History. Dictating during a meeting
+  works as before and the bar comes back afterwards; a screen recording started during a meeting
+  takes the bar over until it ends. With the bigger dock, a pill parked near a corner sits a little
+  further from it, so the dock comes out without the pill shifting.
 
 ### Fixed
 

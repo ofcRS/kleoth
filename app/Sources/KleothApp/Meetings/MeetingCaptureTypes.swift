@@ -15,7 +15,9 @@ public enum MeetingStartOutcome: Equatable, Sendable {
 /// The meeting capture's life, as `RecordingController` reports it to
 /// observers that have no pill knowledge of their own (the bridge, phase 2's
 /// detection controller). Fired on the main actor, in this order per meeting:
-/// `started` → `finalizing` → `saved` | `stopFailed`.
+/// `started` → `finalizing` → `saved` | `stopFailed`. The one exception is a
+/// `stopFailed` with no directory: `stop()`'s "no active recording" guard
+/// sends it with no `finalizing` before it.
 public enum MeetingCaptureEvent: Equatable, Sendable {
     case started(since: Date, directory: URL)
     /// The capture slot is free; the two files are being combined.

@@ -73,7 +73,7 @@ your Mac unless you choose cloud transcription.
 
 ## Screen recording: Loom-style, local (beta)
 
-Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on), drag
+Pick "Record screen…" in the menu-bar popover (or hover the pill, shown while dictation is on, and click **Screen**), drag
 a region or take the whole display, and Kleoth records it with system audio **and** your microphone as one small H.264 MP4 (about 22 MB
 per minute) in `~/Kleoth/screen-recordings/`. Each recording is transcribed on device afterwards
 and opens in a viewer with the transcript beside the video: the spoken word is highlighted, clicking
@@ -171,10 +171,12 @@ The first launch opens a short welcome window: your name, recording consent, mic
 system-audio access, and the speech-model download. After that, Kleoth lives in the menu bar (the
 lyre).
 
-- **Record a meeting.** Click the lyre → **Start Recording**, and **Stop Recording** when the call
-  ends. Open the meeting and click **Transcribe** (free, on device), or turn on automatic
-  transcription in Settings → Meetings. If an AI provider is available, the summary follows.
-  Everything is also on disk in `~/Kleoth/meeting-<timestamp>/`.
+- **Record a meeting.** Click the lyre → **Start Recording**, hover the pill (shown while dictation is
+  on) and click **Meeting**, or press your recording hotkey. However you started it, the pill shows
+  the meeting bar while it records — elapsed time, a mic and a system-audio meter, and **Stop**;
+  **Stop Recording** in the popover works too. Open the meeting and click **Transcribe** (free, on
+  device), or turn on automatic transcription in Settings → Meetings. If an AI provider is available,
+  the summary follows. Everything is also on disk in `~/Kleoth/meeting-<timestamp>/`.
 - **Dictate.** Turn on dictation in Settings → Dictation, allow Accessibility, and add an
   ElevenLabs key in Settings → Accounts. Then hold **fn+shift** in any app, speak, and let go.
 - **Record your screen.** Click the lyre → **Record screen…**, drag a region or press Return for

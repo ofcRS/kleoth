@@ -19,7 +19,7 @@ export yet.** If you need a link to send someone, Loom still does that and Kleot
 ## How it works
 
 1. **Start.** Pick "Record screen…" in the menu-bar popover, or hover the pill at the edge of your
-   screen (shown while dictation is on) and click **Record**.
+   screen (shown while dictation is on) and click **Screen**.
 2. **Pick what to record.** The screen dims. Drag a region, or press Return for the whole display.
    Esc cancels. Kleoth's own windows (the pill, the picker, the toolbar) are never in the frame.
 3. **Record.** The pill becomes a toolbar with the elapsed time and live meters for your mic and
