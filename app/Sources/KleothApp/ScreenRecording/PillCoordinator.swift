@@ -94,8 +94,8 @@ final class PillCoordinator {
         guard recordingSince != since else { return }
         let rising = recordingSince == nil && since != nil
         recordingSince = since
-        recompute()
-        if rising { yieldMeetingSaveToScreenRecording() }
+        recompute()                                               // the new backdrop is stored FIRST…
+        if rising { clearCapturePhaseBlocking(.recording) }       // …then the collapse lands on it
     }
 
     /// Live meters for the `.recording` toolbar — a straight pass-through; the
@@ -143,10 +143,14 @@ final class PillCoordinator {
     var onMeetingDismiss: (() -> Void)?
 
     /// Non-nil → `.meeting(since:)` sits between `.recording` and `.idle`.
+    /// Call it BEFORE dismissing anything at a meeting's start: the pill's
+    /// `model.phase` changes a main-queue turn after a `dismiss()`, so a
+    /// backdrop set right after one is merely stored and the bar never rises.
     func setMeetingBackdrop(since: Date?) {
         guard meetingSince != since else { return }
         meetingSince = since
-        recompute()
+        recompute()                                               // the new backdrop is stored FIRST…
+        if since != nil { clearCapturePhaseBlocking(.meeting) }   // …then the collapse lands on it
     }
 
     /// The meeting bar's meters. Dropped while a screen recording runs: its
@@ -162,16 +166,12 @@ final class PillCoordinator {
     /// And precedence (meetings §3.1.5, screen recording > meeting): while a
     /// screen recording runs, the meeting's save sequence is not shown at all
     /// — its bar stays up and the popover / History carry the saved meeting.
+    /// (A meeting save already up when the screen recording started was
+    /// withdrawn then, by `clearCapturePhaseBlocking(.recording)`.)
     /// Returns false when nothing was shown.
     @discardableResult
     func showMeetingPhase(_ state: DictationPillState) -> Bool {
-        if meetingPhaseYieldsToScreenRecording(state) {
-            // The meeting's new phase replaces its old one, and under the
-            // screen bar the replacement is nothing: a meeting `.saving` put up
-            // before the screen recording started must not outlive its save.
-            dismissMeetingPhase()
-            return false
-        }
+        if meetingPhaseYieldsToScreenRecording(state) { return false }
         guard !isDictationPhaseLive else {
             if case .meetingSaved = state { queueConfirmation(state, owner: .meeting) }
             return false
@@ -213,15 +213,31 @@ final class PillCoordinator {
         }
     }
 
-    /// A screen recording started while the meeting's `.saving` or
-    /// `.meetingSaved` was up: `setBackdrop` only takes over a resting-family
-    /// phase, so without this the new screen bar would wait behind the
-    /// meeting's save (seconds for a long meeting). Meeting-owned phases only;
-    /// a live dictation is untouched.
-    private func yieldMeetingSaveToScreenRecording() {
-        guard !isDictationPhaseLive, lastShowOwner == .meeting,
-              meetingPhaseYieldsToScreenRecording(pill.currentState)
-        else { return }
+    /// A capture's bar just became due, but `setBackdrop` only takes over a
+    /// resting-family phase: a leftover capture phase would leave a hot
+    /// microphone with no bar (meetings §3.1.3, screen recording §6.3).
+    /// Withdraw it; the popover / History keep the detail. This is
+    /// `ScreenRecordingController.start(from:)`'s rule (§7 rows 21-22),
+    /// extended to both captures:
+    /// - either side's sticky `.failed`;
+    /// - the meeting's own leftovers (`.saving`, `.meetingSaved`, `.warning`) —
+    ///   a screen `.saved` / `.warning` auto-hides within 4 s on its own, and a
+    ///   screen `.saving` can't be up while a meeting rises to the top, since
+    ///   `recordingSince` is still set during that save.
+    /// Never touches a dictation phase, and a meeting rising under a running
+    /// screen recording changes nothing: the screen bar stays on top.
+    private func clearCapturePhaseBlocking(_ rising: Owner) {
+        guard !isDictationPhaseLive, let owner = lastShowOwner else { return }
+        if rising == .meeting, recordingSince != nil { return }
+        switch pill.currentState {
+        case .failed:
+            guard owner == .meeting || owner == .recording else { return }
+        case .saving, .meetingSaved, .warning:
+            guard owner == .meeting else { return }
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording, .saved,
+             .meeting:
+            return
+        }
         lastShowOwner = nil
         pill.dismiss()
     }
