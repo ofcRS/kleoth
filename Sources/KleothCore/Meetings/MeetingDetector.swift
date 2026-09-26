@@ -56,6 +56,14 @@ public struct MeetingDetector: Sendable {
         var releasedAt: Date?
         var offered = false
         var silenced = false
+
+        /// The order every choice among sessions uses: class first, then the
+        /// earlier session, then the key (and the app, when two browsers show
+        /// the same site) — never Set/Dictionary iteration order (review M-1).
+        static func precedes(_ a: Session, _ b: Session) -> Bool {
+            (a.source.sourceClass.rank, a.startedAt, a.source.key, a.source.appBundleId)
+                < (b.source.sourceClass.rank, b.startedAt, b.source.key, b.source.appBundleId)
+        }
     }
 
     private struct Visible: Sendable {
@@ -113,10 +121,12 @@ public struct MeetingDetector: Sendable {
                 } else {
                     sessions[app] = Session(source: source, startedAt: now)
                 }
-                if environment.meetingSince != nil {
-                    if meetingSeconds[app] == nil { meetingSeconds[app] = (source, 0) }
-                    if linked == nil { linked = source; linkedReleasedAt = nil }
-                }
+                if environment.meetingSince != nil, meetingSeconds[app] == nil { meetingSeconds[app] = (source, 0) }
+            }
+            if environment.meetingSince != nil, linked == nil {
+                // The first holder(s) seen during a meeting: link the best of the batch.
+                linked = sources.compactMap { sessions[$0.appBundleId] }.min(by: Session.precedes)?.source
+                linkedReleasedAt = nil
             }
             for (app, var session) in sessions where !seen.contains(app) && session.releasedAt == nil {
                 session.releasedAt = now
@@ -140,15 +150,22 @@ public struct MeetingDetector: Sendable {
                     if let app = pendingAcceptedApp, let session = sessions[app] {
                         linked = session.source
                     } else {
-                        linked = held.min { ($0.source.sourceClass.rank, $0.startedAt) < ($1.source.sourceClass.rank, $1.startedAt) }?.source
+                        linked = held.min(by: Session.precedes)?.source
                     }
                     pendingAcceptedApp = nil
                     linkedReleasedAt = nil
                     stopOfferedForRelease = nil
                     effects += withdrawVisible(kind: .start)
+                    // Straight from another meeting (no nil in between): that
+                    // meeting's "stop recording?" must not stop this one (review M-3).
+                    effects += withdrawVisible(kind: .stop)
                 } else {
                     effects += withdrawVisible(kind: .stop)
                     accrueMeetingSeconds(until: now)
+                    // The user recorded the calls held during the meeting: no
+                    // "record it?" for them now it ends ("the user evidently
+                    // chose", §3.2.3; review M-4). A new session of the app is offered.
+                    for app in meetingSeconds.keys { sessions[app]?.silenced = true }
                     linked = nil
                     linkedReleasedAt = nil
                     stopOfferedForRelease = nil
@@ -192,7 +209,10 @@ public struct MeetingDetector: Sendable {
         case .tick(let now, let pointerOnPill):
             if var current = visible {
                 if pointerOnPill {
+                    // Held while hovered — with a deadline ahead, never one
+                    // already passed (the host re-arms on it: review C-1).
                     current.hoverHeld = true
+                    current.deadline = max(current.deadline, now.addingTimeInterval(MeetingDetectionDefaults.hoverLinger))
                 } else if current.hoverHeld {
                     current.hoverHeld = false
                     current.deadline = max(current.deadline, now.addingTimeInterval(MeetingDetectionDefaults.hoverLinger))
@@ -262,7 +282,14 @@ public struct MeetingDetector: Sendable {
                 totals[app] = (session.source, (totals[app]?.seconds ?? 0) + now.timeIntervalSince(last))
             }
         }
-        if let best = totals.values.max(by: { $0.seconds < $1.seconds }), best.seconds >= MeetingDetectionDefaults.minContextSeconds {
+        // The most seconds; a tie goes to the better class, then the key and
+        // the app (never Dictionary order — review M-1).
+        let best = totals.values.min { a, b in
+            if a.seconds != b.seconds { return a.seconds > b.seconds }
+            return (a.source.sourceClass.rank, a.source.key, a.source.appBundleId)
+                < (b.source.sourceClass.rank, b.source.key, b.source.appBundleId)
+        }
+        if let best, best.seconds >= MeetingDetectionDefaults.minContextSeconds {
             return (best.source, best.seconds)
         }
         if let linked { return (linked, totals[linked.appBundleId]?.seconds ?? 0) }
@@ -312,6 +339,13 @@ public struct MeetingDetector: Sendable {
         // A passed retry no longer blocks anything — drop it here, or a
         // suppressed / busy machine would report it as a past deadline forever.
         if let retry = retryAt, now >= retry { retryAt = nil }
+        // A session older than `maxOfferAge` can never be offered again —
+        // silence it, or its long-passed dwell stays a deadline for the rest of
+        // the call once whatever blocked it lifts (review C-1).
+        for (app, session) in sessions where !session.silenced
+            && now.timeIntervalSince(session.startedAt) > MeetingDetectionDefaults.maxOfferAge {
+            sessions[app]?.silenced = true
+        }
         if environment.suppressesOffers {
             effects += withdrawVisible(kind: .start)
         } else if visible == nil, retryAt.map({ now >= $0 }) ?? true {
@@ -323,7 +357,7 @@ public struct MeetingDetector: Sendable {
                     && !environment.ignoredKeys.contains(session.source.key)
                     && (dismissedUntil[session.source.key] ?? .distantPast) <= now
             }
-            if let best = due.min(by: { ($0.source.sourceClass.rank, $0.startedAt) < ($1.source.sourceClass.rank, $1.startedAt) }) {
+            if let best = due.min(by: Session.precedes) {
                 offerCounter += 1
                 let offer = Offer(id: "offer-\(offerCounter)", kind: .start, source: best.source)
                 visible = Visible(offer: offer, deadline: now.addingTimeInterval(MeetingDetectionDefaults.offerLifetime))
@@ -331,14 +365,17 @@ public struct MeetingDetector: Sendable {
                 effects.append(.show(offer))
             }
         }
+        // Detection off = no unasked prompts: a stop suggestion already up
+        // goes too, and is not repeated for the same release (review M-2).
+        if !environment.offersEnabled { effects += withdrawVisible(kind: .stop) }
         // The stop suggestion (§3.2.5) — only with call detection on (the
         // controller's ruling: detection off = no unasked prompts). The relink
         // runs either way: it keeps the meeting's context right.
         if environment.meetingSince != nil, let linkedNow = linked, let releasedAt = linkedReleasedAt {
-            let otherCall = sessions.values.first {
+            let otherCall = sessions.values.filter {
                 $0.releasedAt == nil && $0.source.appBundleId != linkedNow.appBundleId
                     && ($0.source.sourceClass == .callApp || $0.source.sourceClass == .browserCall)
-            }
+            }.min(by: Session.precedes)
             if let otherCall {
                 linked = otherCall.source            // the call moved: relink silently
                 linkedReleasedAt = nil

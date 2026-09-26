@@ -266,6 +266,60 @@ import Foundation
         #expect(d.nextDeadline == nil)                      // no tick asked for a suggestion that cannot come
     }
 
+    /// Controller ruling (review M-2): detection switched off withdraws a stop
+    /// suggestion already up; switching it back on does not repeat it.
+    @Test func turningDetectionOffWithdrawsAVisibleStopSuggestion() throws {
+        var d = detector()
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+        _ = run(&d, [zoom], from: 1, to: 10)
+        _ = run(&d, [], from: 11, to: 30)
+        let stop = try #require(shownOffer(d.handle(.observed([], at: at(31)))))
+        #expect(d.handle(.environment(MeetingDetector.Environment(offersEnabled: false, meetingSince: at(0)), at: at(32)))
+                == [.withdraw(offerId: stop.id)])
+        #expect(d.visibleOffer == nil)
+        #expect(d.nextDeadline == nil)
+        #expect(d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(40))).isEmpty)
+        #expect(run(&d, [], from: 41, to: 120).isEmpty)          // once per release
+    }
+
+    /// Review M-3: a new meeting straight after another (no nil in between)
+    /// withdraws the old meeting's stop suggestion — accepting it would stop the new one.
+    @Test func aNewMeetingWithdrawsTheOldMeetingsStopSuggestion() throws {
+        var d = detector()
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+        _ = run(&d, [zoom], from: 1, to: 10)
+        _ = run(&d, [], from: 11, to: 30)
+        let stop = try #require(shownOffer(d.handle(.observed([], at: at(31)))))
+        #expect(d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(40)), at: at(40)))
+                == [.withdraw(offerId: stop.id)])
+        #expect(d.visibleOffer == nil)
+        #expect(d.linkedSource == nil)
+    }
+
+    /// Controller ruling (review M-4): when a recorded meeting ends, the calls
+    /// held during it are not offered again ("the user evidently chose") —
+    /// a NEW session of the same app is.
+    @Test func aCallHeldDuringARecordedMeetingIsNotOfferedWhenTheMeetingEnds() throws {
+        var d = detector()
+        _ = run(&d, [zoom], from: 0, to: 3)
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(4)), at: at(4)))   // hotkey, before the offer
+        _ = run(&d, [zoom], from: 5, to: 300)
+        #expect(d.handle(.environment(MeetingDetector.Environment(offersEnabled: true), at: at(301))).isEmpty)
+        #expect(run(&d, [zoom], from: 302, to: 500).isEmpty)
+        #expect(settles(&d, at: 500))
+        _ = run(&d, [], from: 501, to: 520)                                    // Zoom leaves; the session ends
+        #expect(shownOffer(run(&d, [zoom], from: 600, to: 605))?.source == zoom)   // a new call is offered
+
+        // An offer withdrawn by a hotkey start is not re-offered at the meeting's end either.
+        var e = detector()
+        let offer = try #require(shownOffer(run(&e, [zoom], from: 0, to: 6)))
+        #expect(e.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(7)), at: at(7)))
+                == [.withdraw(offerId: offer.id)])
+        _ = run(&e, [zoom], from: 8, to: 300)
+        #expect(e.handle(.environment(MeetingDetector.Environment(offersEnabled: true), at: at(301))).isEmpty)
+        #expect(run(&e, [zoom], from: 302, to: 400).isEmpty)
+    }
+
     @Test func relinksToAnotherCallClassSourceInsteadOfSuggestingStop() {
         var d = detector()
         _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
@@ -308,5 +362,128 @@ import Foundation
         _ = run(&d, [], from: 3, to: 12)
         _ = run(&d, [], from: 13, to: 40)                    // everything ended (slack at 10 + 8)
         #expect(d.nextDeadline == nil)
+    }
+
+    // MARK: - Deterministic choices (review M-1)
+
+    let teams = MeetingSource.make(bundleId: "com.microsoft.teams2", appName: "Microsoft Teams", windowTitles: [], hasWebCall: false)!
+
+    /// The same sources in sets of different capacities — different iteration
+    /// orders, so a choice left to Set/Dictionary order shows up as a mismatch.
+    func batches(_ sources: [MeetingSource]) -> [Set<MeetingSource>] {
+        [1, 2, 4, 8, 16, 32, 64, 128, 256, 512].flatMap { capacity -> [Set<MeetingSource>] in
+            var forward = Set<MeetingSource>(minimumCapacity: capacity)
+            var backward = Set<MeetingSource>(minimumCapacity: capacity)
+            for s in sources { forward.insert(s) }
+            for s in sources.reversed() { backward.insert(s) }
+            return [forward, backward]
+        }
+    }
+
+    @Test func aBatchLinksByClassNotByIterationOrder() {
+        for batch in batches([chrome, other, zoom]) {
+            var d = detector()
+            _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+            _ = d.handle(.observed(batch, at: at(1)))
+            #expect(d.linkedSource == zoom)
+        }
+    }
+
+    @Test func aMeetingStartLinksByClassThenStartThenKey() {
+        for batch in batches([zoom, teams]) {
+            var d = detector(on: false)
+            _ = d.handle(.observed(batch, at: at(0)))
+            _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(1)), at: at(1)))
+            #expect(d.linkedSource == teams)            // same class, same start: "app:com.microsoft.teams2" < "app:us.zoom.xos"
+        }
+    }
+
+    @Test func theRelinkTargetIsTheBestOtherCall() {
+        for batch in batches([slack, zoom, teams]) {
+            var d = detector()
+            _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+            _ = run(&d, [slack], from: 1, to: 3)
+            _ = d.handle(.observed(batch, at: at(4)))
+            _ = run(&d, [zoom, teams], from: 5, to: 9)
+            #expect(d.linkedSource == teams)            // both call apps from 4: the key decides
+        }
+        for batch in batches([meet, zoom]) {
+            var d = detector()
+            _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+            _ = run(&d, [slack], from: 1, to: 3)
+            _ = run(&d, [slack, meet], from: 4, to: 5)
+            _ = d.handle(.observed(batch.union([slack]), at: at(6)))
+            _ = run(&d, [meet, zoom], from: 7, to: 9)
+            #expect(d.linkedSource == zoom)             // a call app outranks the older browser call
+        }
+    }
+
+    @Test func dueOffersAndMeetingSourceTiesAreDeterministic() {
+        for batch in batches([zoom, teams]) {
+            var d = detector()
+            let offer = shownOffer(run(&d, batch, from: 0, to: 5))
+            #expect(offer?.source == teams)             // both due at 5, same class and start
+        }
+        for batch in batches([chrome, zoom]) {
+            var d = detector()
+            _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
+            _ = run(&d, batch, from: 0, to: 40)
+            #expect(d.meetingSource(at: at(40))?.source == zoom)   // equal seconds: the call app
+        }
+    }
+
+    // MARK: - Deadlines are never in the past (review C-1)
+
+    /// The host: tick at `s` while a deadline has come due. True when the
+    /// machine settles (nil or a future deadline) within three ticks — more
+    /// is the main-actor hot loop.
+    func settles(_ d: inout MeetingDetector, at s: TimeInterval, pointerOnPill: Bool = false) -> Bool {
+        for _ in 0..<3 {
+            guard let deadline = d.nextDeadline, deadline <= at(s) else { return true }
+            _ = d.handle(.tick(at: at(s), pointerOnPill: pointerOnPill))
+        }
+        return d.nextDeadline.map { $0 > at(s) } ?? true
+    }
+
+    @Test func aMeetingStoppedMidCallAfterTenMinutesLeavesNoPastDeadline() {
+        var d = detector()
+        _ = run(&d, [zoom], from: 0, to: 3)
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(4)), at: at(4)))   // hotkey, before the offer
+        _ = run(&d, [zoom], from: 5, to: 700)
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true), at: at(701)))   // stopped; Zoom still in the call
+        #expect(settles(&d, at: 701))
+        #expect(run(&d, [zoom], from: 702, to: 1000).isEmpty)
+        #expect(settles(&d, at: 1000))
+    }
+
+    @Test func detectionSwitchedOnDuringALongCallLeavesNoPastDeadline() {
+        var d = detector(on: false)
+        _ = run(&d, [zoom], from: 0, to: 700)
+        #expect(d.handle(.environment(MeetingDetector.Environment(offersEnabled: true), at: at(701))).isEmpty)
+        #expect(settles(&d, at: 701))
+    }
+
+    @Test func hoveringPastTheDeadlineKeepsTheOfferWithAFutureDeadline() throws {
+        var d = detector()
+        let offer = try #require(shownOffer(run(&d, [zoom], from: 0, to: 5)))   // deadline 35
+        #expect(d.handle(.tick(at: at(30), pointerOnPill: true)).isEmpty)
+        #expect(settles(&d, at: 36, pointerOnPill: true))
+        #expect(d.visibleOffer == offer)                                         // held while hovered
+        #expect(settles(&d, at: 120, pointerOnPill: true))
+        #expect(d.visibleOffer == offer)
+    }
+
+    @Test func aPillThatRefusesForTenMinutesLeavesNoPastDeadline() {
+        var d = detector()
+        var s: TimeInterval = 0
+        while s <= 620 {
+            _ = d.handle(.observed([zoom], at: at(s)))
+            if let o = d.visibleOffer { _ = d.handle(.answered(offerId: o.id, .refused, at: at(s))) }
+            #expect(settles(&d, at: s), "at \(s)")
+            if let o = d.visibleOffer { _ = d.handle(.answered(offerId: o.id, .refused, at: at(s))) }
+            s += 1
+        }
+        #expect(run(&d, [zoom], from: 621, to: 700).isEmpty)   // too old to offer now
+        #expect(settles(&d, at: 700))
     }
 }
