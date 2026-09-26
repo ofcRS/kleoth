@@ -82,6 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // every meeting, whoever started it (design §3.1.3). After both
         // controllers exist; never on a demo launch (which has no delegate).
         MainActor.assumeIsolated { MeetingPillBridge.install() }
+        // Meeting covers: sweep temp files a kill left in meeting folders.
+        MainActor.assumeIsolated { CoverController.shared?.sweepTemporaryFilesAtLaunch() }
 
         // Neither Accessibility trust nor Screen Recording has a change
         // notification: re-check whenever the user comes back from System

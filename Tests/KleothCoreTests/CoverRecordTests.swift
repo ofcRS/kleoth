@@ -30,6 +30,15 @@ import Foundation
         #expect(back == record)
     }
 
+    /// Model ids carry a slash (`google/gemini-…`); the file is read by people
+    /// and hand-edited, so it must not come out as `google\/gemini-…`.
+    @Test func slashesAreNotEscaped() throws {
+        let record = CoverRecord(state: .drawn, model: "google/gemini-3.1-flash-lite-image", createdAt: "2026-09-24T10:00:00Z")
+        let text = String(decoding: try MeetingStore.makeEncoder().encode(record), as: UTF8.self)
+        #expect(text.contains(#""model" : "google/gemini-3.1-flash-lite-image""#))
+        #expect(!text.contains(#"\/"#))
+    }
+
     @Test func minimalRecordDecodes() throws {
         let json = #"{"state":"removed","created_at":"2026-09-24T10:00:00Z"}"#
         let record = try MeetingStore.makeDecoder().decode(CoverRecord.self, from: Data(json.utf8))

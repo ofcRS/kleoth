@@ -43,8 +43,8 @@ server. It is free and open source (Apache-2.0).
    retried once. If it's still incomplete, the meeting shows "Summary failed" with the reason and
    a **Summarize** button to try again. It is never saved half-empty.
 5. **A cover, if you want one.** Off by default. With covers on, each summarized meeting gets a
-   small picture of cute animals or everyday objects acting out what it was about. See
-   [Meeting covers](../README.md#meeting-covers).
+   picture across the top of its page, cute animals or everyday objects acting out what it was
+   about; click it to see it full size. See [Meeting covers](../README.md#meeting-covers).
 
 ## Your meeting is a folder
 
