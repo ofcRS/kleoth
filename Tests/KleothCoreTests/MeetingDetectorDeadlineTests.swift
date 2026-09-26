@@ -59,15 +59,14 @@ import Foundation
                 default:
                     _ = d.handle(.observed(held, at: date))
                 }
-                // The host: tick at every deadline that has come due.
-                var guardCount = 0
-                while let deadline = d.nextDeadline, deadline <= date {
+                // The host: one tick at a deadline that has come due — after
+                // it, the next deadline must lie ahead.
+                if let deadline = d.nextDeadline, deadline <= date {
                     _ = d.handle(.tick(at: date, pointerOnPill: hover))
-                    guardCount += 1
-                    if guardCount > 3 {
-                        Issue.record("run \(run) step \(step): nextDeadline \(deadline.timeIntervalSince(t0)) stays due at now=\(now) (hover \(hover))")
-                        return
-                    }
+                }
+                if let deadline = d.nextDeadline, deadline <= date {
+                    Issue.record("run \(run) step \(step): nextDeadline \(deadline.timeIntervalSince(t0)) stays due at now=\(now) (hover \(hover))")
+                    return
                 }
             }
         }

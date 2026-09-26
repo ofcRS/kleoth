@@ -378,6 +378,26 @@ import Foundation
         #expect((d.meetingSource(at: at(30))?.micSeconds ?? 0) >= 29)
     }
 
+    /// A meeting's mic seconds start when the meeting does, not at the last
+    /// observation before it (up to one 3 s poll over-credited otherwise).
+    @Test func aNewMeetingCountsFromItsStartNotFromTheLastObservation() {
+        var d = detector()
+        _ = d.handle(.observed([zoom], at: at(0)))
+        _ = d.handle(.observed([zoom], at: at(3)))           // the last poll before the meeting
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(5.5)), at: at(5.5)))
+        #expect(abs((d.meetingSource(at: at(5.5))?.micSeconds ?? -1) - 0) < 0.001)
+        _ = d.handle(.observed([zoom], at: at(6)))
+        #expect(abs((d.meetingSource(at: at(6))?.micSeconds ?? -1) - 0.5) < 0.001)
+        var s: TimeInterval = 9
+        while s <= 30 { _ = d.handle(.observed([zoom], at: at(s))); s += 3 }
+        #expect(abs((d.meetingSource(at: at(30))?.micSeconds ?? -1) - 24.5) < 0.001)
+
+        // Straight from another meeting: the new one starts at zero too.
+        _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(31)), at: at(31)))
+        _ = d.handle(.observed([zoom], at: at(33)))
+        #expect(abs((d.meetingSource(at: at(33))?.micSeconds ?? -1) - 2) < 0.001)
+    }
+
     @Test func meetingSourceIsTheLongestHolderOverTwentySecondsElseTheLinked() {
         var d = detector()
         _ = d.handle(.environment(MeetingDetector.Environment(offersEnabled: true, meetingSince: at(0)), at: at(0)))
@@ -410,6 +430,57 @@ import Foundation
         _ = run(&d, [], from: 3, to: 12)
         _ = run(&d, [], from: 13, to: 40)                    // everything ended (slack at 10 + 8)
         #expect(d.nextDeadline == nil)
+    }
+
+    // MARK: - Offerable sessions (the host's 3 s re-resolve)
+
+    /// The host re-reads titles and web-call assertions every 3 s only while
+    /// this is true (or a meeting records): an app that holds the mic all day
+    /// must not wake Kleoth every 3 s forever.
+    @Test func anOfferableSessionIsHeldUnansweredAndYoungerThanTheMaxOfferAge() throws {
+        var d = detector()
+        #expect(!d.hasOfferableSession(at: at(0)))                          // nothing held
+        _ = d.handle(.observed([chrome], at: at(0)))
+        #expect(d.hasOfferableSession(at: at(1)))                           // dwelling
+        #expect(d.hasOfferableSession(at: at(MeetingDetectionDefaults.maxOfferAge)))
+        #expect(!d.hasOfferableSession(at: at(MeetingDetectionDefaults.maxOfferAge + 1)))   // too old, no event needed
+        _ = d.handle(.observed([], at: at(2)))
+        #expect(!d.hasOfferableSession(at: at(3)))                          // released (in its grace)
+
+        var off = detector(on: false)
+        _ = off.handle(.observed([zoom], at: at(0)))
+        #expect(!off.hasOfferableSession(at: at(1)))                        // offers off
+
+        var ignoredZoom = MeetingDetector()
+        _ = ignoredZoom.handle(.environment(MeetingDetector.Environment(offersEnabled: true, ignoredKeys: [zoom.key]), at: t0))
+        _ = ignoredZoom.handle(.observed([zoom], at: at(0)))
+        #expect(!ignoredZoom.hasOfferableSession(at: at(1)))                // "never" for it
+    }
+
+    @Test func anOfferedOrAnsweredSessionIsNotOfferableUntilItComesBack() throws {
+        var d = detector()
+        let offer = try #require(shownOffer(run(&d, [zoom], from: 0, to: 5)))
+        #expect(!d.hasOfferableSession(at: at(5)))                          // its offer is up
+        _ = d.handle(.observed([zoom, slack], at: at(6)))
+        #expect(d.hasOfferableSession(at: at(6)))                           // another app dwells
+        _ = d.handle(.observed([zoom], at: at(7)))
+        _ = run(&d, [zoom], from: 8, to: 20)                                // slack's session ends
+        #expect(!d.hasOfferableSession(at: at(20)))
+        #expect(d.handle(.answered(offerId: offer.id, .displaced, at: at(20))).isEmpty)
+        #expect(d.hasOfferableSession(at: at(20)))                          // offered again after the retry
+        let again = try #require(shownOffer(d.handle(.tick(at: at(21), pointerOnPill: false))))
+        #expect(d.handle(.answered(offerId: again.id, .dismissed, at: at(22))).isEmpty)
+        #expect(!d.hasOfferableSession(at: at(22)))                         // silenced for the session
+
+        var e = detector()
+        let o = try #require(shownOffer(run(&e, [zoom], from: 0, to: 5)))
+        _ = e.handle(.answered(offerId: o.id, .never, at: at(6)))
+        #expect(!e.hasOfferableSession(at: at(6)))
+
+        var f = detector()
+        let o2 = try #require(shownOffer(run(&f, [zoom], from: 0, to: 5)))
+        _ = f.handle(.answered(offerId: o2.id, .accepted, at: at(6)))
+        #expect(!f.hasOfferableSession(at: at(6)))
     }
 
     // MARK: - Deterministic choices (review M-1)
@@ -482,12 +553,11 @@ import Foundation
 
     // MARK: - Deadlines are never in the past (review C-1)
 
-    /// The host: tick at `s` while a deadline has come due. True when the
-    /// machine settles (nil or a future deadline) within three ticks — more
-    /// is the main-actor hot loop.
+    /// The host: one tick at `s` when a deadline has come due. True when the
+    /// machine then settles (nil or a future deadline) — a deadline still due
+    /// after that one tick is the main-actor hot loop.
     func settles(_ d: inout MeetingDetector, at s: TimeInterval, pointerOnPill: Bool = false) -> Bool {
-        for _ in 0..<3 {
-            guard let deadline = d.nextDeadline, deadline <= at(s) else { return true }
+        if let deadline = d.nextDeadline, deadline <= at(s) {
             _ = d.handle(.tick(at: at(s), pointerOnPill: pointerOnPill))
         }
         return d.nextDeadline.map { $0 > at(s) } ?? true

@@ -160,6 +160,9 @@ public struct MeetingDetector: Sendable {
                     pendingAcceptedApp = nil
                     linkedReleasedAt = nil
                     stopOfferedForRelease = nil
+                    // Its mic seconds count from now, not from the last
+                    // observation before it (up to one poll over-credited).
+                    if lastObservedAt != nil { lastObservedAt = now }
                     effects += withdrawVisible(kind: .start)
                     // Straight from another meeting (no nil in between): that
                     // meeting's "stop recording?" must not stop this one (review M-3).
@@ -279,6 +282,24 @@ public struct MeetingDetector: Sendable {
             candidates.append(max(releasedAt.addingTimeInterval(MeetingDetectionDefaults.stopGrace), retryAt ?? .distantPast))
         }
         return candidates.min()
+    }
+
+    /// A session that could still be offered: held, not offered yet (or
+    /// offered and displaced / refused), not silenced, not "never", no older
+    /// than `maxOfferAge` — with offers enabled. A suppression, a cooldown or a
+    /// busy retry does not count against it: those lift while it is still
+    /// young. The host keeps re-reading titles and web-call assertions only
+    /// while this holds (or a meeting records), so its class can still go up
+    /// before the offer; an app holding the mic all day stops that after
+    /// `maxOfferAge`. False → true only through `handle`; with time, only
+    /// true → false.
+    public func hasOfferableSession(at now: Date) -> Bool {
+        guard environment.offersEnabled else { return false }
+        return sessions.values.contains { session in
+            session.releasedAt == nil && !session.offered && !session.silenced
+                && !environment.ignoredKeys.contains(session.source.key)
+                && now.timeIntervalSince(session.startedAt) <= MeetingDetectionDefaults.maxOfferAge
+        }
     }
 
     /// The meeting's primary source: the longest holder ≥ `minContextSeconds`,
