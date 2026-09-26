@@ -93,13 +93,13 @@ struct MeetingCoverBand: View {
 
     let meeting: RecentMeeting
     let picture: URL
-    /// The detail pane's width; the band spans it edge to edge.
+    /// The detail pane's width, which sets the band's height. The band itself
+    /// spans the width it is offered, edge to edge (see `body`).
     let width: CGFloat
     let hasSummary: Bool
     /// False when the band is not inside a scroll view: `.scrollView` then has
-    /// nothing to measure. Every layout of the meeting page scrolls (the
-    /// unprocessed and load-error pages too, `MeetingDetailView.centredPage`),
-    /// so the page passes true.
+    /// nothing to measure. The meeting page scrolls in every state, so it
+    /// passes true.
     let parallax: Bool
     /// Set on click; `MeetingDetailView` shows it with `.quickLookPreview`.
     @Binding var previewURL: URL?
@@ -124,48 +124,55 @@ struct MeetingCoverBand: View {
         let image = CoverThumbnailCache.thumbnail(
             url: picture, modifiedAt: meeting.coverModifiedAt, pixelSize: Self.bandPixelSize)
 
-        ZStack {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
-                    // Taller than the band by the reveal on each side, so the
-                    // slide below never uncovers the background — whatever the
-                    // picture's aspect (a dropped-in `cover.png` need not be square).
-                    .frame(width: width, height: pictureHeight)
-                    // The picture's own top sits `reveal` above the band's, so
-                    // the band's minY is the picture's plus the reveal.
-                    .visualEffect { content, proxy in
-                        content.offset(y: CoverHeroGeometry.pictureOffset(
-                            minY: proxy.frame(in: .scrollView).minY + CoverHeroGeometry.reveal, reduceMotion: still))
-                    }
-            } else {
-                // The file is there but unreadable (a damaged drop-in, or it
-                // went to the Trash between the list reload and this render):
-                // a quiet band, and the menu still offers Remove Cover.
-                Color.primary.opacity(0.06)
+        // The band takes the width it is offered — the scroll content's, which
+        // a legacy scroller ("Show scroll bars: Always") makes narrower than
+        // the pane — and only its height comes from the pane's width. The
+        // picture rides on it as an overlay, so it can never widen the page.
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .overlay {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFill()
+                        // At least the band's width (fill) and taller than the
+                        // band by the reveal on each side, centred on it, so the
+                        // slide below never uncovers the background — whatever the
+                        // picture's aspect (a dropped-in `cover.png` need not be square).
+                        .frame(height: pictureHeight)
+                        // The picture's own top sits `reveal` above the band's, so
+                        // the band's minY is the picture's plus the reveal.
+                        .visualEffect { content, proxy in
+                            content.offset(y: CoverHeroGeometry.pictureOffset(
+                                minY: proxy.frame(in: .scrollView).minY + CoverHeroGeometry.reveal, reduceMotion: still))
+                        }
+                } else {
+                    // The file is there but unreadable (a damaged drop-in, or it
+                    // went to the Trash between the list reload and this render):
+                    // a quiet band, and the menu still offers Remove Cover.
+                    Color.primary.opacity(0.06)
+                }
             }
-        }
-        .frame(width: width, height: height)
-        .clipped()
-        // Pulled past the top: grow about the bottom edge to fill the gap.
-        .visualEffect { content, proxy in
-            content.scaleEffect(CoverHeroGeometry.stretchScale(
-                minY: proxy.frame(in: .scrollView).minY, bandHeight: height, reduceMotion: still), anchor: .bottom)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { previewURL = picture }
-        // The picture is one button to VoiceOver, with the click's action;
-        // the corner `…` button (the overlay below) stays its own element.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Meeting cover, show full size")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { previewURL = picture }
-        .contextMenu { MeetingCoverMenuItems(meeting: meeting, hasSummary: hasSummary, record: record) }
-        .overlay(alignment: .bottomTrailing) { cornerControls(isBusy: isBusy, record: record) }
-        // The tooltip is the scene that was sent (§3.5).
-        .help(record?.scene ?? "")
+            .clipped()
+            // Pulled past the top: grow about the bottom edge to fill the gap.
+            .visualEffect { content, proxy in
+                content.scaleEffect(CoverHeroGeometry.stretchScale(
+                    minY: proxy.frame(in: .scrollView).minY, bandHeight: height, reduceMotion: still), anchor: .bottom)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { previewURL = picture }
+            // The picture is one button to VoiceOver, with the click's action;
+            // the corner `…` button (the overlay below) stays its own element.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Meeting cover, show full size")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { previewURL = picture }
+            .contextMenu { MeetingCoverMenuItems(meeting: meeting, hasSummary: hasSummary, record: record) }
+            .overlay(alignment: .bottomTrailing) { cornerControls(isBusy: isBusy, record: record) }
+            // The tooltip is the scene that was sent (§3.5).
+            .help(record?.scene ?? "")
     }
 
     /// Bottom-trailing: the "Drawing a new cover…" capsule while a New Cover
