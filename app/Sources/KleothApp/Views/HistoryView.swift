@@ -180,7 +180,8 @@ struct HistoryView: View {
                             meeting: meeting,
                             errorMessage: controller.meetingError(for: meeting.directory),
                             isSummarizing: controller.isSummarizingMeeting(meeting.directory),
-                            showsCover: covers.engine != nil,
+                            showsCover: covers.showsCovers,
+                            isDrawingCover: covers.isBusy(meeting.directory),
                             isRenaming: renamingID == meeting.id,
                             renameDraft: $renameDraft,
                             renameFocus: $renameFocus,
@@ -269,7 +270,7 @@ struct HistoryView: View {
             let drawable = ids.compactMap { meeting(for: $0) }.filter {
                 $0.hasSummary && $0.coverImageURL == nil && !$0.isTranscribing && !covers.isBusy($0.directory)
             }
-            if covers.engine != nil, !drawable.isEmpty {
+            if covers.showsCovers, !drawable.isEmpty {
                 Button(drawable.count == 1 ? "Draw Cover" : "Draw Covers for \(drawable.count) Meetings") {
                     requestCovers(drawable)
                 }
@@ -444,9 +445,10 @@ struct HistoryView: View {
 /// One row in the history sidebar: a title with clear hierarchy over a secondary
 /// "time · duration" line and a color-coded tier badge (or an "Untranscribed"
 /// chip). While renaming, the title swaps to an inline plain TextField (Enter
-/// commits, Esc cancels — wiring lives in the parent). With Covers on, a 40 pt
-/// cover tile sits at the trailing edge. Built from the shared Kleoth design
-/// system so it reads as one product with the rest of the app.
+/// commits, Esc cancels — wiring lives in the parent). With Covers on, a 56 pt
+/// cover tile sits at the trailing edge of a row that has a picture or a cover
+/// being drawn. Built from the shared Kleoth design system so it reads as one
+/// product with the rest of the app.
 /// No costs here — provider usage lives in Settings → Usage only.
 private struct MeetingSidebarRow: View {
     let meeting: RecentMeeting
@@ -456,8 +458,12 @@ private struct MeetingSidebarRow: View {
     /// Whether the in-flight run is a summary alone (Summarize), so the busy
     /// label says "Summarizing…" rather than "Transcribing…".
     let isSummarizing: Bool
-    /// Whether Covers ≠ Off. Off shows no tile at all, not an empty slot.
+    /// Whether covers are shown (Covers ≠ Off, or a demo launch's own
+    /// pictures: `CoverController.showsCovers`). Off shows no tile at all.
     let showsCover: Bool
+    /// Whether a cover job is queued or running for this meeting: the row
+    /// then shows the tile with its spinner even before there is a picture.
+    let isDrawingCover: Bool
     let isRenaming: Bool
     @Binding var renameDraft: String
     var renameFocus: FocusState<RecentMeeting.ID?>.Binding
@@ -499,8 +505,11 @@ private struct MeetingSidebarRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, KleothMetrics.spacingXS)
 
-            if showsCover {
-                MeetingCoverTile(meeting: meeting, size: 40)
+            // 56 pt — big enough to notice (the user's verdict on 40) — and
+            // only where there is art or a job: at this size the neutral lyre
+            // repeated down the list would be the loudest thing in the sidebar.
+            if showsCover, meeting.coverImageURL != nil || isDrawingCover {
+                MeetingCoverTile(meeting: meeting, size: 56)
             }
         }
     }
