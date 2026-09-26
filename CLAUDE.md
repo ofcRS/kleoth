@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (777 tests)
+swift build && swift test                        # core + CLI (778 tests)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
@@ -319,14 +319,15 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   .speechRuns` (word alignment, one entry per run of speech) and `TranscriptNormalizer` splits a `local-whisper`
   channel's turn where another channel spoke entirely inside the pause; Scribe grouping unchanged. Verified on
   fictional audio only (5/6 exact turn order); not yet on a real meeting or end to end in Russian.
-- Meetings in the pill (for 0.5.1; `feat/meetings-in-the-pill`, in review): phase 1 = the four-field dock, the meeting
+- Meetings in the pill (merged for 0.5.1): phase 1 = the four-field dock, the meeting
   bar for every meeting, "Meeting saved"; phase 2 = call detection (offers, the stop suggestion, Settings → Meetings →
   Call detection) and `meta.json` with `context` at stop. Both whole-branch reviews' fixes are in (design §10 items
   47–55). Verified: core tests, both builds, code-read traces, a `micopen` calibration on a locked screen (listener
   trigger 0.05–0.21 s on take, ≤ 0.34 s on release; a bare binary resolves to no owner, so no offer). Not yet: the
   pill films, the calibration on an awake Mac, design §6 manual items 1–11 and the real-call list (§6 step 9), the
   Settings section by eye. The README pill GIFs (`make-demos.sh`) still show the three-field dock.
-- Next (for 0.5.1): verify and merge meetings in the pill. Designs (local until each branch lands):
+- Next: release 0.5.1 once the visual checks are done (pill films, covers demo frames, the user's look); the
+  README demo GIFs are the user's call. Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand
