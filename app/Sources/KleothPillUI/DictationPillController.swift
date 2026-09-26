@@ -294,6 +294,13 @@ public final class DictationPillController: DictationPillPresenting {
     /// mic glyph) and the bars then bloom in place. Still exactly one reshape.
     /// `model.phase` is still `.armed`; only the size is inherited.
     private func layoutState(for state: DictationPillState) -> DictationPillState {
+        // Saving keeps the bar's size (the view's rule): over a meeting backdrop
+        // `.saving` is always the meeting's own save — a screen recording saves
+        // while its own backdrop is still up — so it keeps the 240 pt meeting bar
+        // instead of morphing down to the 222 pt screen toolbar.
+        if case .saving = state, case .meeting(let since) = backdrop {
+            return .meeting(since: since)
+        }
         if case .armed = state {
             switch backdrop {
             case .recording, .meeting: return .listening(handsFree: false)
@@ -1173,7 +1180,8 @@ public final class DictationPillController: DictationPillPresenting {
     // MARK: Placement
 
     /// The panel size the anchor is resolved against: as long as the longest
-    /// motion phase and as thick as a text phase. Resolving (and clamping)
+    /// upright shape (the peek dock, then the listening bar) and as thick as a
+    /// text phase. Resolving (and clamping)
     /// the anchor ONCE with this size, then centering every phase on it, is
     /// what keeps a pill parked near a corner from creeping: clamping each
     /// phase's own size shifted the center by the size difference, so a pill
@@ -1495,8 +1503,8 @@ public final class DictationPillController: DictationPillPresenting {
         case .recording, .saving:
             // The live recording TOOLBAR: dot · digits · mic meter · system
             // meter · Stop, mirrored exactly by `RecordingToolbar` in the view
-            // (≈222 pt). Only the meeting bar below is longer; `referenceSize`
-            // resolves the bottom/top anchor against that one.
+            // (≈222 pt). The meeting bar below is longer, and the peek dock
+            // longer still; `referenceSize` resolves the anchor against the longest.
             length = PillStyle.recordingContentWidth + 2 * PillStyle.compactPadding
         case .meeting:
             // The meeting bar: the screen bar plus the people glyph
