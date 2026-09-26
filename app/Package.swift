@@ -159,5 +159,34 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Call-detection probe: prints every change in who holds the mic —
+        // pid, Core Audio bundle id, the outermost .app's bundle id, resolved
+        // owner + method, web-call assertion, catalog verdict, matched service
+        // — and with `--detector` the offers the real `MeetingDetector` would
+        // make. Bundle ids, pids, booleans and timings only: no paths, no
+        // window titles. Runs the main run loop (a command-line HAL client gets
+        // no notifications without one). A shell-launched probe reads titles
+        // with the TERMINAL's grants.   micwatch [--seconds N] [--titles] [--detector]
+        .executableTarget(
+            name: "micwatch",
+            dependencies: [
+                "KleothCapture",
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        // The other half of an unattended calibration: holds the microphone
+        // for N seconds from a SEPARATE process, so `micwatch` has something
+        // to see. Discards every buffer; exits 3 without prompting when the
+        // terminal has no microphone grant.   micopen [seconds]
+        .executableTarget(
+            name: "micopen",
+            dependencies: ["KleothCapture"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
     ]
 )
