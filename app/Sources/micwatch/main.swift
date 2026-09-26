@@ -11,7 +11,8 @@ import KleothCore
 // offers the real `MeetingDetector` would make. It prints bundle ids, pids,
 // booleans and timings only — never an executable path or a window title
 // (`--titles` feeds the matcher and prints the matched SERVICE and a count).
-// A shell-launched probe reads titles with the TERMINAL's grants.
+// A shell-launched probe reads titles with the TERMINAL's grants, and on the
+// main thread (a 0.5 s AX timeout per app — fine for a probe, not for the app).
 let args = CommandLine.arguments.dropFirst()
 var seconds: Double = 60
 var readTitles = false
