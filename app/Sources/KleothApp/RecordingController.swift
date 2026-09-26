@@ -407,16 +407,17 @@ public final class RecordingController: ObservableObject {
     /// write failed), or one whose stored title is still a placeholder (the
     /// event may exist now). Re-queries the event overlapping the start time.
     /// A deleted event simply keeps the placeholder title; a real
-    /// (non-placeholder) title is never overwritten.
+    /// (non-placeholder) title is never overwritten. `otherAttendees` goes
+    /// with `participants` (the one-to-one rule), nil without an event.
     private func recoveredCalendarNaming(
         title: String,
         startedAt: Date
-    ) -> (title: String, participants: [String]) {
+    ) -> (title: String, participants: [String], otherAttendees: Int?) {
         guard MeetingMetadata.isPlaceholderTitle(title),
               let calendar = calendarMeetingInfo(at: startedAt) else {
-            return (title, [])
+            return (title, [], nil)
         }
-        return (calendar.title, calendar.participants)
+        return (calendar.title, calendar.participants, calendar.otherAttendees)
     }
 
     // MARK: - External commands (App Intents / URL scheme / global hotkey)
@@ -969,6 +970,7 @@ public final class RecordingController: ObservableObject {
             context.calendarTitle = calendar.title
             context.calendarStart = Self.isoDateTime(calendar.start)
             context.calendarEnd = Self.isoDateTime(calendar.end)
+            context.calendarOtherAttendees = calendar.otherAttendees
         }
         let title = calendar?.title ?? MeetingNaming.placeholderTitle(service: context.service, startedAt: startedAt)
         let participants = calendar?.participants ?? []
@@ -1016,7 +1018,8 @@ public final class RecordingController: ObservableObject {
                 title: title,
                 meetingDir: dir,
                 startedAt: startedAt,
-                participants: participants
+                participants: participants,
+                otherAttendees: calendar?.otherAttendees
             )
         }
         return "Recording saved — transcribing in the background."
@@ -1336,7 +1339,8 @@ public final class RecordingController: ObservableObject {
         title: String,
         meetingDir: URL?,
         startedAt: Date,
-        participants: [String] = []
+        participants: [String] = [],
+        otherAttendees: Int? = nil
     ) async {
         if let meetingDir { markProcessing(meetingDir) }  // idempotent re-mark
 
@@ -1365,6 +1369,8 @@ public final class RecordingController: ObservableObject {
             && (!MeetingMetadata.isPlaceholderTitle(storedTitle) || MeetingMetadata.isPlaceholderTitle(title))
         let resolvedTitle = keepsStoredTitle ? storedTitle : title
         let resolvedParticipants = participants.isEmpty ? (existing?.participants ?? []) : participants
+        // The count goes with the participants it was read with (the one-to-one rule).
+        let resolvedOtherAttendees = participants.isEmpty ? existing?.context?.calendarOtherAttendees : otherAttendees
         let transcriber: any Transcriber = LocalTranscriber(
             channelFiles: channelFiles,
             language: Self.normalizedTranscriptionLanguage(settings.transcriptionLanguage),
@@ -1380,7 +1386,9 @@ public final class RecordingController: ObservableObject {
             // the remote channel is "Them" — or the one other person of a
             // one-to-one calendar call — until renamed after the meeting.
             writeDefaultSpeakerMapIfNeeded(
-                MeetingNaming.defaultSpeakerNames(userName: userName, participants: resolvedParticipants),
+                MeetingNaming.defaultSpeakerNames(
+                    userName: userName, participants: resolvedParticipants, otherAttendees: resolvedOtherAttendees
+                ),
                 in: meetingDir
             )
         }
@@ -1512,11 +1520,15 @@ public final class RecordingController: ObservableObject {
         // one matches, else the recovered placeholder so the summary's title
         // can adopt). It has no context to carry: that lives only in meta.json.
         var metadata: MeetingMetadata
+        // With the participants, for the one-to-one rule.
+        let otherAttendees: Int?
         if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
             metadata = loadMetadata(in: dir)
+            otherAttendees = metadata.context?.calendarOtherAttendees
         } else {
             let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
             let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
+            otherAttendees = naming.otherAttendees
             metadata = MeetingMetadata(
                 title: naming.title,
                 date: Self.dayString(started),
@@ -1540,7 +1552,9 @@ public final class RecordingController: ObservableObject {
                 systemURL: system
             )
             writeDefaultSpeakerMapIfNeeded(
-                MeetingNaming.defaultSpeakerNames(userName: userName, participants: metadata.participants),
+                MeetingNaming.defaultSpeakerNames(
+                    userName: userName, participants: metadata.participants, otherAttendees: otherAttendees
+                ),
                 in: dir
             )
         } else {
@@ -1703,11 +1717,15 @@ public final class RecordingController: ObservableObject {
         // recovered record for a meta-less folder — shouldn't happen here, but
         // degrade identically; such a folder has no context to carry).
         var metadata: MeetingMetadata
+        // With the participants, for the one-to-one rule.
+        let otherAttendees: Int?
         if fm.fileExists(atPath: dir.appendingPathComponent("meta.json").path) {
             metadata = loadMetadata(in: dir)
+            otherAttendees = metadata.context?.calendarOtherAttendees
         } else {
             let started = meeting.startedAt ?? Self.folderDate(dir) ?? Date()
             let naming = recoveredCalendarNaming(title: meeting.title, startedAt: started)
+            otherAttendees = naming.otherAttendees
             metadata = MeetingMetadata(
                 title: naming.title,
                 date: Self.dayString(started),
@@ -1756,7 +1774,9 @@ public final class RecordingController: ObservableObject {
         )
         if channelFiles.count == 2 {
             writeDefaultSpeakerMapIfNeeded(
-                MeetingNaming.defaultSpeakerNames(userName: userName, participants: metadata.participants),
+                MeetingNaming.defaultSpeakerNames(
+                    userName: userName, participants: metadata.participants, otherAttendees: otherAttendees
+                ),
                 in: dir
             )
         }
@@ -1875,7 +1895,8 @@ public final class RecordingController: ObservableObject {
                 title: naming.title,
                 meetingDir: dir,
                 startedAt: started,
-                participants: naming.participants
+                participants: naming.participants,
+                otherAttendees: naming.otherAttendees
             )
         }
     }

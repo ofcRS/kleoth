@@ -391,12 +391,20 @@ final class MeetingDetectionController: ObservableObject {
         let coordinator = PillCoordinator.shared
         switch effect {
         case .show(let offer):
+            // A pill that would refuse the prompt refuses it before anything is
+            // composed: an offer's text can cost a calendar lookup, and a refused
+            // show comes back every `busyRetry` for as long as the pill is busy —
+            // a dictation, above all (branch review I-1).
+            guard coordinator.acceptsMeetingPrompt else {
+                queued.append(.answered(offerId: offer.id, .refused, at: Date()))
+                return
+            }
             let prompt: PillPrompt
             switch offer.kind {
             case .start:
                 prompt = PillPrompt(
                     id: offer.id,
-                    text: MeetingOfferText.offer(for: offer.source, calendarTitle: currentCalendarTitle(for: offer.source)),
+                    text: MeetingOfferText.offer(for: offer.source, calendarTitle: offerCalendarTitle(for: offer.source)),
                     symbolName: "person.2.wave.2.fill", tint: .record,
                     primary: .meeting(.acceptOffer(id: offer.id)),
                     // The display NAME: the pill words the button itself
@@ -499,6 +507,28 @@ final class MeetingDetectionController: ObservableObject {
         case .browserCall: source.key.hasPrefix("site:") ? source.name : nil
         case .browser, .otherApp: nil
         }
+    }
+
+    /// The calendar title an offer on a source key was composed with, and
+    /// when: an offer shown again for the same source within `offerLifetime`
+    /// (displaced by a dictation, then back — a new id) reuses it instead of
+    /// asking EventKit again. Memory only, never logged.
+    private var cachedOfferCalendarTitle: (key: String, title: String?, at: Date)?
+
+    /// The calendar event an offer on `source` names — a call only
+    /// (`MeetingOfferText.namesCalendarEvent`: no lookup at all for a browser
+    /// without a call, a chat app or an unknown app) — looked up at most once
+    /// per source key per `offerLifetime`.
+    private func offerCalendarTitle(for source: MeetingSource) -> String? {
+        guard MeetingOfferText.namesCalendarEvent(for: source) else { return nil }
+        let now = Date()
+        if let cached = cachedOfferCalendarTitle, cached.key == source.key,
+           now.timeIntervalSince(cached.at) < MeetingDetectionDefaults.offerLifetime {
+            return cached.title
+        }
+        let title = currentCalendarTitle(for: source)
+        cachedOfferCalendarTitle = (key: source.key, title: title, at: now)
+        return title
     }
 
     /// The title of the calendar event on now for an offer on `source`, for

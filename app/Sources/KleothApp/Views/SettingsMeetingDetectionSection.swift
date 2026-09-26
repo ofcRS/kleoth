@@ -44,7 +44,7 @@ struct SettingsMeetingDetectionSection: View {
         } header: {
             Text("Call detection")
         } footer: {
-            captionFooter("Kleoth notices which apps are using the microphone — no audio is read. When Zoom, Teams, Slack, FaceTime, Google Meet or another app starts using it, the pill asks whether to record, and when the call app lets go of it, the pill suggests stopping. Nothing is recorded until you click Record, and Kleoth never stops a recording on its own. With Screen Recording or Accessibility already allowed, it reads the call window's title to tell a meeting tab from other sites (a title that names no meeting is never saved); with calendar naming on, the offer names the event. No new permission is asked for. Whether this is on or off, each meeting you record notes which app it happened in.")
+            captionFooter("Kleoth notices which apps are using the microphone — no audio is read. When Zoom, Teams, Slack, FaceTime, Google Meet or another app starts using it, the pill asks whether to record, and when the call app lets go of it, the pill suggests stopping. Nothing is recorded until you click Record, and Kleoth never stops a recording on its own. With Screen Recording or Accessibility already allowed, it reads the call window's title to tell a meeting tab from other sites (a title that names no meeting is never saved); with calendar naming on, an offer for a call names the event. No new permission is asked for. Whether this is on or off, each meeting you record notes which app it happened in.")
         }
     }
 

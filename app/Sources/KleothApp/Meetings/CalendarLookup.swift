@@ -10,10 +10,12 @@ import KleothCore
 /// stay out of the log.
 enum CalendarLookup {
     /// The event a meeting belongs to: its title, the other people in it
-    /// (`CalendarParticipants.names`), and its span.
+    /// (`CalendarParticipants.names`), how many they are
+    /// (`otherAttendeeCount`: nameless ones too — the one-to-one rule), and its span.
     struct Info: Equatable {
         var title: String
         var participants: [String]
+        var otherAttendees: Int
         var start: Date
         var end: Date
     }
@@ -40,11 +42,14 @@ enum CalendarLookup {
               let event = pairs.first(where: { $0.candidate == best })?.event,
               let title = event.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
         else { return nil }
-        let participants = CalendarParticipants.names(
-            attendees: (event.attendees ?? []).map(attendee),
-            organizer: event.organizer.map(attendee)
+        let attendees = (event.attendees ?? []).map(attendee)
+        let organizer = event.organizer.map(attendee)
+        return Info(
+            title: title,
+            participants: CalendarParticipants.names(attendees: attendees, organizer: organizer),
+            otherAttendees: CalendarParticipants.otherAttendeeCount(attendees: attendees, organizer: organizer),
+            start: event.startDate, end: event.endDate
         )
-        return Info(title: title, participants: participants, start: event.startDate, end: event.endDate)
     }
 
     // MARK: - EventKit
