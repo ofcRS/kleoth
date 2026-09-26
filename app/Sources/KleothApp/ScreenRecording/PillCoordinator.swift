@@ -42,7 +42,12 @@ final class PillCoordinator {
     /// The running session's fixed start, or nil when nothing records.
     private var recordingSince: Date?
     /// The running meeting's fixed start, or nil when no meeting records.
+    /// It stays set from the stop until `.saved` — the bar under `.saving` —
+    /// so the menu asks `meetingRecording` instead.
     private var meetingSince: Date?
+    /// The meeting behind `meetingSince` still records: false from its
+    /// `.finalizing` (`meetingDidStopRecording`), true again at the next start.
+    private var meetingRecording = false
 
     /// Which side put the pill's CURRENT phase up. Only `.saving` (screen
     /// recording, meeting), `.warning` and `.failed` (all three) are ambiguous,
@@ -88,10 +93,11 @@ final class PillCoordinator {
         pill.onAction = { [weak self] action in self?.route(action) }
         pill.onDismiss = { [weak self] in self?.routeDismiss() }
         // The coordinator owns the menu's content too, so the meeting row sees
-        // every meeting — whoever started it, dictation on or off.
+        // every meeting — whoever started it, dictation on or off. "Stop" only
+        // while it records: during its save the row offers the next meeting.
         pill.menuContent = { [weak self] in
             var content = self?.dictationMenuContent?() ?? PillMenuContent()
-            content.meetingSince = self?.meetingSince
+            content.meetingSince = self?.meetingRecording == true ? self?.meetingSince : nil
             return content
         }
     }
@@ -193,6 +199,12 @@ final class PillCoordinator {
         return false
     }
 
+    /// Whether `showMeetingPhase(.prompt(…))` would show a prompt now: no
+    /// screen recording (a prompt yields to its bar) and not
+    /// `isPillBusyForPrompts`. The detection host asks BEFORE composing an
+    /// offer, whose text can cost a calendar lookup.
+    var acceptsMeetingPrompt: Bool { recordingSince == nil && !isPillBusyForPrompts }
+
     /// The pointer is on the pill: a visible prompt's lifetime waits.
     var isPointerOverPill: Bool { pill.isPointerOver }
 
@@ -216,8 +228,15 @@ final class PillCoordinator {
     func setMeetingBackdrop(since: Date?) {
         guard meetingSince != since else { return }
         meetingSince = since
+        meetingRecording = since != nil
         recompute()                                               // the new backdrop is stored FIRST…
         if since != nil { clearCapturePhaseBlocking(.meeting) }   // …then the collapse lands on it
+    }
+
+    /// The meeting stopped recording (`.finalizing`): its bar stays up under
+    /// `.saving` until `.saved`, but the menu no longer offers to stop it.
+    func meetingDidStopRecording() {
+        meetingRecording = false
     }
 
     /// The meeting bar's meters. Dropped while a screen recording runs: its
@@ -303,12 +322,15 @@ final class PillCoordinator {
     }
 
     /// A capture's bar just became due, but `setBackdrop` only takes over a
-    /// resting-family phase: a leftover capture phase would leave a hot
-    /// microphone with no bar (meetings §3.1.3, screen recording §6.3).
-    /// Withdraw it; the popover / History keep the detail. This is
+    /// resting-family phase: a leftover phase would leave a hot microphone with
+    /// no bar (meetings §3.1.3, screen recording §6.3). Withdraw it; the
+    /// popover / History keep the detail. This is
     /// `ScreenRecordingController.start(from:)`'s rule (§7 rows 21-22),
     /// extended to both captures:
-    /// - either side's sticky `.failed`;
+    /// - ANY side's sticky `.failed` — a dictation's too: it is terminal
+    ///   (its session has ended; a `.transcriptionKept` Retry is also
+    ///   History's "Try again"), and a stale "Add an ElevenLabs key" must never
+    ///   hide a new recording's bar;
     /// - the meeting's own leftovers (`.saving`, `.meetingSaved`, `.warning`) —
     ///   a screen `.saved` / `.warning` auto-hides within 4 s on its own, and a
     ///   screen `.saving` can't be up while a meeting rises to the top, since
@@ -317,14 +339,17 @@ final class PillCoordinator {
     ///   a screen recording starts (§3.2.3), and a stop suggestion must not keep
     ///   a starting screen recording's bar down for its 60 s. The detector is
     ///   told (`onMeetingPromptDisplaced`), after the dismiss.
-    /// Never touches a dictation phase, and a meeting rising under a running
-    /// screen recording changes nothing: the screen bar stays on top.
+    /// Never a live dictation phase, nor a dictation's `.warning` (it hides
+    /// itself in 3 s and the stored bar lands then), and a meeting rising
+    /// under a running screen recording changes nothing: the screen bar stays
+    /// on top. Read from `upcomingState`, as `setBackdrop` reads it: a phase
+    /// asked for this turn is the one that keeps the bar stored.
     private func clearCapturePhaseBlocking(_ rising: Owner) {
-        guard !isDictationPhaseLive, let owner = lastShowOwner else { return }
+        guard let owner = lastShowOwner else { return }
         if rising == .meeting, recordingSince != nil { return }
-        switch pill.currentState {
+        switch pill.upcomingState {
         case .failed:
-            guard owner == .meeting || owner == .recording else { return }
+            break   // any side's sticky fault; a dictation's is terminal — its session has ended
         case .saving, .meetingSaved, .warning, .prompt:
             guard owner == .meeting else { return }
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording, .saved,
@@ -338,9 +363,11 @@ final class PillCoordinator {
     }
 
     /// Whether a DICTATION phase currently owns the pill — neither capture
-    /// side may overwrite one.
+    /// side may overwrite one. Includes a phase asked for this turn that has
+    /// not landed (`upcomingState`): a meeting `.saving` right after a
+    /// dictation's `.armed` must not pre-empt it.
     var isDictationPhaseLive: Bool {
-        switch pill.currentState {
+        switch pill.upcomingState {
         case .armed, .listening, .transcribing, .polishing, .done:
             return true
         case .warning, .failed:
@@ -475,7 +502,17 @@ final class PillCoordinator {
 
     /// `.armed` on every chord: a meeting prompt goes on the first frame and
     /// comes back once the pill is free (§3.2.3), via `present`'s report.
+    /// A dictation over a meeting's `.saving`: that meeting has stopped, so
+    /// its bar goes now — the dictation would otherwise collapse back onto a
+    /// running clock with a Stop that answers "Nothing is recording" until
+    /// `.saved`. It collapses onto the resting pill (or nothing) instead, and
+    /// `.meetingSaved` is queued behind it as usual.
     fileprivate func dictationDidShow(_ state: DictationPillState) {
+        if case .saving = pill.upcomingState, lastShowOwner == .meeting, meetingSince != nil {
+            meetingSince = nil
+            meetingRecording = false
+            recompute()   // stored only: `.saving` is still up
+        }
         present(state, owner: .dictation)
     }
 

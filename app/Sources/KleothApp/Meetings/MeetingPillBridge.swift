@@ -187,6 +187,9 @@ final class MeetingPillBridge {
             }
             current = (directory: directory, isRecording: false)
             stopLevelPump()
+            // The pill menu stops offering "Stop meeting recording" now; the
+            // bar itself stays under `.saving` until `.saved`.
+            coordinator.meetingDidStopRecording()
             // Over the still-`.meeting` backdrop, so the wave shows in the
             // meeting-sized bar. When it can't show (a dictation is up, or the
             // screen bar is on top), the meeting's backdrop goes now: the mic

@@ -254,10 +254,13 @@ public final class DictationPillController: DictationPillPresenting {
     /// panel NOW only when the pill is in the resting family (`.hidden`,
     /// `.idle`, `.recording` — nothing the user is waiting on); on any live
     /// dictation phase it is only stored and lands at the next `dismiss()`.
+    /// "The pill" is the phase a transition is about to apply, when there is
+    /// one: `model.phase` lags a turn behind a `show`, and a backdrop must not
+    /// paint over an `.armed` asked for in the same turn.
     public func setBackdrop(_ newBackdrop: DictationPillBackdrop) {
         guard backdrop != newBackdrop else { return }
         backdrop = newBackdrop
-        guard Self.isRestingFamily(model.phase) else { return }
+        guard Self.isRestingFamily(pendingPhase ?? model.phase) else { return }
         if let state = newBackdrop.state {
             show(state)
         } else if model.phase != .hidden {
@@ -265,10 +268,16 @@ public final class DictationPillController: DictationPillPresenting {
         }
     }
 
-    /// What the pill is showing right now — the coordinator's "is a dictation
-    /// phase live?" input.
+    /// What the pill is showing right now.
     public var currentState: DictationPillState { dismissingState ?? model.phase }
     private var dismissingState: DictationPillState?
+
+    /// What the pill shows once the transition in flight lands: `currentState`,
+    /// except that a phase a `show()` asked for this main-queue turn already
+    /// counts (`model.phase` changes a turn later on a panel that is up) — the
+    /// coordinator's "is a dictation phase live?" input. During a ✕ it is still
+    /// the dismissed phase, like `currentState`.
+    public var upcomingState: DictationPillState { dismissingState ?? pendingPhase ?? model.phase }
 
     public func setResting(_ visible: Bool) {
         setBackdrop(visible ? .idle : .hidden)
