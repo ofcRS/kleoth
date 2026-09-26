@@ -117,4 +117,68 @@ public enum DictationDefaults {
     /// capture file and `prepareForUpload`'s output (`ChannelAudio.mixToMono(…, bitRate:)`) — the
     /// prep step re-encodes, so passing it there is what actually shrinks the upload.
     public static let captureBitRate = 64_000
+
+    // MARK: - The text already in the field (design 2026-09-24-dictation-context §3.1–§3.7)
+
+    /// Text read before the caret or selection, in UTF-16 units (as Accessibility counts): enough
+    /// for the model to continue the sentence and reuse the field's spellings, and little enough
+    /// to cost the polish nothing noticeable (with the 500 after it, ≤ ~2,000 characters per call).
+    ///
+    /// Used twice, in two units: as the read window (UTF-16 units, `DictationContextPolicy.readPlan`),
+    /// and as a cap in Characters (`String.count`) on the text before the caret that an appended
+    /// selection becomes in the prompt (`DictationFieldContext.promptContext`) — text already read
+    /// (the window plus the selection), cut like a window but never read again.
+    public static let contextBeforeCharacters = 1_500
+    /// Text read after it: the model needs only where the sentence goes next.
+    public static let contextAfterCharacters = 500
+    /// The longest selection (characters) the model rewrites with the dictation. A merge writes
+    /// the whole selection back, roughly +1 s per 300–400 words, so a longer one stays as it is and
+    /// gets the dictation added after it.
+    public static let maxMergeSelectionCharacters = 4_000
+    /// The longest selection (characters) read at all. A longer one is replaced by the dictation,
+    /// as before field context existed: its text would be read for nothing.
+    public static let maxReadableSelectionCharacters = 20_000
+    /// A terminal selection is a spelling reference (an error message, a function name), capped
+    /// like the text before a caret. The cap applies after the read: a terminal selection without
+    /// an `AXSelectedTextRange` (Ghostty's mouse selection) is copied whole first, bounded only by
+    /// `contextElementTimeout` on that one message.
+    public static let maxReferenceCharacters = 1_500
+    /// The most characters of partial word a cut drops (R13). A window cut short at a read limit
+    /// (or a cap) would otherwise start or end mid-word, so the cut goes back to the nearest
+    /// whitespace — but text written without spaces (Chinese, Japanese, Thai) and long tokens have
+    /// none nearby, and going to the first one could drop most of the window. Past this many
+    /// characters the cut stays where the limit made it, at a Character, still marked "…".
+    public static let maxDroppedPartialWordCharacters = 40
+    /// When a field doesn't answer `AXStringForRange`, the windows are cut out of its whole
+    /// `AXValue` — only while that value is at most this long, so a huge document isn't copied
+    /// across processes for 2,000 characters of it.
+    public static let maxValueCharactersWithoutRangeReads = 20_000
+    /// The Accessibility messaging timeout (seconds) set on each element read — never on the
+    /// system-wide element, which would change it for the whole process. A hung app then costs
+    /// the reader a quarter of a second per message, not AX's default of several seconds.
+    public static let contextElementTimeout: Float = 0.25
+    /// The snapshot at release overlaps audio preparation and the Scribe upload (≥ 1 s), so up to
+    /// this long it adds nothing; a read past it is abandoned and the dictation goes in as today.
+    /// Abandoned, not stopped: the read runs out its messages on the reader's serial queue — up to
+    /// about 8 × `contextElementTimeout` ≈ 2 s from its start, against an app that answers each
+    /// message slowly but inside the timeout (a hung app fails the first message and stops early).
+    /// A quick next dictation's wake and snapshot queue behind it, and that one gets no context either.
+    public static let contextReadBudget: TimeInterval = 0.3
+    /// The re-check just before ⌘V: two to four messages, and the paste waits for it.
+    public static let contextRecheckBudget: TimeInterval = 0.15
+    /// The echo guard's run, in letters and digits: about a sentence, well past a shared name or
+    /// term (`DictationContextFit.echoesContext`).
+    public static let contextEchoMinimumCharacters = 40
+    /// Apps whose accessibility tree only builds once `AXManualAccessibility` is set at chord-down
+    /// (Electron's switch for assistive tools). Bundle ids; empty by the user's decision to skip
+    /// the spike (dictation-context design §10, which says when T3 Code would go on it).
+    /// An app goes on the list only if its getter for the attribute answers, or reports it
+    /// absent: the reader never sets a flag it couldn't read first. Before the first bundle id
+    /// goes on either list, serialise the controller's `wake` and `endSession` calls into the
+    /// reader, or give the reader a session token: each is a detached task today, so a double-tap
+    /// can run one session's `endSession` after the next session's `wake` and clear its flag.
+    public static let wakeWithManualAccessibility: Set<String> = []
+    /// Apps woken with `AXEnhancedUserInterface`, VoiceOver's flag: while it is on, window
+    /// managers animate and misplace windows. Stays empty unless the user says yes (§9 Q6).
+    public static let wakeWithEnhancedUserInterface: Set<String> = []
 }

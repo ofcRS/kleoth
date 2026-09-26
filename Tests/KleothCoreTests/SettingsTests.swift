@@ -73,6 +73,20 @@ import Foundation
         #expect(Settings.load(config: ["dictation_polish_always": "TRUE"]).dictationPolishAlways == false)
     }
 
+    /// The field context (dictation-context design §3.1, §4.1) is the reverse
+    /// of the strict opt-ins: on by default, so only the literal lowercase
+    /// `"false"` turns it off — absent, empty or malformed values keep it on.
+    @Test func dictationContextIsOnUnlessFalse() {
+        #expect(Settings(outputDir: URL(fileURLWithPath: "/tmp"), defaultModel: "m").dictationContext == true)
+        #expect(Settings.load(config: [:]).dictationContext == true)
+        #expect(Settings.load(config: ["dictation_context": "true"]).dictationContext == true)
+        #expect(Settings.load(config: ["dictation_context": "garbage"]).dictationContext == true)
+        #expect(Settings.load(config: ["dictation_context": "False"]).dictationContext == true)
+        #expect(Settings.load(config: ["dictation_context": "0"]).dictationContext == true)
+        #expect(Settings.load(config: ["dictation_context": ""]).dictationContext == true)
+        #expect(Settings.load(config: ["dictation_context": "false"]).dictationContext == false)
+    }
+
     @Test func defaultModelComesFromModelCatalog() {
         #expect(Settings.load(config: [:]).defaultModel == ModelCatalog.defaultModel)
         #expect(Settings.load(config: [:]).defaultModel == "z-ai/glm-5.3-flash")

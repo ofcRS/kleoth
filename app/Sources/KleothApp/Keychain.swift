@@ -60,6 +60,12 @@ public enum Keychain {
         /// anything else lets `PolishGate` paste short / chat-app dictations
         /// as heard. New key: NOT in `legacyAccounts`.
         public static let dictationPolishAlways = "dictation_polish_always"
+        /// "false" stops dictation reading the field it goes into (the
+        /// selection and the text around the caret); absent or anything else
+        /// keeps it on — the reverse of the strict opt-ins above, since the
+        /// setting is on by default. Stored as "true"/"false" like
+        /// `dictationPolishAlways`. New key: NOT in `legacyAccounts`.
+        public static let dictationContext = "dictation_context"
         /// The microphone pick: a CoreAudio device UID, or "" for Automatic
         /// (an explicit empty value overrides a `config.json` pick). Honoured
         /// by meeting recordings, dictation and screen recordings alike.

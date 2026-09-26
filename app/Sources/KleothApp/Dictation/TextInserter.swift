@@ -65,9 +65,10 @@ final class TextInserter: TextInserting {
         }
 
         // Whoever is frontmost NOW gets the keystroke — we never activate
-        // ourselves or the press-time app.
+        // ourselves or the press-time app. Compared by bundle id: a target
+        // rebuilt from a History row (the pill's Retry) has no process id.
         let target = DictationTarget.frontmost()
-        if target != pressTimeTarget {
+        if target.bundleIdentifier != pressTimeTarget.bundleIdentifier {
             log.info(
                 "Focus moved between chord-down and paste: \(pressTimeTarget.bundleIdentifier ?? "unknown", privacy: .public) → \(target.bundleIdentifier ?? "unknown", privacy: .public)"
             )

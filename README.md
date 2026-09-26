@@ -36,8 +36,9 @@ No account. No database. Local-first by design.
 Hold **fn+shift**, speak, let go: Kleoth transcribes what you said, cleans it up with one short
 language-model pass (fillers and false starts gone, never translated) and pastes it into whatever
 app has focus. If you know Wispr Flow or Superwhisper, it is the same hold-to-talk idea. Double-tap
-for hands-free; from the next release, a hold that runs long can go hands-free too — tap ⌘ or click
-the pill. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
+for hands-free, or tap ⌘ (or click the pill) when a hold runs long. It fits the text already there:
+speak a correction over a selection and the two come back as one piece in its place (one ⌘Z undoes
+it); at the cursor, your words continue the sentence. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
 would have typed — paragraphs, a list where you listed things; a quick chat message is pasted as
 heard. A personal dictionary biases recognition toward your names and jargon, and every dictation
 lands in a searchable history.
@@ -100,7 +101,8 @@ Settings → Accounts:
 Speech-to-text is separate from all of these: Whisper runs on device for meetings and screen
 recordings, and [ElevenLabs Scribe](https://elevenlabs.io), with your key, transcribes dictation
 and anything you send to the cloud. More in [docs/ai-providers.md](docs/ai-providers.md),
-including the one Ollama setting long meetings need.
+including the one Ollama setting long meetings need. Only OpenRouter and Claude Code also get the
+text you're dictating into; a local server and Apple's model clean up your words alone.
 
 Nothing is sent anywhere you did not sign up for: the CLIs run as the binaries you installed,
 with their own login; the local server and Apple's model never leave the machine.
@@ -156,7 +158,7 @@ macOS remembers the choice.
 | **System Audio Recording** | Record the other participants (the audio your Mac plays). Shown under *Privacy & Security → Screen & System Audio Recording*. | First recording. |
 | **Keychain** | Store your optional API keys securely. **Click "Always Allow"** so you are not re-prompted. | When you save a key, or on a re-signed build. |
 | Calendar *(optional)* | Name a meeting from the calendar event you're in. Decline freely. | If you grant it. |
-| Accessibility *(optional)* | Dictation only: watch for the fn+shift chord system-wide and send the ⌘V that pastes the dictated text. | When you turn dictation on in Settings. |
+| Accessibility *(optional)* | Dictation only: watch for the fn+shift chord system-wide, send the ⌘V that pastes the dictated text, and read the selection and the text around the cursor in the field you dictate into ([what is read](#data--privacy)). | When you turn dictation on in Settings. |
 | Screen Recording *(optional)* | Screen recording only: capture the display or region you picked. Kleoth's own pill and picker are never in the frame. | The first time you start a screen recording. |
 
 Everything except the microphone and system-audio grants is optional. The only place Kleoth sends
@@ -189,8 +191,9 @@ Open **Settings** from the menu bar. Everything in it is optional:
   automatic transcription after recording, the summary model, naming meetings after your
   calendar event, and [meeting covers](#meeting-covers) (off by default).
 - **Dictation** — hold-to-talk on or off, the clean-up model, whether short dictations and chat
-  messages are cleaned up too, your personal dictionary, and resetting the pill's position. Without
-  an AI provider, the raw transcript is pasted as-is.
+  messages are cleaned up too, **Use the text you're dictating into** (on by default; see
+  [Data & privacy](#data--privacy) for what is read and sent), your personal dictionary, and
+  resetting the pill's position. Without an AI provider, the raw transcript is pasted as-is.
 - **Screen Recording** — the Screen Recording permission, and ways to start a recording or open
   your recordings.
 - **Microphone** — one input for meetings, dictation and screen recordings; Automatic follows the
@@ -283,6 +286,32 @@ target app, language, and models per utterance; the audio clip is deleted as soo
 transcribed. Only a dictation whose transcription failed or was stopped keeps its clip, in
 `~/Kleoth/dictations/audio/`, until it is transcribed or deleted. The personal dictionary is a
 plain JSON array at `~/.config/kleoth/dictionary.json`.
+
+**Dictating into text that's already there.** While **Use the text you're dictating into** is on
+(Settings → Dictation, on by default), Kleoth reads the one field you dictate into, so the cleanup
+can fit it:
+
+- **When you press fn+shift**, it only asks the app what kind of field has focus. Chrome-based
+  browsers and Electron apps make their text readable only once asked, so asking early gives them
+  the time you spend speaking.
+- **When you release**, it reads the selection, and up to 1,500 characters before and 500 after
+  the cursor or selection. Just before pasting, it checks that the selection hasn't changed; if it
+  has, your words are pasted on their own, as heard.
+- **Which selections merge:** up to 4,000 characters. A selection of 4,000 to 20,000 characters, or
+  one the cleanup failed on, stays as it was with your words added after it; one that can't be
+  read, or is longer, is replaced by your words as before (⌘Z brings it back).
+- **What is sent, and to whom:** that text goes, with your words, only to the AI provider that
+  already cleans them up, and only when that is OpenRouter or Claude Code. Nothing else on screen is
+  read: not other fields, not window titles.
+- **Never read:** password fields, password managers (1Password, Bitwarden, Passwords, Keychain
+  Access) and Kleoth's own windows.
+- **In a terminal** (Terminal, iTerm2, Ghostty, Warp, kitty, Alacritty, WezTerm), only a selection
+  is read, as a reference for spelling names and identifiers (an error message, a function name).
+  It is never replaced: your words go to the terminal's input, as before.
+- **What is kept:** a selection that was rewritten is kept with the dictation in History, so you can
+  get it back once the app's own undo is gone. The text around the cursor is never stored.
+
+Turn the setting off and Kleoth reads nothing from the field; the cleanup gets your words alone.
 
 Screen recordings are plain files in `~/Kleoth/screen-recordings/`: `screen-<timestamp>.mp4` plus a
 `screen-<timestamp>.json` sidecar holding the title and the word-timed transcript. Editing a word in

@@ -61,6 +61,21 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
     /// Wall-clock seconds of the transcription attempt that produced the text.
     /// Diagnostic, like `polishSeconds`: it calibrates the Scribe budget.
     public var transcriptionSeconds: Double?
+    /// How the text already in the focused field shaped this dictation — a
+    /// ``DictationInsertionPlan/Outcome`` raw value (`"cursor"`, `"merged"`,
+    /// …); nil when it ran without field context (the setting off, nothing
+    /// readable, a Retry or History run). A `String`, not the enum, so a value
+    /// a newer build writes still decodes (the `insert_method` lesson);
+    /// History shows no badge for a value it doesn't know.
+    public var fieldContext: String?
+    /// The selection a merge replaced, as it was — recovery once the app's own
+    /// undo history is gone. Set on `merged` rows only, nil otherwise; the text
+    /// around the caret is never stored.
+    public var replacedText: String?
+    /// Wall-clock seconds the focused field's read at release took (the read
+    /// budget when it timed out); nil when no read was attempted. Diagnostic,
+    /// like `polishSeconds`: it calibrates the read budget against real apps.
+    public var contextSeconds: Double?
 
     public init(
         id: String = UUID().uuidString,
@@ -82,7 +97,10 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         polishSeconds: Double? = nil,
         audioFileName: String? = nil,
         transcriptionError: String? = nil,
-        transcriptionSeconds: Double? = nil
+        transcriptionSeconds: Double? = nil,
+        fieldContext: String? = nil,
+        replacedText: String? = nil,
+        contextSeconds: Double? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -104,6 +122,9 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         self.audioFileName = audioFileName
         self.transcriptionError = transcriptionError
         self.transcriptionSeconds = transcriptionSeconds
+        self.fieldContext = fieldContext
+        self.replacedText = replacedText
+        self.contextSeconds = contextSeconds
     }
 
     /// A dictation waiting to be transcribed: its audio is kept, its text is
@@ -145,6 +166,7 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         case transcriptionModel, polishModel, polishProvider, durationSeconds
         case insertMethod, transcriptionCost, polishCost, polishSeconds
         case audioFileName, transcriptionError, transcriptionSeconds
+        case fieldContext, replacedText, contextSeconds
     }
 
     /// Lenient decode: only `id` / `timestamp` / `raw_text` / `polished_text`
@@ -178,6 +200,9 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         audioFileName = try container.decodeIfPresent(String.self, forKey: .audioFileName)
         transcriptionError = try container.decodeIfPresent(String.self, forKey: .transcriptionError)
         transcriptionSeconds = try container.decodeIfPresent(Double.self, forKey: .transcriptionSeconds)
+        fieldContext = try container.decodeIfPresent(String.self, forKey: .fieldContext)
+        replacedText = try container.decodeIfPresent(String.self, forKey: .replacedText)
+        contextSeconds = try container.decodeIfPresent(Double.self, forKey: .contextSeconds)
     }
 
     /// Explicit (rather than synthesized) so every key is always present —
@@ -206,6 +231,9 @@ public struct DictationLogEntry: Codable, Sendable, Identifiable, Hashable {
         try container.encode(audioFileName, forKey: .audioFileName)
         try container.encode(transcriptionError, forKey: .transcriptionError)
         try container.encode(transcriptionSeconds, forKey: .transcriptionSeconds)
+        try container.encode(fieldContext, forKey: .fieldContext)
+        try container.encode(replacedText, forKey: .replacedText)
+        try container.encode(contextSeconds, forKey: .contextSeconds)
     }
 
     // MARK: - Time
