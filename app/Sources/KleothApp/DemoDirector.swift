@@ -26,6 +26,10 @@ final class DemoDirector {
         case viewer
         /// One large still of a meeting (`docs/assets/screenshot-detail.png`).
         case still
+        /// The covers hero: the newest meeting with a cover at three scroll
+        /// offsets, light then dark, then a meeting without one. Verification
+        /// frames, not a README film.
+        case cover
     }
 
     /// The file `make-demo-data.ts` leaves in every folder it makes. A folder
@@ -61,7 +65,7 @@ final class DemoDirector {
             return quit("-KleothDemoFilm needs an absolute folder")
         }
         guard let script = DemoMode.script.flatMap(Script.init(rawValue:)) else {
-            return quit("-KleothDemoScript must be meeting, viewer or still")
+            return quit("-KleothDemoScript must be meeting, viewer, still or cover")
         }
         // The controllers History reads, built here (each sets its `shared`):
         // in demo mode no `KleothApp` exists to own them. Covers stay Off
@@ -103,7 +107,8 @@ final class DemoDirector {
 
     private init(script: Script, film: URL) {
         self.script = script
-        writer = DemoFilmWriter(directory: film, stage: script == .still ? .still : .film)
+        // The cover frames are stills too (Retina); their captions name each one.
+        writer = DemoFilmWriter(directory: film, stage: script == .still || script == .cover ? .still : .film)
     }
 
     private var windowSize: CGSize {
@@ -113,6 +118,9 @@ final class DemoDirector {
         // transcript right), which starts at a 760 pt detail pane.
         case .viewer: return CGSize(width: 1140, height: 620)
         case .still: return CGSize(width: 1180, height: 800)
+        // A detail pane of about 700 pt, so the band is about 350 pt: inside
+        // the 200…400 rule, not at either end (`CoverHeroGeometryTests` pins those).
+        case .cover: return CGSize(width: 1000, height: 680)
         }
     }
 
@@ -147,6 +155,7 @@ final class DemoDirector {
             case .meeting: await meetingScript(recording)
             case .viewer: await viewerScript()
             case .still: await stillScript(recording)
+            case .cover: await coverScript(recording)
             }
             captureTimer?.invalidate()
             writer.finish(hold: 2.2)
@@ -236,6 +245,43 @@ final class DemoDirector {
         capture()
     }
 
+    /// Plan 2026-09-25 `## Design` 8: the page with a cover at rest, scrolled
+    /// 140 pt and scrolled 320 pt, in light then dark, then a meeting without a
+    /// picture in light. Seven stills; the captions name each one (so no two
+    /// are the same frame to the writer). Offsets past the end of the page
+    /// clamp to it. The next selection rebuilds the page (`.id(meeting.id)`),
+    /// so the last still is at rest without a scroll of its own.
+    private func coverScript(_ recording: RecordingController) async {
+        guard let withCover = recording.recentMeetings.first(where: { $0.coverImageURL != nil }) else {
+            return Self.report("no meeting with a cover in the demo folder")
+        }
+        recording.selectedMeetingID = withCover.id
+        await hold(1.5)
+        let appearances: [(NSAppearance.Name, String)] = [(.aqua, "light"), (.darkAqua, "dark")]
+        for (appearance, name) in appearances {
+            window?.appearance = NSAppearance(named: appearance)
+            await hold(0.8)
+            for offset in [CGFloat(0), 140, 320] {
+                guard let window, let scrollView = detailScrollView(in: window), let document = scrollView.documentView else {
+                    return Self.report("no detail scroll view")
+                }
+                let clamped = min(offset, maxScrollOffset(of: scrollView, document: document))
+                setOffsetFromTop(clamped, clip: scrollView.contentView, document: document, in: scrollView)
+                await hold(0.5)
+                caption = "\(name) · scrolled \(Int(clamped)) pt"
+                capture()
+            }
+        }
+        window?.appearance = NSAppearance(named: .aqua)
+        guard let without = recording.recentMeetings.first(where: { $0.coverImageURL == nil }) else {
+            return Self.report("no meeting without a cover in the demo folder")
+        }
+        recording.selectedMeetingID = without.id
+        await hold(1.5)
+        caption = "light · no cover"
+        capture()
+    }
+
     // MARK: - Camera
 
     /// Starts the 20 fps capture.
@@ -267,8 +313,15 @@ final class DemoDirector {
 
     // MARK: - Scrolling the meeting
 
+    // Every offset below is measured from the page AT REST: 0 is the page as
+    // it first appears, whatever the clip's raw origin. The meeting page's
+    // scroll view runs under the toolbar with a top content inset (52 pt on
+    // macOS 26), so at rest its clip bounds start at y = -inset, and a raw
+    // y = 0 would already be scrolled by the inset. What the page shows
+    // (`visibleHeight`) is the clip less its insets.
+
     /// How far down the meeting each section header sits, in points from the
-    /// top of the scrolled content — measured before the camera rolls.
+    /// top of the page at rest — measured before the camera rolls.
     private var sectionOffsets: [String: CGFloat] = [:]
 
     /// Pages through the meeting and reads the headers off its own window
@@ -280,9 +333,9 @@ final class DemoDirector {
             return Self.report("no detail scroll view")
         }
         let clip = scrollView.contentView
-        let visible = clip.bounds.height
+        let visible = visibleHeight(of: scrollView)
         guard visible > 0 else { return Self.report("the detail scroll view has no height") }
-        let maxOffset = max(0, document.frame.height - visible)
+        let maxOffset = maxScrollOffset(of: scrollView, document: document)
         var offset: CGFloat = 0
         while true {
             setOffsetFromTop(offset, clip: clip, document: document, in: scrollView)
@@ -291,11 +344,14 @@ final class DemoDirector {
                 .null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]
             ) {
                 let visibleRect = clip.convert(clip.bounds, to: nil)
+                // The page's own top edge, below the part of the clip that
+                // runs under the toolbar: text above it is the toolbar's.
+                let pageTop = visibleRect.maxY - scrollView.contentInsets.top
                 for (text, box) in Self.recognizeLines(in: image) {
                     // Vision's box is normalized, bottom-left origin — the
                     // window's own orientation.
                     let top = box.maxY * window.frame.height
-                    let fromTop = visibleRect.maxY - top
+                    let fromTop = pageTop - top
                     guard fromTop >= 0, fromTop < visible, box.minX * window.frame.width > visibleRect.minX else { continue }
                     for title in titles where sectionOffsets[title] == nil
                         && text.localizedCaseInsensitiveContains(title) {
@@ -328,9 +384,9 @@ final class DemoDirector {
             return Self.report("no detail scroll view")
         }
         let clip = scrollView.contentView
-        let visible = clip.bounds.height
-        let maxOffset = max(0, document.frame.height - visible)
-        let current = offsetFromTop(clip: clip, document: document)
+        let visible = visibleHeight(of: scrollView)
+        let maxOffset = maxScrollOffset(of: scrollView, document: document)
+        let current = offsetFromTop(clip: clip, document: document, in: scrollView)
         let target = min(maxOffset, max(0, sectionOffsets[title].map { $0 - 14 } ?? current + visible * 0.8))
         let steps = max(1, Int(seconds * 60))
         for step in 1...steps {
@@ -341,12 +397,26 @@ final class DemoDirector {
         }
     }
 
-    private func offsetFromTop(clip: NSClipView, document: NSView) -> CGFloat {
-        document.isFlipped ? clip.bounds.minY : document.frame.height - clip.bounds.maxY
+    /// How much of the page the scroll view shows: the clip less the part
+    /// under the toolbar (and any bottom inset).
+    private func visibleHeight(of scrollView: NSScrollView) -> CGFloat {
+        let insets = scrollView.contentInsets
+        return scrollView.contentView.bounds.height - insets.top - insets.bottom
+    }
+
+    /// The furthest the page scrolls from rest: its last line at the bottom edge.
+    private func maxScrollOffset(of scrollView: NSScrollView, document: NSView) -> CGFloat {
+        max(0, document.frame.height - visibleHeight(of: scrollView))
+    }
+
+    private func offsetFromTop(clip: NSClipView, document: NSView, in scrollView: NSScrollView) -> CGFloat {
+        let inset = scrollView.contentInsets.top
+        return document.isFlipped ? clip.bounds.minY + inset : document.frame.height - clip.bounds.maxY + inset
     }
 
     private func setOffsetFromTop(_ offset: CGFloat, clip: NSClipView, document: NSView, in scrollView: NSScrollView) {
-        let y = document.isFlipped ? offset : document.frame.height - clip.bounds.height - offset
+        let inset = scrollView.contentInsets.top
+        let y = document.isFlipped ? offset - inset : document.frame.height - clip.bounds.height - offset + inset
         clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
         scrollView.reflectScrolledClipView(clip)
     }
