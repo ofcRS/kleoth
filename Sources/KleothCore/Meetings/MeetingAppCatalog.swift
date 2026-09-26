@@ -69,14 +69,23 @@ public enum MeetingAppCatalog {
     /// Phone, Safari), Rogue Amoeba's tools, other Kleoth builds.
     private static let neverPrefixes: [String] = ["com.apple.", "com.rogueamoeba.", "dev.kleoth."]
 
-    /// The named lists (call, chat, browser) are consulted BEFORE the never
-    /// rules, so `com.apple.FaceTime` and `com.apple.Safari` survive the
-    /// `com.apple.` prefix.
+    /// Safari web apps (macOS 14+, "Add to Dock"): `com.apple.Safari.WebApp.<id>`
+    /// (the shape is a calibration item, §6 step 9).
+    private static let safariWebAppPrefix = "com.apple.Safari.WebApp."
+
+    /// The named lists (call, chat, browser) and Safari web apps are consulted
+    /// BEFORE the never rules, so `com.apple.FaceTime`, `com.apple.Safari` and
+    /// its web apps survive the `com.apple.` prefix.
     public static func verdict(bundleId: String, appName: String) -> Verdict {
         if bundleId.isEmpty { return .never }                       // outside any .app
         if let name = callApps[bundleId] { return .app(.callApp, name: name, serviceName: name) }
         if let name = chatApps[bundleId] { return .app(.chatApp, name: name, serviceName: name) }
         if let name = browsers[bundleId] { return .browser(name: name) }
+        if bundleId.hasPrefix(safariWebAppPrefix), bundleId.count > safariWebAppPrefix.count {
+            // A site added to the Dock from Safari: a browser, named after itself.
+            let trimmed = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .browser(name: trimmed.isEmpty ? "Safari" : trimmed)
+        }
         if neverExact.contains(bundleId) { return .never }
         if neverPrefixes.contains(where: { bundleId.hasPrefix($0) }) { return .never }
         let trimmed = appName.trimmingCharacters(in: .whitespacesAndNewlines)

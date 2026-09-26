@@ -25,7 +25,7 @@ public enum MeetingServiceMatcher {
 
         // Google Meet: "Meet - abc-defg-hij" / "<event> - Google Meet". Never the bare landing page.
         if lower.range(of: #"^meet\s[-–—]\s[a-z]{3}-[a-z]{4}-[a-z]{3}\b"#, options: .regularExpression) != nil
-            || lower.hasSuffix("- google meet") || lower.hasSuffix("– google meet") {
+            || lower.hasSuffix("- google meet") || lower.hasSuffix("– google meet") || lower.hasSuffix("— google meet") {
             return Match(id: "google-meet", name: "Google Meet")
         }
         // Teams: "<name> | Microsoft Teams", except the idle surfaces.

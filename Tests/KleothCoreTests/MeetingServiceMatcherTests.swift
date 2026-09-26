@@ -43,6 +43,12 @@ import Testing
         #expect(id("All That Jazz - YouTube") == nil)
     }
 
+    /// Review M-6: every dash the code regex accepts works in the suffix too.
+    @Test func googleMeetSuffixTakesAnyDash() {
+        #expect(id("Weekly sync — Google Meet") == "google-meet")
+        #expect(id("Meet — abc-defg-hij") == "google-meet")
+    }
+
     @Test func plainTitlesCaseAndWhitespace() {
         #expect(id("GitHub - ofcRS/kleoth") == nil)
         #expect(id("") == nil)

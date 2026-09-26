@@ -65,6 +65,24 @@ import Testing
         #expect(MeetingAppCatalog.outermostAppPath(executablePath: "") == nil)
     }
 
+    /// Review M-5: a site added to the Dock from Safari (macOS 14+) is its own
+    /// app under `com.apple.Safari.WebApp.<id>` — a browser named after itself,
+    /// not an Apple process.
+    @Test func safariWebAppsAreBrowsersNamedAfterThemselves() throws {
+        #expect(MeetingAppCatalog.verdict(bundleId: "com.apple.Safari.WebApp.5A1C3E2B", appName: "Google Meet") == .browser(name: "Google Meet"))
+        #expect(MeetingAppCatalog.verdict(bundleId: "com.apple.Safari.WebApp.5A1C3E2B", appName: "  ") == .browser(name: "Safari"))
+        #expect(MeetingAppCatalog.verdict(bundleId: "com.apple.Safari.WebApp.", appName: "X") == .never)             // no id
+        #expect(MeetingAppCatalog.verdict(bundleId: "com.apple.Safari.SafeBrowsing", appName: "SafeBrowsing") == .never)
+        let meet = try #require(MeetingSource.make(bundleId: "com.apple.Safari.WebApp.5A1C3E2B", appName: "Google Meet",
+                                                   windowTitles: ["Meet - abc-defg-hij"], hasWebCall: false))
+        #expect(meet.key == "site:google-meet")
+        #expect(meet.sourceClass == .browserCall)
+        let teams = try #require(MeetingSource.make(bundleId: "com.apple.Safari.WebApp.77", appName: "Teams", windowTitles: [], hasWebCall: false))
+        #expect(teams.key == "browser:com.apple.Safari.WebApp.77")
+        #expect(teams.offerSubject == "Teams is using the mic")
+        #expect(teams.neverLabel == "Never for Teams")
+    }
+
     @Test func webCallAssertionNames() {
         #expect(MeetingAppCatalog.webCallAssertionNames.contains("WebRTC has active PeerConnections"))
     }
