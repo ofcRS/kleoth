@@ -57,6 +57,12 @@ public final class SystemAudioTap {
     private let log = Logger(subsystem: "dev.kleoth", category: "SystemAudioTap")
     private let ioStats = OSAllocatedUnfairLock<(cycles: Int, nilBuffers: Int, frames: Int64, maxSample: Float)>(initialState: (0, 0, 0, 0))
 
+    /// Meter for the pill: the RMS of the most recent IO buffer (both
+    /// channels — the tap's buffer is interleaved). Stored on the IO queue,
+    /// read from the main actor without a hop — see ``LevelWord`` for the
+    /// (deliberate, benign) race that buys. Reset on start and teardown.
+    let level = LevelWord()
+
     /// Diagnostics from the last/current capture: IO cycles, nil buffers, total
     /// frames seen, and the peak absolute sample the IO callback actually
     /// received. A peak ~0 means the tap delivered silence at the source.
@@ -147,6 +153,7 @@ public final class SystemAudioTap {
     private func start(makeHandler: (AVAudioFormat?) throws -> BufferHandler?) throws {
         guard !isRunning else { return }
         writeFailed.reset()
+        level.reset()
 
         // 1. Build the tap description: exclude *this* process, stereo mixdown of
         //    all others, private (no system-wide visibility), unmuted so the user
@@ -219,6 +226,8 @@ public final class SystemAudioTap {
             //    no await.
             let capturedFormat = format
             let stats = ioStats
+            let level = self.level
+            let isFloat = format.commonFormat == .pcmFormatFloat32
             var newProcID: AudioDeviceIOProcID?
             let procStatus = AudioDeviceCreateIOProcIDWithBlock(
                 &newProcID,
@@ -240,6 +249,15 @@ public final class SystemAudioTap {
                         if a > localMax { localMax = a }
                         i += 1
                     }
+                }
+                // The pill's meter: one `vDSP_measqv` over the first buffer.
+                // The tap format is interleaved float32, so that buffer holds
+                // both channels and its RMS is the whole "system" lane.
+                if isFloat, let first = abl.first, let bytes = first.mData {
+                    level.storeRMS(
+                        of: UnsafePointer(bytes.assumingMemoryBound(to: Float.self)),
+                        count: Int(first.mDataByteSize) / MemoryLayout<Float>.size
+                    )
                 }
                 let pcm = AVAudioPCMBuffer(
                     pcmFormat: capturedFormat,
@@ -302,6 +320,7 @@ public final class SystemAudioTap {
         }
 
         isRunning = false
+        level.reset()   // IO is stopped and its proc destroyed: the lane reads silent
     }
 
     deinit {
