@@ -44,6 +44,7 @@ struct KleothApp: App {
                 isRecording: controller.isRecording || screenRecording.isActive,
                 needsOnboarding: controller.needsOnboarding,
                 historyRequest: dictation.dictationsHistoryRequest,
+                meetingsHistoryRequest: controller.meetingsHistoryRequest,
                 consentRequest: controller.consentRequest
             )
         }
@@ -103,7 +104,8 @@ struct KleothApp: App {
 /// so its `.task` opens the welcome window once, after a short beat, when this is
 /// a fresh install (and the consent window, when a refusal came before it
 /// mounted). For the same reason it opens windows that controllers ask for
-/// through request counters (`historyRequest`, `consentRequest`).
+/// through request counters (`historyRequest`, `meetingsHistoryRequest`,
+/// `consentRequest`).
 private struct KleothMenuBarLabel: View {
     let isRecording: Bool
     let needsOnboarding: Bool
@@ -111,6 +113,9 @@ private struct KleothMenuBarLabel: View {
     /// "Dictation history…" needs a window opened from a controller that has
     /// no SwiftUI environment, and this label always has one.
     let historyRequest: Int
+    /// `RecordingController.meetingsHistoryRequest` — the pill's "Meeting
+    /// saved" click has no SwiftUI environment of its own.
+    let meetingsHistoryRequest: Int
     /// `RecordingController.consentRequest` — bumped when `start()` refuses
     /// for missing consent. The hotkey, `kleoth://` links and the Start intent
     /// have no view of their own to show that refusal in.
@@ -151,6 +156,14 @@ private struct KleothMenuBarLabel: View {
             .onChange(of: historyRequest) { _, _ in
                 // `HistoryView` observes the same counter and flips its scope
                 // to Dictations; this only puts the window on screen.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openWindow(id: "kleoth-history")
+            }
+            .onChange(of: meetingsHistoryRequest) { _, _ in
+                // `HistoryView` observes the same counter and flips its scope
+                // to Meetings. The popover and Settings bump it and open the
+                // window themselves; opening an open window by id only brings
+                // it forward, so answering them too is harmless.
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openWindow(id: "kleoth-history")
             }

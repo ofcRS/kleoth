@@ -78,6 +78,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // current Screen Recording grant.
         MainActor.assumeIsolated { ScreenRecordingController.shared?.startIfNeeded() }
 
+        // Meetings in the pill: the bridge that puts the meeting bar up for
+        // every meeting, whoever started it (design §3.1.3). After both
+        // controllers exist; never on a demo launch (which has no delegate).
+        MainActor.assumeIsolated { MeetingPillBridge.install() }
+
         // Neither Accessibility trust nor Screen Recording has a change
         // notification: re-check whenever the user comes back from System
         // Settings, so a fresh grant installs the monitors without a relaunch
