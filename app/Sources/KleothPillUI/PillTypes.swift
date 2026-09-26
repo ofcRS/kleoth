@@ -55,30 +55,81 @@ public enum DictationPillState: Equatable, Sendable {
     /// "Meeting saved · 42:10" (· "transcribing" when auto-transcribe is on):
     /// a green check plus the text, 4 s; a click opens History on that meeting.
     case meetingSaved(String)
+    /// A question with buttons — "Zoom call — record it?" with Record / Never
+    /// for Zoom / ✕, or the stop suggestion. Sticky (the ✕); its owner
+    /// withdraws it. A tap on the capsule does nothing: a stray click must
+    /// never decline. Meetings-in-the-pill design §3.2.3, §4.3.
+    case prompt(PillPrompt)
 
     /// `.done` → 1.0 s, `.warning` → 3.0 s, `.saved`/`.meetingSaved` → 4.0 s,
     /// everything else nil (persists). `.recording`, `.saving` and `.meeting`
-    /// last as long as the session.
+    /// last as long as the session; `.prompt` until its owner withdraws it
+    /// (or the user answers).
     public var autoHideAfter: Duration? {
         switch self {
         case .done: return .seconds(1)
         case .warning: return .seconds(3)
         case .saved, .meetingSaved: return .seconds(4)
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .failed,
-             .recording, .saving, .meeting:
+             .recording, .saving, .meeting, .prompt:
             return nil
         }
     }
 
-    /// Only warnings, failures and the two saved confirmations carry words; every
-    /// other phase is motion.
+    /// Only warnings, failures, the two saved confirmations and a prompt carry
+    /// words; every other phase is motion.
     public var showsText: Bool {
         switch self {
-        case .warning, .failed, .saved, .meetingSaved: return true
+        case .warning, .failed, .saved, .meetingSaved, .prompt: return true
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done,
              .recording, .saving, .meeting:
             return false
         }
+    }
+}
+
+/// A question the pill asks with buttons (meetings-in-the-pill design §3.2.3,
+/// §3.2.5, §4.3): the call offer ("Zoom call — record it?" · Record · Never for
+/// Zoom · ✕) and the stop suggestion ("Zoom released the mic — stop
+/// recording?" · Stop · ✕). The ✕ is always there; its owner withdraws it.
+public struct PillPrompt: Equatable, Sendable {
+    public enum Tint: Sendable, Equatable { case accent, record }
+    /// The owner's handle on this prompt (`DictationPillState.promptId`).
+    public var id: String
+    /// Capped at `DictationPillFault.maxMessageLength` by the initializer.
+    public var text: String
+    /// Offers `person.2.wave.2.fill`, the stop suggestion `stop.circle.fill`.
+    public var symbolName: String
+    /// The glyph's and the primary button's colour: `.record` (the recording
+    /// red) for an offer, `.accent` for the stop suggestion.
+    public var tint: Tint
+    public var primary: DictationPillAction
+    /// The quieter second button ("Never for Zoom"); nil = none.
+    public var secondary: DictationPillAction?
+
+    public init(
+        id: String, text: String, symbolName: String, tint: Tint,
+        primary: DictationPillAction, secondary: DictationPillAction? = nil
+    ) {
+        self.id = id
+        // The `DictationPillFault.message` rule: one line, bounded — the panel
+        // width follows this text.
+        let single = text.replacingOccurrences(of: "\n", with: " ")
+        self.text = single.count > DictationPillFault.maxMessageLength
+            ? String(single.prefix(DictationPillFault.maxMessageLength)) + "…"
+            : single
+        self.symbolName = symbolName
+        self.tint = tint
+        self.primary = primary
+        self.secondary = secondary
+    }
+}
+
+extension DictationPillState {
+    /// The prompt's id when a `.prompt` is showing.
+    public var promptId: String? {
+        if case .prompt(let prompt) = self { return prompt.id }
+        return nil
     }
 }
 
@@ -226,12 +277,27 @@ public enum MeetingPillAction: Equatable, Sendable {
     case stop
     /// A click on `.meetingSaved`: History on that meeting.
     case openLast
+    // MARK: Phase 2 — call detection (design §3.2.3–§3.2.5)
+    /// Record on the offer `id`: start the meeting like the Meeting field.
+    case acceptOffer(id: String)
+    /// "Never for Zoom": store `key` (and `name`, for Settings) in the
+    /// never-offer list and withdraw the offer (§3.2.4).
+    case neverOffer(key: String, name: String)
+    /// Stop on the stop suggestion `id`: stop the meeting like the bar's Stop.
+    case acceptStop(id: String)
 
     /// The label of a BUTTON carrying this action; empty for the tap-only
     /// actions (they are the capsule or a dock field, not a button with words).
     public var title: String {
         switch self {
         case .start, .stop, .openLast: return ""
+        case .acceptOffer: return "Record"
+        // §3.2.4: an unnamed call in a browser is "Never for calls in Chrome"
+        // (the name is the browser's) — the same rule as
+        // `MeetingSource.neverLabel`; everything else "Never for <name>".
+        case .neverOffer(let key, let name):
+            return key.hasPrefix("webcall:") ? "Never for calls in \(name)" : "Never for \(name)"
+        case .acceptStop: return "Stop"
         }
     }
 }

@@ -21,9 +21,11 @@ import KleothPillUI
 ///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--backdrop hidden|idle|recording|meeting]
 ///         [--levels off|speech|steady] [--sequence idle,listening,transcribing,done,idle]
 ///         (sequence items: idle armed listening handsfree transcribing polishing done warning
-///          failed kept recording saving saved meeting meetingsaved hidden, plus peek / unpeek =
-///          pointer enters / leaves the resting pill, hover:<spot> / click:<spot> with spots
-///          mic|meet|rec|menu|center|stop, perform:startMeeting|stopMeeting|startScreenRecording|…;
+///          failed kept recording saving saved meeting meetingsaved offer stopoffer hidden, plus
+///          peek / unpeek = pointer enters / leaves the resting pill, hover:<spot> / click:<spot>
+///          with spots mic|meet|rec|menu|center|stop|label (label = over a text phase's words,
+///          clear of its buttons), perform:startMeeting|stopMeeting|acceptOffer|neverOffer|
+///          acceptStop|startScreenRecording|…;
 ///          any item may end in `@<seconds>` to hold it that long
 ///          instead of `--hold`, e.g. `listening@3.2`)
 ///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
@@ -175,6 +177,10 @@ func pillAction(named name: String) -> DictationPillAction? {
     case "switchToHandsFree": return .switchToHandsFree
     case "startMeeting": return .meeting(.start)
     case "stopMeeting": return .meeting(.stop)
+    // The answers to the `offer` / `stopoffer` prompts (same ids and source).
+    case "acceptOffer": return .meeting(.acceptOffer(id: "offer-1"))
+    case "neverOffer": return .meeting(.neverOffer(key: "app:us.zoom.xos", name: "Zoom"))
+    case "acceptStop": return .meeting(.acceptStop(id: "stop-1"))
     default: return nil
     }
 }
@@ -207,6 +213,16 @@ func pillState(named name: String) -> DictationPillState? {
     case "saved": return .saved("2:14 · 48 MB")
     case "meeting": return .meeting(since: SandboxClock.filmStart)
     case "meetingsaved", "meeting-saved": return .meetingSaved("Meeting saved · 42:10")
+    // Phase 2 (call detection): the offer, and the stop suggestion over the bar.
+    case "offer": return .prompt(PillPrompt(
+        id: "offer-1", text: "Zoom call — record it?", symbolName: "person.2.wave.2.fill", tint: .record,
+        primary: .meeting(.acceptOffer(id: "offer-1")),
+        secondary: .meeting(.neverOffer(key: "app:us.zoom.xos", name: "Zoom"))
+    ))
+    case "stopoffer", "stop-offer": return .prompt(PillPrompt(
+        id: "stop-1", text: "Zoom released the mic — stop recording?", symbolName: "stop.circle.fill", tint: .accent,
+        primary: .meeting(.acceptStop(id: "stop-1"))
+    ))
     default: return nil
     }
 }
@@ -227,6 +243,7 @@ func phaseName(_ state: DictationPillState) -> String {
     case .saved: return "saved"
     case .meeting: return "meeting"
     case .meetingSaved: return "meetingsaved"
+    case .prompt: return "prompt"
     }
 }
 
@@ -415,7 +432,20 @@ final class SandboxDriver: ObservableObject {
                 SandboxClock.meetingStart = Date()
                 backdropMeeting = true
                 simulateRecordingLevels = true
-            case .stop:
+            case .acceptOffer:
+                log("Record (offer accepted — would call RecordingController.start())")
+                // The bridge's `.started` order: the meeting backdrop FIRST —
+                // only stored, a `.prompt` is not a resting phase — then the
+                // prompt goes and the pill collapses onto the new bar. The
+                // other order springs to the old backdrop and loses the bar.
+                SandboxClock.meetingStart = Date()
+                backdropMeeting = true
+                simulateRecordingLevels = true
+                controller.dismiss()
+            case .neverOffer(_, let name):
+                log("Never for \(name) (would join meeting_detection_ignored)")
+                controller.dismiss()
+            case .stop, .acceptStop:
                 log("Stop meeting → saving → Meeting saved")
                 simulateRecordingLevels = false
                 handsFreeTask?.cancel()
@@ -561,6 +591,14 @@ struct ControlPanel: View {
                     }
                 }
                 HStack {
+                    // Call detection (phase 2): the offer, and the stop
+                    // suggestion (turn the meeting backdrop on first — it lies
+                    // flat over the bar).
+                    ForEach(["offer", "stopoffer"], id: \.self) { name in
+                        Button(name) { driver.show(pillState(named: name)!) }
+                    }
+                }
+                HStack {
                     Toggle("Recording backdrop", isOn: $driver.backdropRecording)
                     Toggle("Meeting backdrop", isOn: $driver.backdropMeeting)
                 }
@@ -662,9 +700,9 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
         let parts = item.split(separator: "@", maxSplits: 1).map(String.init)
         let name = parts[0]
         // "peek" / "unpeek" simulate the pointer entering / leaving the pill.
-        // "hover:mic|meet|rec|menu|center|stop" put the pointer on one field of the peek
-        // dock (or the capsule's centre); "menu" opens the pill menu, films
-        // the screen around it and closes it after the hold.
+        // "hover:mic|meet|rec|menu|center|stop|label" put the pointer on one field of the peek
+        // dock (or the capsule's centre, a bar's Stop, a text phase's words); "menu" opens the
+        // pill menu, films the screen around it and closes it after the hold.
         var holdFor = parts.count > 1 ? (Double(parts[1]) ?? args.hold) : args.hold
         if name == "peek" || name == "unpeek" {
             controller.setHovered(name == "peek")
@@ -678,7 +716,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             controller.setPointer(filmPointer(spot, edge: args.edge, controller: controller))
             pointerSpot = spot == "off" || spot == "none" ? nil : spot
         } else if name.hasPrefix("click:") {
-            // "click:mic|meet|rec|menu|center|stop" — a REAL click on the pill: a
+            // "click:mic|meet|rec|menu|center|stop|label" — a REAL click on the pill: a
             // synthesized mouse down + up delivered to the pill's own window,
             // so the SwiftUI button under that spot fires from inside its own
             // hosting view's event handling (what `perform:` skips — and what
@@ -930,6 +968,16 @@ func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationP
     case "stop":
         if case .meeting = controller.currentState { return CGPoint(x: center.x + 95, y: center.y) }
         return CGPoint(x: center.x + 86, y: center.y)
+    // A text phase's WORDS, clear of its buttons (a prompt's Record sits
+    // around its centre, so `center` would click it — pre-flight M-8): 40 pt
+    // past the capsule's leading padding, i.e. just past the symbol, into the
+    // label. A flat capsule (wider than tall on a side edge — the stop
+    // suggestion over the meeting bar) is never rotated, so its along axis is
+    // the panel's x there, as for `stop`.
+    case "label":
+        let offset = -controller.capsuleSize.width / 2 + 14 + 40   // 14 = PillStyle.compactPadding
+        if edge.isVertical, frame.width > frame.height { return CGPoint(x: center.x + offset, y: center.y) }
+        along = offset
     case "off", "none": return nil
     default: along = 0
     }

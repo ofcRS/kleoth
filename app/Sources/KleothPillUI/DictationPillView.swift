@@ -40,6 +40,10 @@ import KleothCore
 ///   only its Stop button stops.
 /// - `.meetingSaved("Meeting saved · 42:10")` — a green check and the text for
 ///   4 s; a click opens History on that meeting (`.meeting(.openLast)`).
+/// - `.prompt(PillPrompt)` (phase 2, §3.2.3–§3.2.5) — a question with
+///   buttons: "Zoom call — record it?" · Record · Never for Zoom · ✕, or the
+///   stop suggestion · Stop · ✕ (flat over the meeting bar). Only its
+///   buttons answer it; a tap on the capsule does nothing.
 ///
 /// A peeked `.idle` pill comes out as the PEEK DOCK — Dictate · Meeting ·
 /// Screen · More (`PeekDock`): that is where a dictation, a meeting or a
@@ -146,6 +150,10 @@ struct DictationPillView: View {
                     controller.perform(.revealLastRecording)
                 case .meetingSaved:
                     controller.perform(.meeting(.openLast))
+                case .prompt:
+                    // Only its buttons answer a prompt: a stray click on the
+                    // capsule must never decline (or accept) a call offer.
+                    break
                 default:
                     // `.recording` and `.meeting` deliberately do NOT stop
                     // here: each bar is a toolbar with its own Stop button,
@@ -548,7 +556,46 @@ struct DictationPillView: View {
                 .transition(.scale(scale: 0.4).combined(with: .opacity))
                 .accessibilityHidden(true)
             label(text)
+        case .prompt(let prompt):
+            // A question with buttons (meetings design §3.2.3, §3.2.5): symbol ·
+            // label · primary · the quieter secondary · ✕. Measured the same way
+            // by the controller's `layout` — keep the two in step.
+            let tint = prompt.tint == .record ? PillStyle.recordTint : Color.accentColor
+            Image(systemName: prompt.symbolName)
+                .symbolRenderingMode(.hierarchical)
+                .font(.callout)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+            label(prompt.text)
+            Button(prompt.primary.title) { controller.perform(prompt.primary) }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+            if let secondary = prompt.secondary {
+                Button(secondary.title) { controller.perform(secondary) }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(PillStyle.ink.opacity(0.7))
+                    .help(neverHelp(secondary))
+            }
+            Button {
+                controller.dismissFromUser()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(PillStyle.ink.opacity(0.6))
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Not now")
         }
+    }
+
+    /// The quiet button's tooltip (§3.2.4): "Never for Chrome" — mic use in a
+    /// browser where no call was seen (`browser:` key) — silences only that,
+    /// so it says what stays offered. Every other "Never for …" says it all.
+    private func neverHelp(_ action: DictationPillAction) -> String {
+        guard case .meeting(.neverOffer(let key, let name)) = action, key.hasPrefix("browser:") else { return "" }
+        return "Google Meet and other calls in \(name) are still offered"
     }
 
     /// No `.fixedSize()`: the panel width is capped to the screen

@@ -73,6 +73,11 @@ public final class DictationPillController: DictationPillPresenting {
     public var menuContent: (() -> PillMenuContent)?
     /// True while the menu is up: the peek holds and hover changes are ignored.
     private(set) var menuOpen = false
+    /// Peeking or the menu is open: an offer would pull the dock from under
+    /// the pointer, so the meeting side waits (meetings design §3.2.3).
+    public var isInteracting: Bool { peeking || menuOpen }
+    /// The pointer is on the panel (any phase): an offer's lifetime waits.
+    public var isPointerOver: Bool { model.hovered }
     private var menuPanel: PillMenuPanel?
     private let menuModel = PillMenuModel()
     private var menuMonitors: [Any] = []
@@ -261,7 +266,7 @@ public final class DictationPillController: DictationPillPresenting {
         switch state {
         case .hidden, .idle, .recording, .meeting: return true
         case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved,
-             .meetingSaved:
+             .meetingSaved, .prompt:
             return false
         }
     }
@@ -973,6 +978,9 @@ public final class DictationPillController: DictationPillPresenting {
 
     /// The panel's current frame in screen coordinates (sandbox / tests).
     public var panelFrame: CGRect? { panel?.frame }
+    /// The capsule itself, un-rotated (width = its length along the edge) —
+    /// for the sandbox's named pointer spots on a text phase (`label`).
+    public var capsuleSize: CGSize { model.capsuleSize }
 
     private func present() {
         guard !Self.reduceMotion else {
@@ -1403,7 +1411,7 @@ public final class DictationPillController: DictationPillPresenting {
         switch state {
         case .idle, .armed: return PillStyle.restingHeight
         case .hidden, .listening, .transcribing, .polishing, .done: return 32
-        case .warning, .failed: return 38
+        case .warning, .failed, .prompt: return 38
         // The live recording toolbar: tall enough for the digits, the two
         // meters and the Stop button to breathe without becoming a window.
         case .recording, .saving, .meeting: return 30
@@ -1447,7 +1455,9 @@ public final class DictationPillController: DictationPillPresenting {
         switch state {
         case .recording, .saving, .saved, .meeting, .meetingSaved: return true
         case .hidden, .idle: return false
-        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed:
+        // A prompt too: the stop suggestion lies flat over the meeting bar
+        // (§3.2.5) and stands up like a fault on a bare side edge.
+        case .armed, .listening, .transcribing, .polishing, .done, .warning, .failed, .prompt:
             switch backdrop {
             case .recording, .meeting: return true
             case .hidden, .idle: return false
@@ -1528,6 +1538,19 @@ public final class DictationPillController: DictationPillPresenting {
                 length += PillStyle.spacingS + 18
             }
             length += 2 * PillStyle.spacingM
+        case .prompt(let prompt):
+            // Laid out like `.failed`, plus every button it shows: symbol ·
+            // label · primary · the quieter secondary · ✕ (`DictationPillView`).
+            let measured = textWidth(prompt.text, style: .callout, weight: .medium) + 1
+            let label = min(measured, labelCap(edge: edge, on: screen, flat: flat))
+            labelWidth = label
+            length = 20 + PillStyle.spacingS + label
+            length += PillStyle.spacingS + textWidth(prompt.primary.title, style: .caption1, weight: .semibold) + 22
+            if let secondary = prompt.secondary {
+                length += PillStyle.spacingS + textWidth(secondary.title, style: .caption1, weight: .semibold) + 22
+            }
+            length += PillStyle.spacingS + 18   // ✕
+            length += 2 * PillStyle.spacingM
         }
         let height = (state == .idle ? dock?.size.height : nil) ?? capsuleHeight(for: state)
         let capsule = CGSize(width: ceil(length), height: height)
@@ -1565,11 +1588,12 @@ public final class DictationPillController: DictationPillPresenting {
         // announcement instead (§6.1). `.meeting` is silent for the same
         // reason: the bridge posts the one "Meeting recording started"
         // announcement, like `ScreenRecordingController`. `.saved` and
-        // `.meetingSaved` announce themselves.
+        // `.meetingSaved` announce themselves, and so does a `.prompt` (the
+        // question is the event).
         switch state {
         case .idle, .armed, .recording, .saving, .meeting: return
         case .hidden, .listening, .transcribing, .polishing, .done, .warning, .failed, .saved,
-             .meetingSaved:
+             .meetingSaved, .prompt:
             break
         }
         NSAccessibility.post(
@@ -1605,6 +1629,7 @@ extension DictationPillState {
         case .saving: return "Saving the recording…"
         case .meeting: return "Recording the meeting"
         case .saved(let text), .meetingSaved(let text): return text
+        case .prompt(let prompt): return prompt.text
         }
     }
 
@@ -1621,13 +1646,16 @@ extension DictationPillState {
         case .saving: return "waveform"
         case .meeting: return "person.2.wave.2.fill"
         case .saved, .meetingSaved: return "checkmark.circle.fill"
+        case .prompt(let prompt): return prompt.symbolName
         }
     }
 
     /// `.failed` sticks around until the user dismisses it or a new session
-    /// replaces it — it is the only phase with a ✕.
+    /// replaces it; a `.prompt` until the user answers or its owner withdraws
+    /// it. They are the only phases with a ✕.
     public var isSticky: Bool {
         if case .failed = self { return true }
+        if case .prompt = self { return true }
         return false
     }
 

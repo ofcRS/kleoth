@@ -132,7 +132,7 @@ final class PillCoordinator {
             lastShowOwner = nil
             pill.dismiss()
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording,
-             .meeting, .meetingSaved:
+             .meeting, .meetingSaved, .prompt:
             return
         }
     }
@@ -187,7 +187,7 @@ final class PillCoordinator {
         if queuedConfirmation?.owner == .meeting { cancelQueuedConfirmation() }
         guard !isDictationPhaseLive else { return }
         switch pill.currentState {
-        case .saving, .meetingSaved, .warning, .failed:
+        case .saving, .meetingSaved, .warning, .failed, .prompt:
             guard lastShowOwner == .meeting else { return }
             lastShowOwner = nil
             pill.dismiss()
@@ -202,10 +202,14 @@ final class PillCoordinator {
     /// own saving / saved phases, which run while `recordingSince` is still
     /// set). A meeting `.warning` / `.failed` still shows — a fault the user
     /// has to see; its ✕ collapses back onto the screen bar.
+    /// A meeting `.prompt` yields too: no call is offered while a screen
+    /// recording runs (§3.2.3), and a stop suggestion's "Stop" over the SCREEN
+    /// bar would read as stopping the screen recording. The caller gets
+    /// `false` (a refusal) and asks again once the screen bar is gone.
     private func meetingPhaseYieldsToScreenRecording(_ state: DictationPillState) -> Bool {
         guard recordingSince != nil else { return false }
         switch state {
-        case .saving, .meetingSaved:
+        case .saving, .meetingSaved, .prompt:
             return true
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .warning, .failed,
              .recording, .saved, .meeting:
@@ -223,7 +227,10 @@ final class PillCoordinator {
     /// - the meeting's own leftovers (`.saving`, `.meetingSaved`, `.warning`) —
     ///   a screen `.saved` / `.warning` auto-hides within 4 s on its own, and a
     ///   screen `.saving` can't be up while a meeting rises to the top, since
-    ///   `recordingSince` is still set during that save.
+    ///   `recordingSince` is still set during that save;
+    /// - a meeting `.prompt` (sticky): an offer is withdrawn when a meeting or
+    ///   a screen recording starts (§3.2.3), and a stop suggestion must not keep
+    ///   a starting screen recording's bar down for its 60 s.
     /// Never touches a dictation phase, and a meeting rising under a running
     /// screen recording changes nothing: the screen bar stays on top.
     private func clearCapturePhaseBlocking(_ rising: Owner) {
@@ -232,7 +239,7 @@ final class PillCoordinator {
         switch pill.currentState {
         case .failed:
             guard owner == .meeting || owner == .recording else { return }
-        case .saving, .meetingSaved, .warning:
+        case .saving, .meetingSaved, .warning, .prompt:
             guard owner == .meeting else { return }
         case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording, .saved,
              .meeting:
@@ -250,7 +257,7 @@ final class PillCoordinator {
             return true
         case .warning, .failed:
             return lastShowOwner == .dictation
-        case .hidden, .idle, .recording, .saving, .saved, .meeting, .meetingSaved:
+        case .hidden, .idle, .recording, .saving, .saved, .meeting, .meetingSaved, .prompt:
             return false
         }
     }

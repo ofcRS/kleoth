@@ -97,6 +97,8 @@ final class MeetingPillBridge {
         case .openLast:
             coordinator.dismissMeetingPhase()
             if let directory = lastSavedDirectory { recording.openInHistory(directory: directory) }
+        case .acceptOffer, .neverOffer, .acceptStop:
+            break   // Task 14 forwards these
         }
     }
 
