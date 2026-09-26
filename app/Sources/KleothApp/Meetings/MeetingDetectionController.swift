@@ -61,16 +61,21 @@ final class MeetingDetectionController: ObservableObject {
     private var resolveGeneration = 0
     private var tickTask: Task<Void, Never>?
     /// The mic clients the monitor last reported (it reports only CHANGES);
-    /// re-resolved every `pollWhileHeld` s while non-empty (`scheduleRefresh`).
+    /// re-resolved every `pollWhileHeld` s while a refresh is wanted
+    /// (`keepRefreshing`).
     private var heldClients: [MicClient] = []
     /// The next re-resolution of `heldClients`, chained after each one.
     private var refreshTask: Task<Void, Never>?
+    /// The newest resolution is still running off the main actor: its end
+    /// chains the next refresh, so none is scheduled meanwhile.
+    private var resolving = false
     /// The source keys last logged, so the 3 s refresh logs only a change.
     private var loggedKeys: String?
 
     /// Titles per owner pid, reused for `titleCacheSeconds` (§4.4); expired
-    /// entries are dropped at every merge and all of it when the monitor
-    /// stops — titles that matched nothing are used for the match only.
+    /// entries are dropped at every merge, and all of it once nothing holds
+    /// the mic or the monitor stops — titles that matched nothing are used
+    /// for the match only.
     private var titleCache: [pid_t: CachedTitles] = [:]
     /// The matched window title per app bundle id seen during the current
     /// meeting — the context's fallback when the primary source carries none.
@@ -170,6 +175,7 @@ final class MeetingDetectionController: ObservableObject {
             monitor.stop()
             monitorRunning = false
             resolveGeneration += 1
+            resolving = false
             refreshTask?.cancel()
             refreshTask = nil
             heldClients = []
@@ -250,6 +256,7 @@ final class MeetingDetectionController: ObservableObject {
         refreshTask?.cancel()
         refreshTask = nil
         resolveGeneration += 1
+        resolving = true
         let generation = resolveGeneration
         let cache = titleCache
         Task.detached(priority: .utility) { [weak self] in
@@ -258,24 +265,42 @@ final class MeetingDetectionController: ObservableObject {
         }
     }
 
-    /// While anything holds the mic, the same clients are resolved again every
+    /// Whether the held clients are worth resolving again: a meeting records
+    /// (its context wants the title), or the detector could still offer a
+    /// session, whose class may yet go up (`hasOfferableSession`). Not for an
+    /// app that has held the mic past `maxOfferAge`, one already offered,
+    /// answered or "never" (a browser that can still name a call aside), or
+    /// with detection off and nothing recording — those must not wake Kleoth
+    /// every 3 s for as long as the mic stays held.
+    private var wantsRefresh: Bool {
+        monitorRunning && !heldClients.isEmpty
+            && (recordingSince != nil || detector.hasOfferableSession(at: Date()))
+    }
+
+    /// While a refresh is wanted, the same clients are resolved again every
     /// `pollWhileHeld` s: a meeting title or a web-call assertion that appears
     /// after the mic was taken (a lobby, then the call; a switch to the Meet
     /// tab) moves the session up a class (§3.2.2, §3.2.4) and reaches the
     /// context (§3.2.6). The monitor itself reports only a change of the SET,
     /// which a call joined in the same Chrome audio service never is. Titles
     /// come from the `titleCacheSeconds` cache, so a window is read at most
-    /// every 30 s. Chained after each resolution — a slow title read is never
-    /// cancelled by the next refresh, and refreshes can't pile up.
-    private func scheduleRefresh() {
-        refreshTask?.cancel()
-        refreshTask = nil
-        guard monitorRunning, !heldClients.isEmpty else { return }
+    /// every 30 s.
+    ///
+    /// Called after every `feed`: the detector's answer only turns from "no"
+    /// to "yes" through an event (a displaced offer, detection switched on, a
+    /// meeting starting), so the chain picks up again from there. At most one
+    /// refresh is pending, and none while a resolution runs — its end feeds
+    /// the detector, which chains the next: a slow title read is never
+    /// cancelled by a refresh, and refreshes can't pile up.
+    private func keepRefreshing() {
+        guard refreshTask == nil, !resolving, wantsRefresh else { return }
         let run = monitorRun
         refreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(MeetingDetectionDefaults.pollWhileHeld))
-            guard !Task.isCancelled, let self, run == self.monitorRun, self.monitorRunning,
-                  !self.heldClients.isEmpty else { return }
+            // Not cancelled = still the pending one (every replacement cancels first).
+            guard !Task.isCancelled, let self else { return }
+            self.refreshTask = nil
+            guard run == self.monitorRun, self.wantsRefresh else { return }
             self.startResolution(self.heldClients, run: run)
         }
     }
@@ -323,7 +348,10 @@ final class MeetingDetectionController: ObservableObject {
         // them from the cache instead of asking AX again.
         titleCache.merge(freshTitles) { old, new in new.at >= old.at ? new : old }
         titleCache = titleCache.filter { now.timeIntervalSince($0.value.at) < MeetingDetectionDefaults.titleCacheSeconds }
+        // Nothing holds the mic now: no title is kept for later.
+        if heldClients.isEmpty { titleCache = [:] }
         guard generation == resolveGeneration else { return }
+        resolving = false
         var sources = Set<MeetingSource>()
         for (bundleId, holder) in holders {
             guard let source = MeetingSource.make(
@@ -338,8 +366,7 @@ final class MeetingDetectionController: ObservableObject {
             loggedKeys = keys
             log.info("mic held by \(sources.count, privacy: .public) source(s): \(keys, privacy: .public)")
         }
-        feed(.observed(sources, at: now))
-        scheduleRefresh()
+        feed(.observed(sources, at: now))   // chains the next refresh (`keepRefreshing`)
     }
 
     // MARK: - The machine
@@ -357,6 +384,7 @@ final class MeetingDetectionController: ObservableObject {
             for effect in detector.handle(next) { apply(effect) }
         }
         scheduleTick()
+        keepRefreshing()
     }
 
     private func apply(_ effect: MeetingDetector.Effect) {
@@ -386,11 +414,14 @@ final class MeetingDetectionController: ObservableObject {
                 log.notice("\(offer.kind == .start ? "offer" : "stop suggestion", privacy: .public) shown: \(offer.source.key, privacy: .public)")
             } else {
                 // The pill is busy (a dictation, a save, the dock or menu
-                // under the pointer, a running screen recording): refused,
-                // and the machine asks again after `busyRetry`. This is also
-                // how "Hide for 1 hour" and a screen recording hold back a
-                // STOP suggestion — the machine does not suppress it for
-                // either (only offers), so the pill's answer is the gate.
+                // under the pointer) or yields to a screen recording's bar
+                // the machine hasn't heard of yet: refused, and the machine
+                // asks again after `busyRetry`. A running screen recording
+                // holds back a stop suggestion in the MACHINE (§3.2.5), as it
+                // does offers. "Hide for 1 hour" holds back offers only: the
+                // coordinator never refuses a prompt for it, so a stop
+                // suggestion shows over the meeting bar, which a hidden pill
+                // shows anyway (the hot-mic rule).
                 queued.append(.answered(offerId: offer.id, .refused, at: Date()))
             }
         case .withdraw(let offerId):

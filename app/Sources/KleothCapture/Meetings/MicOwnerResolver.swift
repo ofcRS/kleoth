@@ -65,8 +65,10 @@ public enum MicOwnerResolver {
             }
         }
         // 3. The outermost .app around a helper's executable (and an accessory
-        //    app's own: Wispr Flow, another Kleoth build).
-        if let owner = bundleOwner(executablePath: client.executablePath, pid: client.pid, method: .appBundlePath) {
+        //    app's own: Wispr Flow, another Kleoth build). A client built from
+        //    a bare pid (the web-call assertion lookup) has no path: read it.
+        let executablePath = client.executablePath ?? MicActivityMonitor.executablePath(of: client.pid)
+        if let owner = bundleOwner(executablePath: executablePath, pid: client.pid, method: .appBundlePath) {
             return owner
         }
         // 4. WebKit's GPU process: the responsible process (Safari, a Safari web

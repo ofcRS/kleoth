@@ -480,6 +480,53 @@ import Foundation
         #expect(shownOffer(d.handle(.observed([chromeCall], at: at(71))))?.source == chromeCall)
     }
 
+    /// The host's loop, driven by the real machine: a resolution every 3 s
+    /// while `hasOfferableSession` holds, a tick at every deadline. Chrome
+    /// holds the mic for a whole day with no call in it; whatever holds its
+    /// offer back, the re-resolve stops within `maxOfferAge`.
+    @Test func aMicHeldAllDayStopsTheRefreshWithinTheMaxOfferAge() {
+        let variants: [(name: String, env: MeetingDetector.Environment, busyPill: Bool)] = [
+            ("the offer expires unanswered", .init(offersEnabled: true), false),
+            ("Hide for 1 hour", .init(offersEnabled: true, pillHidden: true), false),
+            ("a screen recording", .init(offersEnabled: true, screenRecording: true), false),
+            ("Never for Chrome", .init(offersEnabled: true, ignoredKeys: [chrome.key]), false),
+            ("a pill that is always busy", .init(offersEnabled: true), true),
+        ]
+        for variant in variants {
+            var d = MeetingDetector()
+            _ = d.handle(.environment(variant.env, at: t0))
+            var lastRefresh: TimeInterval = 0
+            var nextRefresh: TimeInterval? = nil
+            func react(_ effects: [MeetingDetector.Effect], at s: TimeInterval) {
+                for case .show(let offer) in effects where variant.busyPill {
+                    react(d.handle(.answered(offerId: offer.id, .refused, at: at(s))), at: s)
+                }
+            }
+            func chain(at s: TimeInterval) {
+                if nextRefresh == nil, d.hasOfferableSession(at: at(s)) { nextRefresh = s + MeetingDetectionDefaults.pollWhileHeld }
+            }
+            react(d.handle(.observed([chrome], at: at(0))), at: 0)
+            chain(at: 0)
+            while true {
+                let deadline = d.nextDeadline.map { $0.timeIntervalSince(t0) }
+                guard let s = [nextRefresh, deadline].compactMap({ $0 }).min(), s <= 86_400 else { break }
+                if let r = nextRefresh, r <= s {
+                    nextRefresh = nil
+                    if d.hasOfferableSession(at: at(r)) {       // the host re-checks when its timer fires
+                        lastRefresh = r
+                        react(d.handle(.observed([chrome], at: at(r))), at: r)
+                    }
+                } else {
+                    react(d.handle(.tick(at: at(s), pointerOnPill: false)), at: s)
+                }
+                chain(at: s)
+            }
+            #expect(lastRefresh <= MeetingDetectionDefaults.maxOfferAge + MeetingDetectionDefaults.pollWhileHeld,
+                    "\(variant.name): last refresh at \(lastRefresh) s")
+            #expect(!d.hasOfferableSession(at: at(86_400)), "\(variant.name)")
+        }
+    }
+
     @Test func anOfferedOrAnsweredSessionIsNotOfferableUntilItComesBack() throws {
         var d = detector()
         let offer = try #require(shownOffer(run(&d, [zoom], from: 0, to: 5)))
