@@ -5,13 +5,13 @@ import KleothPillUI
 
 /// The ONE owner of the pill instance (design §3.4).
 ///
-/// `DictationController` and `ScreenRecordingController` each get a face onto
-/// it: dictation phases are FOREGROUND, a running screen recording is the
-/// BACKDROP underneath them. The coordinator merges the two backdrops and fans
-/// the pill's actions out to whichever side owns them.
+/// `DictationController`, `ScreenRecordingController` and `MeetingPillBridge`
+/// each get a face onto it: dictation phases are FOREGROUND, a running screen
+/// recording or meeting is the BACKDROP underneath them. The coordinator merges
+/// the backdrops and fans the pill's actions out to whichever side owns them.
 ///
-/// Why a coordinator instead of two controllers sharing a pill: the pill has ONE
-/// phase and ONE backdrop, and the two lanes are independent. Without a single
+/// Why a coordinator instead of controllers sharing a pill: the pill has ONE
+/// phase and ONE backdrop, and the lanes are independent. Without a single
 /// arbiter, a finished recording would paint `.saved` over a live `.listening`,
 /// and dictation's `setResting(false)` (Settings → Dictation off) would hide the
 /// indicator of a hot microphone. Both are decided here, in one place.
@@ -41,25 +41,31 @@ final class PillCoordinator {
     private var dictationWantsResting = false
     /// The running session's fixed start, or nil when nothing records.
     private var recordingSince: Date?
+    /// The running meeting's fixed start, or nil when no meeting records.
+    private var meetingSince: Date?
 
-    /// Which side put the pill's CURRENT phase up. Only `.warning` / `.failed`
-    /// are ambiguous — both lanes use them — so this is what tells them apart.
-    /// It is deliberately not consulted for the unambiguous phases: the pill
-    /// auto-hides `.done` / `.warning` / `.saved` on its own timer without ever
-    /// calling back, so `pill.currentState` is the only trustworthy answer
-    /// there.
-    private enum Owner { case dictation, recording }
+    /// Which side put the pill's CURRENT phase up. Only `.saving` (screen
+    /// recording, meeting), `.warning` and `.failed` (all three) are ambiguous,
+    /// so this is what tells them apart. It is never trusted on its own: the
+    /// pill auto-hides `.done` / `.warning` / `.saved` / `.meetingSaved` on its
+    /// own timer without ever calling back, so an owner can outlive its phase —
+    /// `pill.currentState` says WHAT is up, this only says whose it is.
+    private enum Owner { case dictation, recording, meeting }
     private var lastShowOwner: Owner?
 
-    /// A `.saved` confirmation that arrived while a dictation phase was live
-    /// (§2.4, §7 row 21). Shown after the dictation clears, dropped once older
-    /// than `savedConfirmationMaxDelay`.
-    private var queuedSaved: (text: String, at: Date)?
-    private var queuedSavedTask: Task<Void, Never>?
+    /// A confirmation (`.saved` / `.meetingSaved`) that arrived while a
+    /// dictation phase was live (screen-recording §2.4, §7 row 21; meetings
+    /// §3.1.5). ONE slot: the newer one wins — two captures ending under the
+    /// same dictation is rare, and the popover / History still carry both.
+    /// Shown after the dictation clears, dropped once older than
+    /// `savedConfirmationMaxDelay`.
+    private var queuedConfirmation: (state: DictationPillState, owner: Owner, at: Date)?
+    private var queuedConfirmationTask: Task<Void, Never>?
 
     /// The dictation controller's own callbacks, parked by `face`.
     fileprivate var dictationAction: ((DictationPillAction) -> Void)?
     fileprivate var dictationDismiss: (() -> Void)?
+    fileprivate var dictationMenuContent: (() -> PillMenuContent)?
 
     init(pill: DictationPillController = DictationPillController()) {
         self.pill = pill
@@ -69,17 +75,27 @@ final class PillCoordinator {
         // The pill talks only to the coordinator; the coordinator fans out.
         pill.onAction = { [weak self] action in self?.route(action) }
         pill.onDismiss = { [weak self] in self?.routeDismiss() }
+        // The coordinator owns the menu's content too, so the meeting row sees
+        // every meeting — whoever started it, dictation on or off.
+        pill.menuContent = { [weak self] in
+            var content = self?.dictationMenuContent?() ?? PillMenuContent()
+            content.meetingSince = self?.meetingSince
+            return content
+        }
     }
 
     // MARK: - Recording side
 
-    /// Non-nil → `.recording(since:)` outranks `.idle` in `recompute()`. The
-    /// pill applies a backdrop immediately when no phase is live and otherwise
-    /// at the next `dismiss()`, which is exactly the coexistence rule of §6.2.
+    /// Non-nil → `.recording(since:)` outranks `.meeting` and `.idle` in
+    /// `recompute()`. The pill applies a backdrop immediately when no phase is
+    /// live and otherwise at the next `dismiss()`, which is exactly the
+    /// coexistence rule of §6.2.
     func setRecordingBackdrop(since: Date?) {
         guard recordingSince != since else { return }
+        let rising = recordingSince == nil && since != nil
         recordingSince = since
         recompute()
+        if rising { yieldMeetingSaveToScreenRecording() }
     }
 
     /// Live meters for the `.recording` toolbar — a straight pass-through; the
@@ -95,7 +111,7 @@ final class PillCoordinator {
     /// would destroy the session the user is in the middle of (§7 rows 21, 22).
     func showRecordingPhase(_ state: DictationPillState) {
         guard !isDictationPhaseLive else {
-            if case .saved(let text) = state { queueSaved(text) }
+            if case .saved = state { queueConfirmation(state, owner: .recording) }
             return
         }
         lastShowOwner = .recording
@@ -103,15 +119,15 @@ final class PillCoordinator {
     }
 
     /// `pill.dismiss()` iff the pill is showing something the recording side put
-    /// up. Never touches a dictation phase.
+    /// up. Never touches a dictation phase or a meeting's phase.
     func dismissRecordingPhase() {
-        cancelQueuedSaved()
+        if queuedConfirmation?.owner == .recording { cancelQueuedConfirmation() }
         guard !isDictationPhaseLive else { return }
         switch pill.currentState {
-        case .saving, .saved:
+        case .saved:
             lastShowOwner = nil
             pill.dismiss()
-        case .warning, .failed:
+        case .saving, .warning, .failed:
             guard lastShowOwner == .recording else { return }
             lastShowOwner = nil
             pill.dismiss()
@@ -121,8 +137,97 @@ final class PillCoordinator {
         }
     }
 
-    /// Whether a DICTATION phase currently owns the pill — the recording side
-    /// must never overwrite one.
+    // MARK: - Meeting side
+
+    /// ✕ on a meeting-owned `.failed`.
+    var onMeetingDismiss: (() -> Void)?
+
+    /// Non-nil → `.meeting(since:)` sits between `.recording` and `.idle`.
+    func setMeetingBackdrop(since: Date?) {
+        guard meetingSince != since else { return }
+        meetingSince = since
+        recompute()
+    }
+
+    /// The meeting bar's meters. Dropped while a screen recording runs: its
+    /// bar is up instead and its own pump feeds the meters.
+    func setMeetingLevels(_ levels: AudioLevels) {
+        guard recordingSince == nil else { return }
+        pill.setRecordingLevels(levels)
+    }
+
+    /// `.saving` / `.meetingSaved` / a meeting `.warning` or `.failed`. The
+    /// recording side's rule: never over a live dictation — `.meetingSaved`
+    /// is queued (≤ `savedConfirmationMaxDelay`), anything else is dropped.
+    /// And precedence (meetings §3.1.5, screen recording > meeting): while a
+    /// screen recording runs, the meeting's save sequence is not shown at all
+    /// — its bar stays up and the popover / History carry the saved meeting.
+    /// Returns false when nothing was shown.
+    @discardableResult
+    func showMeetingPhase(_ state: DictationPillState) -> Bool {
+        if meetingPhaseYieldsToScreenRecording(state) {
+            // The meeting's new phase replaces its old one, and under the
+            // screen bar the replacement is nothing: a meeting `.saving` put up
+            // before the screen recording started must not outlive its save.
+            dismissMeetingPhase()
+            return false
+        }
+        guard !isDictationPhaseLive else {
+            if case .meetingSaved = state { queueConfirmation(state, owner: .meeting) }
+            return false
+        }
+        lastShowOwner = .meeting
+        pill.show(state)
+        return true
+    }
+
+    /// `pill.dismiss()` iff the pill shows something the meeting side put up.
+    /// Never touches a dictation phase or a recording's phase.
+    func dismissMeetingPhase() {
+        if queuedConfirmation?.owner == .meeting { cancelQueuedConfirmation() }
+        guard !isDictationPhaseLive else { return }
+        switch pill.currentState {
+        case .saving, .meetingSaved, .warning, .failed:
+            guard lastShowOwner == .meeting else { return }
+            lastShowOwner = nil
+            pill.dismiss()
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .recording, .saved,
+             .meeting:
+            return
+        }
+    }
+
+    /// Precedence for the meeting's save sequence: `.saving` and
+    /// `.meetingSaved` never cover a running screen recording's bar (or its
+    /// own saving / saved phases, which run while `recordingSince` is still
+    /// set). A meeting `.warning` / `.failed` still shows — a fault the user
+    /// has to see; its ✕ collapses back onto the screen bar.
+    private func meetingPhaseYieldsToScreenRecording(_ state: DictationPillState) -> Bool {
+        guard recordingSince != nil else { return false }
+        switch state {
+        case .saving, .meetingSaved:
+            return true
+        case .hidden, .idle, .armed, .listening, .transcribing, .polishing, .done, .warning, .failed,
+             .recording, .saved, .meeting:
+            return false
+        }
+    }
+
+    /// A screen recording started while the meeting's `.saving` or
+    /// `.meetingSaved` was up: `setBackdrop` only takes over a resting-family
+    /// phase, so without this the new screen bar would wait behind the
+    /// meeting's save (seconds for a long meeting). Meeting-owned phases only;
+    /// a live dictation is untouched.
+    private func yieldMeetingSaveToScreenRecording() {
+        guard !isDictationPhaseLive, lastShowOwner == .meeting,
+              meetingPhaseYieldsToScreenRecording(pill.currentState)
+        else { return }
+        lastShowOwner = nil
+        pill.dismiss()
+    }
+
+    /// Whether a DICTATION phase currently owns the pill — neither capture
+    /// side may overwrite one.
     var isDictationPhaseLive: Bool {
         switch pill.currentState {
         case .armed, .listening, .transcribing, .polishing, .done:
@@ -136,41 +241,46 @@ final class PillCoordinator {
 
     // MARK: - Merge
 
-    /// A running recording outranks the dictation resting capsule, which
-    /// outranks nothing at all (§6.1).
+    /// Screen recording > meeting > the dictation resting capsule > nothing
+    /// (screen-recording §6.1, meetings §3.1.5). A meeting shows even with
+    /// dictation off or the pill hidden for the hour (the hot-mic rule), and
+    /// when it stops the pill falls back to exactly what dictation wants —
+    /// `.hidden` stays hidden, never `.idle`.
     private func recompute() {
         let backdrop: DictationPillBackdrop
         if let since = recordingSince {
             backdrop = .recording(since: since)
+        } else if let since = meetingSince {
+            backdrop = .meeting(since: since)
         } else {
             backdrop = dictationWantsResting ? .idle : .hidden
         }
         pill.setBackdrop(backdrop)
     }
 
-    // MARK: - Queued `.saved`
+    // MARK: - Queued confirmation
 
-    private func queueSaved(_ text: String) {
-        queuedSaved = (text: text, at: Date())
-        queuedSavedTask?.cancel()
+    private func queueConfirmation(_ state: DictationPillState, owner: Owner) {
+        queuedConfirmation = (state: state, owner: owner, at: Date())
+        queuedConfirmationTask?.cancel()
         // A forwarded dictation `dismiss()` flushes this immediately. The poll
         // exists because the pill auto-hides `.done` and `.warning` on its own
         // `hideTask` WITHOUT calling `onDismiss` (DictationPillController's
         // `scheduleAutoHide` calls `dismiss()` directly), so those two very
         // common endings would otherwise never release the queue.
-        queuedSavedTask = Task { @MainActor [weak self] in
+        queuedConfirmationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled, let self, let queued = self.queuedSaved else { return }
+                guard !Task.isCancelled, let self, let queued = self.queuedConfirmation else { return }
                 guard Date().timeIntervalSince(queued.at) <= ScreenRecordingDefaults.savedConfirmationMaxDelay
                 else {
                     // Too late to be a confirmation of anything; the popover
-                    // row still carries the file.
-                    self.cancelQueuedSaved()
+                    // row / History still carry the file.
+                    self.cancelQueuedConfirmation()
                     return
                 }
                 guard !self.isDictationPhaseLive else { continue }
-                self.flushQueuedSaved()
+                self.flushQueuedConfirmation()
                 return
             }
         }
@@ -180,18 +290,21 @@ final class PillCoordinator {
     /// `isDictationPhaseLive` re-check on the `dismiss()` path: `pill.currentState`
     /// only catches up on the next main-queue turn (the transition's `Task`
     /// hop), so the caller's "the dictation just ended" is the fresher fact.
-    private func flushQueuedSaved() {
-        guard let queued = queuedSaved else { return }
-        cancelQueuedSaved()
+    /// A queued `.meetingSaved` is dropped if a screen recording started in
+    /// the meantime (precedence, as in `showMeetingPhase`).
+    private func flushQueuedConfirmation() {
+        guard let queued = queuedConfirmation else { return }
+        cancelQueuedConfirmation()
         guard Date().timeIntervalSince(queued.at) <= ScreenRecordingDefaults.savedConfirmationMaxDelay else { return }
-        lastShowOwner = .recording
-        pill.show(.saved(queued.text))
+        if queued.owner == .meeting, meetingPhaseYieldsToScreenRecording(queued.state) { return }
+        lastShowOwner = queued.owner
+        pill.show(queued.state)
     }
 
-    private func cancelQueuedSaved() {
-        queuedSaved = nil
-        queuedSavedTask?.cancel()
-        queuedSavedTask = nil
+    private func cancelQueuedConfirmation() {
+        queuedConfirmation = nil
+        queuedConfirmationTask?.cancel()
+        queuedConfirmationTask = nil
     }
 
     // MARK: - Fan-out
@@ -210,17 +323,20 @@ final class PillCoordinator {
         }
     }
 
-    /// ✕ or a click on a sticky `.failed`. A recording fault must not reach
-    /// `DictationController.handlePillDismiss`, which would cancel a dictation
-    /// session that has nothing to do with it.
+    /// ✕ or a click on a sticky `.failed`. A recording or meeting fault must
+    /// not reach `DictationController.handlePillDismiss`, which would cancel a
+    /// dictation session that has nothing to do with it.
     private func routeDismiss() {
         if isDictationPhaseLive {
             lastShowOwner = nil
             dictationDismiss?()
-            flushQueuedSaved()
+            flushQueuedConfirmation()
+        } else if lastShowOwner == .meeting {
+            lastShowOwner = nil
+            onMeetingDismiss?()
         } else {
             lastShowOwner = nil
-            cancelQueuedSaved()
+            cancelQueuedConfirmation()
         }
     }
 
@@ -236,7 +352,7 @@ final class PillCoordinator {
         pill.dismiss()
         // §2.4: the queued confirmation is shown after the dictation's own
         // `dismiss()`, replacing the backdrop it just collapsed onto.
-        flushQueuedSaved()
+        flushQueuedConfirmation()
     }
 
     fileprivate func dictationDidSetResting(_ visible: Bool) {
@@ -250,8 +366,8 @@ final class PillCoordinator {
 ///
 /// It is NOT a transparent forwarder: `show` / `dismiss` / `setResting` go
 /// through the coordinator so the merge and the ownership bookkeeping see them,
-/// and `onAction` / `onDismiss` are parked on the coordinator rather than
-/// clobbering `pill.onAction`, which the fan-out owns.
+/// and `onAction` / `onDismiss` / `menuContent` are parked on the coordinator
+/// rather than clobbering the pill's own, which the fan-out owns.
 @MainActor
 private final class DictationFace: DictationPillPresenting {
     private let pill: DictationPillController
@@ -273,11 +389,10 @@ private final class DictationFace: DictationPillPresenting {
         set { coordinator?.dictationDismiss = newValue }
     }
 
-    /// Straight through: the menu's content is the dictation side's alone
-    /// (the recording rows in it need nothing from the recording controller).
+    /// Parked here; the coordinator's own closure adds `meetingSince`.
     var menuContent: (() -> PillMenuContent)? {
-        get { pill.menuContent }
-        set { pill.menuContent = newValue }
+        get { coordinator?.dictationMenuContent }
+        set { coordinator?.dictationMenuContent = newValue }
     }
 
     func show(_ state: DictationPillState) { coordinator?.dictationDidShow(state) }
