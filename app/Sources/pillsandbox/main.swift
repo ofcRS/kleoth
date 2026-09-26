@@ -18,11 +18,13 @@ import KleothPillUI
 ///         its own defaults suite, never the app's.
 ///
 ///     swift run --package-path app pillsandbox --film <dir> [--edge bottom|top|left|right]
-///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--backdrop hidden|idle|recording]
+///         [--fraction 0.5] [--fps 30] [--hold 1.2] [--backdrop hidden|idle|recording|meeting]
 ///         [--levels off|speech|steady] [--sequence idle,listening,transcribing,done,idle]
 ///         (sequence items: idle armed listening handsfree transcribing polishing done warning
-///          failed kept recording saving saved hidden, plus peek / unpeek = pointer enters / leaves
-///          the resting pill; any item may end in `@<seconds>` to hold it that long
+///          failed kept recording saving saved meeting meetingsaved hidden, plus peek / unpeek =
+///          pointer enters / leaves the resting pill, hover:<spot> / click:<spot> with spots
+///          mic|meet|rec|menu|center|stop, perform:startMeeting|stopMeeting|startScreenRecording|…;
+///          any item may end in `@<seconds>` to hold it that long
 ///          instead of `--hold`, e.g. `listening@3.2`)
 ///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
 ///         stage (a desktop, an editor or a slide window, captions, the fn+shift
@@ -134,6 +136,12 @@ enum SandboxClock {
     /// `.startScreenRecording`, so the toolbar's digits start at 0:00 there
     /// and `.saved` reports the length the toolbar showed.
     @MainActor static var recordingStart = filmStart
+    /// When the sandbox's meeting started — set by `.meeting(.start)`, so the
+    /// meeting bar's digits start at 0:00 there and `.meetingSaved` reports
+    /// the length the bar showed. Starts equal to `filmStart`, like
+    /// `recordingStart`, so the toggle's backdrop and the `meeting` sequence
+    /// item compare equal until a meeting is started from the pill.
+    @MainActor static var meetingStart = filmStart
 }
 
 /// Synthetic RAW RMS for the recording meters — the same units
@@ -165,6 +173,8 @@ func pillAction(named name: String) -> DictationPillAction? {
     case "startHandsFreeDictation": return .startHandsFreeDictation
     case "stopHandsFreeDictation": return .stopHandsFreeDictation
     case "switchToHandsFree": return .switchToHandsFree
+    case "startMeeting": return .meeting(.start)
+    case "stopMeeting": return .meeting(.stop)
     default: return nil
     }
 }
@@ -174,6 +184,7 @@ func backdrop(named name: String) -> DictationPillBackdrop? {
     case "hidden": return .hidden
     case "idle": return .idle
     case "recording": return .recording(since: SandboxClock.filmStart)
+    case "meeting": return .meeting(since: SandboxClock.filmStart)
     default: return nil
     }
 }
@@ -194,6 +205,8 @@ func pillState(named name: String) -> DictationPillState? {
     case "recording": return .recording(since: SandboxClock.filmStart)
     case "saving": return .saving
     case "saved": return .saved("2:14 · 48 MB")
+    case "meeting": return .meeting(since: SandboxClock.filmStart)
+    case "meetingsaved", "meeting-saved": return .meetingSaved("Meeting saved · 42:10")
     default: return nil
     }
 }
@@ -236,9 +249,18 @@ final class SandboxDriver: ObservableObject {
     }
     /// "Recording backdrop": a screen recording in flight. The pill then never
     /// tucks — every phase collapses back to the dot-and-digits capsule.
-    @Published var backdropRecording = false {
-        didSet {
-            controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.recordingStart) : .idle)
+    @Published var backdropRecording = false { didSet { pushBackdrop() } }
+    /// "Meeting backdrop": a meeting records. Outranked by the recording backdrop.
+    @Published var backdropMeeting = false { didSet { pushBackdrop() } }
+
+    /// The coordinator's precedence: screen recording > meeting > idle.
+    private func pushBackdrop() {
+        if backdropRecording {
+            controller.setBackdrop(.recording(since: SandboxClock.recordingStart))
+        } else if backdropMeeting {
+            controller.setBackdrop(.meeting(since: SandboxClock.meetingStart))
+        } else {
+            controller.setBackdrop(.idle)
         }
     }
     @Published var phase: String = "idle"
@@ -286,7 +308,9 @@ final class SandboxDriver: ObservableObject {
             selectedMicrophoneId: selectedMicrophoneId,
             inUseMicrophoneName: inUse,
             lastDictationPreview: "Ship the pill menu tomorrow morning, then…",
-            hotkeyDescription: DictationDefaults.hotkeyDescription
+            hotkeyDescription: DictationDefaults.hotkeyDescription,
+            // The menu's meeting row turns into "Stop meeting recording".
+            meetingSince: backdropMeeting ? SandboxClock.meetingStart : nil
         )
     }
 
@@ -374,7 +398,7 @@ final class SandboxDriver: ObservableObject {
             hideTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(6))
                 guard !Task.isCancelled, let self else { return }
-                controller.setBackdrop(backdropRecording ? .recording(since: SandboxClock.recordingStart) : .idle)
+                pushBackdrop()
                 log("…back after the hour")
             }
         case .openSettings:
@@ -385,9 +409,31 @@ final class SandboxDriver: ObservableObject {
         case .openAccessibilitySettings, .openScreenRecordingSettings:
             log("Open System Settings")
         case .meeting(let action):
-            // Provisional: logged only until the sandbox drives the meeting
-            // bar (meetings-in-the-pill plan, Task 2).
-            log("Meeting action: \(action)")
+            switch action {
+            case .start:
+                log("Record meeting (would call RecordingController.start())")
+                SandboxClock.meetingStart = Date()
+                backdropMeeting = true
+                simulateRecordingLevels = true
+            case .stop:
+                log("Stop meeting → saving → Meeting saved")
+                simulateRecordingLevels = false
+                handsFreeTask?.cancel()
+                // The bridge's order: `.saving` over the still-`.meeting` backdrop,
+                // then the backdrop goes FIRST and the confirmation follows
+                // (`ScreenRecordingController.showSaved`).
+                controller.show(.saving)
+                handsFreeTask = Task { [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(for: .seconds(1.2))
+                    guard !Task.isCancelled else { return }
+                    backdropMeeting = false
+                    let seconds = max(1, Int(Date().timeIntervalSince(SandboxClock.meetingStart) - 1.2))
+                    controller.show(.meetingSaved("Meeting saved · \(ElapsedFormatter.string(seconds: seconds))"))
+                }
+            case .openLast:
+                log("Open History on the last meeting")
+            }
         }
     }
 
@@ -477,7 +523,7 @@ struct ControlPanel: View {
                 Slider(value: $driver.fraction, in: 0...1) { Text("Along the edge") }
             }
             Section("Pill menu + peek dock (demo)") {
-                Text("Hover the resting pill: it comes out as a dock of three fields — Dictate · Record · More — each lighting up under the pointer. Click Dictate for a hands-free dictation (click the capsule again to stop). Click More, or right-click anywhere, for the menu with the Microphone picker.")
+                Text("Hover the resting pill: it comes out as a dock of four fields — Dictate · Meeting · Screen · More — each lighting up under the pointer. Click Dictate for a hands-free dictation (click the capsule again to stop), Meeting or Screen for the recording bar (its Stop button ends it). Click More, or right-click anywhere, for the menu with the Microphone picker.")
                     .font(.caption).foregroundStyle(.secondary)
                 let dock = driver.controller.dockMetrics
                 Picker("Dock look", selection: $driver.dockStyle) {
@@ -510,10 +556,13 @@ struct ControlPanel: View {
                     }
                 }
                 HStack {
-                    ForEach(["recording", "saving", "saved"], id: \.self) { name in
+                    ForEach(["recording", "saving", "saved", "meeting", "meetingsaved"], id: \.self) { name in
                         Button(name) { driver.show(pillState(named: name)!) }
                     }
+                }
+                HStack {
                     Toggle("Recording backdrop", isOn: $driver.backdropRecording)
+                    Toggle("Meeting backdrop", isOn: $driver.backdropMeeting)
                 }
                 HStack {
                     Button("Run a whole dictation") { driver.runCycle() }
@@ -545,7 +594,9 @@ struct ControlPanel: View {
                     args.filmDirectory = dir
                     args.edge = driver.edge
                     args.fraction = driver.fraction
-                    args.backdrop = driver.backdropRecording ? .recording(since: SandboxClock.recordingStart) : .idle
+                    args.backdrop = driver.backdropRecording
+                        ? .recording(since: SandboxClock.recordingStart)
+                        : (driver.backdropMeeting ? .meeting(since: SandboxClock.meetingStart) : .idle)
                     args.levels = driver.simulateRecordingLevels ? .speech : .off
                     driver.lastFilm = "Filming…"
                     Task { @MainActor in
@@ -611,7 +662,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
         let parts = item.split(separator: "@", maxSplits: 1).map(String.init)
         let name = parts[0]
         // "peek" / "unpeek" simulate the pointer entering / leaving the pill.
-        // "hover:mic|rec|menu|center" put the pointer on one glyph of the peek
+        // "hover:mic|meet|rec|menu|center|stop" put the pointer on one field of the peek
         // dock (or the capsule's centre); "menu" opens the pill menu, films
         // the screen around it and closes it after the hold.
         var holdFor = parts.count > 1 ? (Double(parts[1]) ?? args.hold) : args.hold
@@ -627,7 +678,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             controller.setPointer(filmPointer(spot, edge: args.edge, controller: controller))
             pointerSpot = spot == "off" || spot == "none" ? nil : spot
         } else if name.hasPrefix("click:") {
-            // "click:mic|rec|menu|center" — a REAL click on the pill: a
+            // "click:mic|meet|rec|menu|center|stop" — a REAL click on the pill: a
             // synthesized mouse down + up delivered to the pill's own window,
             // so the SwiftUI button under that spot fires from inside its own
             // hosting view's event handling (what `perform:` skips — and what
@@ -636,13 +687,13 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             pointerSpot = String(name.dropFirst(6))
             filmClick(String(name.dropFirst(6)), edge: args.edge, controller: controller)
         } else if name.hasPrefix("perform:") {
-            // "perform:startScreenRecording|stopScreenRecording|startHandsFreeDictation|…"
+            // "perform:startScreenRecording|stopScreenRecording|startMeeting|stopMeeting|startHandsFreeDictation|…"
             // — fires a pill action through the controller, so the SANDBOX
             // DRIVER's own simulation runs (its stop chains backdrop → saving →
             // saved in one go — a hand-written sequence cannot).
             if let action = pillAction(named: String(name.dropFirst(8))) { controller.perform(action) }
         } else if name.hasPrefix("backdrop:") {
-            // "backdrop:hidden|idle|recording" — the host's entry point (what
+            // "backdrop:hidden|idle|recording|meeting" — the host's entry point (what
             // the sandbox's Record / Stop do), so a film can run the demo's
             // own record cycle: dock → recording bar → stop → saving → saved.
             if let backdrop = backdrop(named: String(name.dropFirst(9))) { controller.setBackdrop(backdrop) }
@@ -861,16 +912,24 @@ func writePNG(_ image: CGImage, to url: URL) throws {
 func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) -> CGPoint? {
     guard let frame = controller.panelFrame else { return nil }
     let center = CGPoint(x: frame.width / 2, y: frame.height / 2)
+    // The dock's fields through the SAME mapping `PeekDock`'s hit test uses
+    // (`PillGeometry.dockField*`), so a film can never light the wrong field.
     let pitch = controller.dockMetrics.pitch
+    let count = PillDockMetrics.fieldCount
     let along: CGFloat
     switch spot {
-    case "mic": along = -pitch
-    case "menu": along = pitch
-    case "rec", "center": along = 0
-    // The recording toolbar's Stop button: the capsule is 222 pt wide
-    // (`PillStyle.recordingContentWidth` + two 14 pt paddings) and Stop, 22 pt,
-    // is its last item — so its centre sits 111 − 14 − 11 = 86 pt right of centre.
-    case "stop": along = 86
+    case "mic": along = PillGeometry.dockFieldCenter(index: 0, pitch: pitch, count: count)
+    case "meet": along = PillGeometry.dockFieldCenter(index: 1, pitch: pitch, count: count)
+    case "rec": along = PillGeometry.dockFieldCenter(index: 2, pitch: pitch, count: count)
+    case "menu": along = PillGeometry.dockFieldCenter(index: 3, pitch: pitch, count: count)
+    case "center": along = 0
+    // Stop is the bar's last item, 22 pt, 14 pt in from the capsule's end:
+    // 222 pt screen bar → 111 − 14 − 11 = 86; 240 pt meeting bar → 95.
+    // The bar is FLAT on every edge (never rotated), so its offset is always
+    // the panel's x, whatever edge the pill is docked on.
+    case "stop":
+        if case .meeting = controller.currentState { return CGPoint(x: center.x + 95, y: center.y) }
+        return CGPoint(x: center.x + 86, y: center.y)
     case "off", "none": return nil
     default: along = 0
     }
@@ -1066,12 +1125,14 @@ final class SandboxDelegate: NSObject, NSApplicationDelegate {
                 Task { @MainActor in _ = await film(arguments, controller: driver.controller, exitWhenDone: true) }
                 return
             }
-            // `backdropRecording` mirrors the toggle in the control window and
-            // its `didSet` applies the backdrop; `--backdrop hidden` has no
+            // `backdropRecording`/`backdropMeeting` mirror the toggles in the control window and
+            // their `didSet` applies the backdrop; `--backdrop hidden` has no
             // toggle state, so it goes straight to the controller (routing it
             // through the toggle would show the resting pill and hide it again).
             if case .recording = arguments.backdrop {
                 driver.backdropRecording = true
+            } else if case .meeting = arguments.backdrop {
+                driver.backdropMeeting = true
             } else {
                 driver.controller.setBackdrop(arguments.backdrop)
             }

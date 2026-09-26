@@ -31,8 +31,19 @@ import KleothCore
 ///   movie is finalized.
 /// - `.saved("2:14 · 48 MB")` — a green check and the text for 4 s; a click
 ///   reveals the file in Finder.
-/// A peeked `.idle` pill grows a red record glyph next to the mic: that (or a
-/// tap on the capsule) is where a recording starts.
+///
+/// Since the meetings-in-the-pill pass (design §3.1) a meeting records from
+/// the pill too:
+/// - `.meeting(since:)` — the BACKDROP while a meeting records (outranked by a
+///   screen recording): the same toolbar with a people glyph after the dot
+///   (`RecordingToolbar(meetingGlyph: true)`), flat on every edge, and again
+///   only its Stop button stops.
+/// - `.meetingSaved("Meeting saved · 42:10")` — a green check and the text for
+///   4 s; a click opens History on that meeting (`.meeting(.openLast)`).
+///
+/// A peeked `.idle` pill comes out as the PEEK DOCK — Dictate · Meeting ·
+/// Screen · More (`PeekDock`): that is where a dictation, a meeting or a
+/// screen recording starts, and where the menu opens.
 ///
 /// Every phase still exposes its sentence through `.help` (hover) and VoiceOver.
 ///
@@ -136,11 +147,11 @@ struct DictationPillView: View {
                 case .meetingSaved:
                     controller.perform(.meeting(.openLast))
                 default:
-                    // `.recording` deliberately does NOT stop here: the bar is
-                    // a toolbar with its own Stop button, and everything else
-                    // on it is the drag handle. A whole-capsule stop was one
-                    // slipped click away from ending a recording the user was
-                    // only trying to move.
+                    // `.recording` and `.meeting` deliberately do NOT stop
+                    // here: each bar is a toolbar with its own Stop button,
+                    // and everything else on it is the drag handle. A
+                    // whole-capsule stop was one slipped click away from
+                    // ending a recording the user was only trying to move.
                     break
                 }
             }
@@ -372,8 +383,9 @@ struct DictationPillView: View {
         case .idle, .armed:
             // Nothing when tucked (anything centered would be cut in half).
             // Under the pointer the resting sliver becomes the PEEK DOCK —
-            // three glyphs (dictate · record · menu), each with its own hover
-            // lift; on the chord's first frame (`.armed`) only the mic glyph.
+            // four fields (dictate · meeting · screen · more), each with its
+            // own hover lift; on the chord's first frame (`.armed`) only the
+            // mic glyph.
             ZStack {
                 Color.clear
                     .frame(width: PillStyle.restingWidth - 2 * PillStyle.compactPadding, height: 1)
@@ -398,6 +410,7 @@ struct DictationPillView: View {
                         rotation: edgeRotation,
                         menuOpen: model.menuOpen,
                         onDictate: { controller.perform(.startHandsFreeDictation) },
+                        onMeeting: { controller.perform(.meeting(.start)) },
                         onRecord: { controller.perform(.startScreenRecording) },
                         onMenu: { controller.openMenu() }
                     )
@@ -493,6 +506,7 @@ struct DictationPillView: View {
         case .recording(let since):
             RecordingToolbar(
                 since: since,
+                meetingGlyph: false,
                 levels: model.recordingLevels,
                 barHovered: model.hovered,
                 pointer: model.pointer,
@@ -519,8 +533,10 @@ struct DictationPillView: View {
                 .accessibilityHidden(true)
             label(text)
         case .meeting(let since):
+            // The meeting bar: the screen bar plus the people glyph, sized
+            // from `PillStyle.meetingContentWidth` by the controller.
             RecordingToolbar(
-                since: since, levels: model.recordingLevels, barHovered: model.hovered,
+                since: since, meetingGlyph: true, levels: model.recordingLevels, barHovered: model.hovered,
                 pointer: model.pointer, reduceMotion: reduceMotion,
                 onStop: { controller.perform(.meeting(.stop)) }
             )
@@ -583,13 +599,16 @@ struct DictationPillView: View {
 /// too dense… three independent fields"; restyled the same day — "ugly gray…
 /// cheap highlighting… regular liquid glass controls, or beautiful"):
 ///
-///     ╭──────────┬──────────┬──────────╮
-///     │    🎙    │    ●     │    ⋯     │
-///     │ Dictate  │  Record  │   More   │
-///     ╰──────────┴──────────┴──────────╯
+///     ╭──────────┬──────────┬──────────┬──────────╮
+///     │    🎙    │    👥    │    ●     │    ⋯     │
+///     │ Dictate  │ Meeting  │  Screen  │   More   │
+///     ╰──────────┴──────────┴──────────┴──────────╯
 ///
-/// Three fields on ONE surface (the capsule — Liquid Glass or the ink look,
-/// see `PillDockStyle`), separated by hairlines rather than plates. The field
+/// Four fields since the meetings-in-the-pill pass (design §3.1.1: "Record"
+/// became "Screen" — two fields record now; the Meeting glyph is in the
+/// dock's ink, red stays with Screen). They share ONE surface (the capsule —
+/// Liquid Glass or the ink look, see `PillDockStyle`), separated by hairlines
+/// rather than plates. The field
 /// under the pointer gets a QUIET lift: a faint white plate, brighter ink, a
 /// 3 % scale, and the hairlines beside it fade — nothing changes colour (the
 /// user on the first, tinted version: "less provocative, less nudgy… nothing
@@ -606,22 +625,25 @@ private struct PeekDock: View {
     let rotation: Angle
     let menuOpen: Bool
     let onDictate: () -> Void
+    let onMeeting: () -> Void
     let onRecord: () -> Void
     let onMenu: () -> Void
 
-    /// Which field the pointer is over. The capsule is divided into three
-    /// fields along its length, so a pointer anywhere on it picks the nearest.
+    /// Which field the pointer is over. The capsule is divided into
+    /// `PillDockMetrics.fieldCount` fields along its length, so a pointer
+    /// anywhere on it picks the nearest — through `PillGeometry`, the one
+    /// mapping the sandbox's film pointer uses too.
     private var hotIndex: Int? {
         guard let pointer else { return nil }
         let size = metrics.size
         guard abs(pointer.x) <= size.width / 2, abs(pointer.y) <= size.height / 2 else { return nil }
-        let index = Int((pointer.x / metrics.pitch).rounded()) + 1
-        return min(max(index, 0), 2)
+        return PillGeometry.dockFieldIndex(along: pointer.x, pitch: metrics.pitch, count: PillDockMetrics.fieldCount)
     }
 
     var body: some View {
         let hot = hotIndex
         let look = metrics.resolvedStyle
+        // A hairline on field i unless i or i + 1 is lit.
         HStack(spacing: 0) {
             PillDockTile(
                 metrics: metrics, look: look, symbol: "mic.fill", caption: "Dictate", label: "Start a dictation",
@@ -629,14 +651,19 @@ private struct PeekDock: View {
                 hot: hot == 0, lit: false, divider: !(hot == 0 || hot == 1), rotation: rotation, action: onDictate
             )
             PillDockTile(
-                metrics: metrics, look: look, symbol: "record.circle.fill", caption: "Record", label: "Record the screen",
+                metrics: metrics, look: look, symbol: "person.2.wave.2.fill", caption: "Meeting", label: "Record a meeting",
+                glyph: nil,
+                hot: hot == 1, lit: false, divider: !(hot == 1 || hot == 2), rotation: rotation, action: onMeeting
+            )
+            PillDockTile(
+                metrics: metrics, look: look, symbol: "record.circle.fill", caption: "Screen", label: "Record the screen",
                 glyph: PillStyle.recordTint,
-                hot: hot == 1, lit: false, divider: !(hot == 1 || hot == 2), rotation: rotation, action: onRecord
+                hot: hot == 2, lit: false, divider: !(hot == 2 || hot == 3), rotation: rotation, action: onRecord
             )
             PillDockTile(
                 metrics: metrics, look: look, symbol: "ellipsis", caption: "More", label: "More",
                 glyph: nil,
-                hot: hot == 2, lit: menuOpen, divider: false, rotation: rotation, action: onMenu
+                hot: hot == 3, lit: menuOpen, divider: false, rotation: rotation, action: onMenu
             )
         }
         .onChange(of: hot) { _, index in
@@ -648,7 +675,7 @@ private struct PeekDock: View {
 
 /// One field on the peek dock. The visible plate (only while lit) is
 /// `metrics.tile`; the hit area extends half a gap sideways and the vertical
-/// inset up and down, so the three fields tile the capsule with no dead zone
+/// inset up and down, so the fields tile the capsule with no dead zone
 /// between them.
 private struct PillDockTile: View {
     let metrics: PillDockMetrics
@@ -749,11 +776,15 @@ enum PillSpace {
 }
 
 /// The live screen-recording bar (2026-09-07 — the user on the old capsule:
-/// "ugly, small, non-responsive, not animated").
+/// "ugly, small, non-responsive, not animated"), and since the meetings-in-
+/// the-pill pass the MEETING bar too — the same toolbar plus a people glyph
+/// after the dot (design §3.1.3), the one thing that tells the two apart:
 ///
-///     [● pulsing red dot] [02:14] [mic meter] [sys meter] [■ Stop]
+///     [● pulsing red dot] [02:14] [mic meter] [sys meter] [■ Stop]        screen
+///     [● pulsing red dot] [👥] [02:14] [mic meter] [sys meter] [■ Stop]   meeting
 ///
-/// Every width here mirrors `PillStyle.recordingContentWidth`, which is what
+/// Every width here mirrors `PillStyle.recordingContentWidth` (screen) /
+/// `meetingContentWidth` (meeting), which is what
 /// `DictationPillController.layout` sizes the capsule from — change one and
 /// change the other, or the bar clips.
 ///
@@ -761,6 +792,9 @@ enum PillSpace {
 /// handle, so nudging the pill along its edge can never end a recording.
 private struct RecordingToolbar: View {
     let since: Date
+    /// The meeting bar: the people glyph after the dot, and meeting wording
+    /// for the elapsed label and the Stop button.
+    let meetingGlyph: Bool
     /// Already normalized + smoothed by the controller.
     let levels: AudioLevels
     /// The pointer is somewhere on the bar (from the panel-wide tracking area).
@@ -773,6 +807,14 @@ private struct RecordingToolbar: View {
     var body: some View {
         HStack(spacing: 0) {
             RecordingDot(reduceMotion: reduceMotion)
+            if meetingGlyph {
+                gap(PillStyle.spacingXS)
+                Image(systemName: "person.2.wave.2.fill")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(PillStyle.ink.opacity(0.85))
+                    .frame(width: PillStyle.meetingGlyphWidth)
+                    .accessibilityHidden(true)
+            }
             gap(PillStyle.spacingS)
             elapsed
             gap(PillStyle.spacingM)
@@ -780,7 +822,10 @@ private struct RecordingToolbar: View {
             gap(PillStyle.spacingS)
             LevelMeter(symbol: "speaker.wave.2.fill", level: levels.system, reduceMotion: reduceMotion)
             gap(PillStyle.spacingM)
-            StopButton(barHovered: barHovered, pointer: pointer, action: onStop)
+            StopButton(
+                label: meetingGlyph ? "Stop meeting recording" : "Stop recording",
+                barHovered: barHovered, pointer: pointer, action: onStop
+            )
         }
         .padding(.horizontal, PillStyle.compactPadding)
         .accessibilityElement(children: .contain)
@@ -802,7 +847,7 @@ private struct RecordingToolbar: View {
                 .monospacedDigit()
                 .foregroundStyle(PillStyle.ink)
                 .lineLimit(1)
-                .accessibilityLabel(Text("Recording, \(text) elapsed"))
+                .accessibilityLabel(Text(meetingGlyph ? "Recording the meeting, \(text) elapsed" : "Recording, \(text) elapsed"))
         }
         .frame(width: PillStyle.elapsedWidth)
     }
@@ -892,6 +937,9 @@ private struct LevelMeter: View {
 /// `rotationEffect`, and `offset`/`scaleEffect` are both zero once a transition
 /// has settled.
 private struct StopButton: View {
+    /// The tooltip and VoiceOver label: "Stop recording" on the screen bar,
+    /// "Stop meeting recording" on the meeting bar.
+    let label: String
     let barHovered: Bool
     let pointer: CGPoint?
     let action: () -> Void
@@ -924,8 +972,8 @@ private struct StopButton: View {
         .contentShape(Circle())
         .animation(.easeOut(duration: 0.12), value: hot)
         .animation(.easeOut(duration: 0.12), value: barHovered)
-        .help("Stop recording")
-        .accessibilityLabel("Stop recording")
+        .help(label)
+        .accessibilityLabel(label)
     }
 }
 
@@ -1243,10 +1291,14 @@ public struct PillDockMetrics: Equatable, Sendable {
     public var iconSlotHeight: CGFloat { ceil(iconSize * 1.25) }
     public var captionSize: CGFloat { 9 + 0.8 * (scale - 2) }
     var captionGap: CGFloat { 1 + scale }
-    /// The capsule around the three fields.
+    /// Dictate · Meeting · Screen · More (design §3.1.1). The hit test and the
+    /// sandbox's film pointer both go through `PillGeometry.dockFieldIndex`
+    /// with this count.
+    public static let fieldCount = 4
+    /// The capsule around the fields: 275 pt at the default scale.
     public var size: CGSize {
         CGSize(
-            width: ceil(3 * tile.width + 2 * gap + 2 * horizontalInset),
+            width: ceil(CGFloat(Self.fieldCount) * tile.width + CGFloat(Self.fieldCount - 1) * gap + 2 * horizontalInset),
             height: ceil(tile.height + 2 * verticalInset)
         )
     }

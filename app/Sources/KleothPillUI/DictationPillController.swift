@@ -387,7 +387,7 @@ public final class DictationPillController: DictationPillPresenting {
         let size = layout.panelSize
         let center = PillGeometry.dockedCenter(
             edge: edge, along: along,
-            panelSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: layout.flat, on: screen),
+            panelSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: layout.flat, dock: model.dock, on: screen),
             shadowPadding: Self.shadowPadding, in: Self.bounds(of: screen)
         )
         panel.setFrame(
@@ -768,6 +768,20 @@ public final class DictationPillController: DictationPillPresenting {
             subtitle: content.hotkeyDescription.isEmpty ? nil : "or hold \(content.hotkeyDescription)",
             symbol: "mic.fill"
         ))
+        // The meeting row (design §3.1.1): start, or — while a meeting
+        // records — stop, with the elapsed time as of the menu opening.
+        if let since = content.meetingSince {
+            rows.append(PillMenuEntry(
+                id: "meeting", kind: .action(.meeting(.stop)), title: "Stop meeting recording",
+                subtitle: "Recording · \(ElapsedFormatter.string(seconds: Int(Date().timeIntervalSince(since))))",
+                symbol: "person.2.wave.2.fill"
+            ))
+        } else {
+            rows.append(PillMenuEntry(
+                id: "meeting", kind: .action(.meeting(.start)), title: "Record meeting",
+                subtitle: "Microphone and system audio", symbol: "person.2.wave.2.fill"
+            ))
+        }
         rows.append(PillMenuEntry(
             id: "record", kind: .action(.startScreenRecording), title: "Record screen…",
             symbol: "record.circle.fill", tint: PillStyle.recordTint
@@ -1165,24 +1179,31 @@ public final class DictationPillController: DictationPillPresenting {
     /// phase's own size shifted the center by the size difference, so a pill
     /// on the right edge near the bottom rose while growing and sank while
     /// shrinking — the "levitating" the user saw.
-    private static func referenceSize(edge: PillGeometry.Edge, on screen: NSScreen?) -> CGSize {
+    private static func referenceSize(edge: PillGeometry.Edge, dock: PillDockMetrics, on screen: NSScreen?) -> CGSize {
         let long = layout(for: .listening(handsFree: true), edge: edge, on: screen, flat: false).panelSize
         let thick = layout(for: .warning(""), edge: edge, on: screen, flat: false).panelSize
+        // The four-field dock (275 pt) is now the longest upright shape on
+        // every edge; resolving the anchor against it keeps a pill parked
+        // near a corner from creeping when the dock comes out (§4.3). Only its
+        // along-axis length is folded in: its thickness stays out, because
+        // `.idle` with the dock out is nudged inward by `activeOrigin`'s clamp.
+        let dockPanel = layout(for: .idle, edge: edge, on: screen, flat: false, dock: dock).panelSize
         guard !edge.isVertical else {
-            // A side edge has TWO families — the upright dictation capsules
-            // (this anchor) and the flat recording bar, which hugs the edge
+            // A side edge has TWO families — the upright capsules (this
+            // anchor) and the flat recording/meeting bar, which hugs the edge
             // with its near end and is placed by `dockReferenceSize` instead.
-            // Folding the bar's 250 pt length in here would clamp the upright
-            // anchor 128 pt away from the top and bottom of the screen.
-            return CGSize(width: thick.width, height: long.height)
+            // Folding the bar in here would clamp the upright anchor away
+            // from the top and bottom of the screen for a shape that never
+            // stands up.
+            return CGSize(width: thick.width, height: max(long.height, dockPanel.height))
         }
-        // Bottom/top: the meeting bar (the recording toolbar plus the people
-        // glyph) is now the LONGEST phase, so the
-        // one anchor is resolved against it — otherwise a pill docked near a
-        // corner would have the bar clamped (and every other phase shifted by
-        // the difference: the "levitating" bug this reference size exists for).
+        // Bottom/top: the dock and the meeting bar (the recording toolbar plus
+        // the people glyph) are the LONGEST shapes, so the one anchor is
+        // resolved against them — otherwise a pill docked near a corner would
+        // have them clamped (and every other phase shifted by the difference:
+        // the "levitating" bug this reference size exists for).
         let bar = layout(for: .meeting(since: .distantPast), edge: edge, on: screen, flat: true).panelSize
-        return CGSize(width: max(long.width, bar.width), height: max(thick.height, bar.height))
+        return CGSize(width: max(long.width, bar.width, dockPanel.width), height: max(thick.height, bar.height))
     }
 
     /// The panel size the DOCK is resolved against for one phase. Upright
@@ -1191,9 +1212,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// phase's length) and borrows only a common thickness for the along-axis
     /// clamp, so phase-to-phase morphs never slide along the edge.
     private static func dockReferenceSize(
-        panelSize: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?
+        panelSize: CGSize, edge: PillGeometry.Edge, flat: Bool, dock: PillDockMetrics, on screen: NSScreen?
     ) -> CGSize {
-        guard flat, edge.isVertical else { return referenceSize(edge: edge, on: screen) }
+        guard flat, edge.isVertical else { return referenceSize(edge: edge, dock: dock, on: screen) }
         return CGSize(width: panelSize.width, height: flatThickness)
     }
 
@@ -1217,7 +1238,7 @@ public final class DictationPillController: DictationPillPresenting {
         return PillGeometry.dockedCenter(
             edge: edge,
             along: savedAlong(edge: edge, on: screen, in: bounds),
-            panelSize: Self.dockReferenceSize(panelSize: panelSize, edge: edge, flat: flat, on: screen),
+            panelSize: Self.dockReferenceSize(panelSize: panelSize, edge: edge, flat: flat, dock: model.dock, on: screen),
             shadowPadding: Self.shadowPadding,
             in: bounds
         )
@@ -1456,7 +1477,7 @@ public final class DictationPillController: DictationPillPresenting {
         var labelWidth: CGFloat?
         switch state {
         case .idle where dock != nil:
-            // The peek DOCK: three fields, fully on screen (`PillDockMetrics`).
+            // The peek DOCK: four fields, fully on screen (`PillDockMetrics`).
             // It is thicker than the anchor was resolved for, so
             // `activeOrigin`'s clamp nudges it inward: its near side lands
             // `shadowPadding` in from the screen edge and it grows inward.
