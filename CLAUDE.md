@@ -248,6 +248,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Adding a KleothCore source file is invisible to a warm `app/.build` until
   `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
 - `Transcriber: Sendable` conformance must be declared in the type's own file.
+- Never `Bundle.module` in app code: SwiftPM's accessor looks only at the `.app` root and at the BUILD Mac's
+  `.build` folder, then `fatalError`s — invisible here, a launch crash on every other Mac (every release to 0.5.1,
+  #17). Use `KleothAssets.url(forResource:withExtension:)` (`Contents/Resources`); `make-app.sh` refuses the build.
 - `IsSecureEventInputEnabled()` is session-wide: a background Chromium browser can hold it with another app
   in front. `ioreg -l -w 0 | grep kCGSSessionSecureInputPID` names the holder (only while it's on; it can
   outlive a quit app by ~30 s). A windowless process is credited to the frontmost app.
@@ -306,7 +309,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   "Before you record" window, meeting covers (opt-in), the secure-input holder named, macOS 15 first-launch copy.
   The user verified hands-free and dictation retry in daily use and waived the other manual checklists
   (providers, pill menu, screen recording, recordings viewer, summary §6) on 2026-09-25.
-- Covers hero (2026-09-25, unreleased; CHANGELOG `[Unreleased]`): full-width band + parallax + Quick Look + 56 pt
+- v0.5.1 (published 2026-09-27, without the visual checks — the user's call): context-aware dictation, on-device
+  turns, covers full width, meetings in the pill + call detection. v0.5.2 (2026-09-27): the launch crash on every
+  Mac but the build Mac (#17, `Bundle.module`) — reported by the first outside user.
+- Covers hero (0.5.1): full-width band + parallax + Quick Look + 56 pt
   rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
   before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).
   Not yet human-verified: the Quick Look click, Reduce Motion, the rubber band, a window resize, "Show scroll bars:
@@ -326,8 +332,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   trigger 0.05–0.21 s on take, ≤ 0.34 s on release; a bare binary resolves to no owner, so no offer). Not yet: the
   pill films, the calibration on an awake Mac, design §6 manual items 1–11 and the real-call list (§6 step 9), the
   Settings section by eye. The README pill GIFs (`make-demos.sh`) still show the three-field dock.
-- Next: release 0.5.1 once the visual checks are done (pill films, covers demo frames, the user's look); the
-  README demo GIFs are the user's call. Designs (local until each branch lands):
+- Next: the visual checks 0.5.1 shipped without (pill films, covers demo frames, the user's look, real calls); issue
+  #16 (a custom-command AI provider; Local server already takes any OpenAI-compatible URL); the README demo GIFs
+  are the user's call. Designs (local until each branch lands):
   `docs/plans/2026-09-24-*.md`. Later: live help (spec + 24-task plan ready, deferred by the user), History as one
   timeline, onboarding. Dropped: trimming silence before Scribe.
 - Positioning (2026-09-24): merged (PR #5); GitHub About/topics applied and social preview uploaded by hand

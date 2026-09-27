@@ -652,7 +652,7 @@ struct OnboardingView: View {
     /// be on disk yet), so onboarding never depends on it.
     @MainActor
     private static func playWelcomeChime() {
-        guard let url = Bundle.module.url(forResource: "WelcomeChime", withExtension: "m4a") else {
+        guard let url = KleothAssets.url(forResource: "WelcomeChime", withExtension: "m4a") else {
             return
         }
         guard let player = try? AVAudioPlayer(contentsOf: url) else { return }

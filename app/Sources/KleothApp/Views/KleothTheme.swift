@@ -362,11 +362,28 @@ struct KleothFlowLayout: Layout {
 
 // MARK: - Bundled brand assets
 
-/// Loads brand images bundled with the app target (via `Bundle.module`), cached.
+/// Loads brand images bundled with the app target, cached.
 /// Used for the menu-bar template glyph and the empty-state illustrations. All
 /// access is on the main actor (UI), which also keeps the cache concurrency-safe.
 @MainActor
 enum KleothAssets {
+    /// The app target's resource bundle: in `Contents/Resources`, where
+    /// `make-app.sh` puts it, or beside an unbundled binary. `nil` when missing
+    /// (callers go without the image or sound).
+    ///
+    /// Never `Bundle.module`: SwiftPM's accessor looks only at the `.app` root
+    /// and at the build folder of the Mac that built it, and calls `fatalError`
+    /// when neither exists. That folder exists only on the build Mac, so every
+    /// release crashed at launch everywhere else (issue #17).
+    static let resources: Bundle? = [Bundle.main.resourceURL, Bundle.main.bundleURL]
+        .compactMap { $0?.appendingPathComponent("KleothApp_KleothApp.bundle") }
+        .lazy.compactMap { Bundle(url: $0) }.first
+
+    /// A bundled resource's URL, or `nil` when it (or the bundle) is missing.
+    static func url(forResource name: String, withExtension ext: String) -> URL? {
+        resources?.url(forResource: name, withExtension: ext)
+    }
+
     /// Named full-bleed illustrations under `Sources/KleothApp/Resources`.
     enum Illustration: String {
         case noMeetings = "EmptyNoMeetings"
@@ -384,7 +401,7 @@ enum KleothAssets {
         // shared raw-image cache entry in place (NSImage is a reference type).
         let key = "MenuBarGlyph.template"
         if let cached = cache[key] { return cached }
-        guard let url = Bundle.module.url(forResource: "MenuBarGlyph", withExtension: "png"),
+        guard let url = Self.url(forResource: "MenuBarGlyph", withExtension: "png"),
               let image = NSImage(contentsOf: url) else { return nil }
         image.isTemplate = true
         // Size to the menu-bar icon height (~18pt), preserving aspect, so the
@@ -403,7 +420,7 @@ enum KleothAssets {
 
     private static func image(named name: String) -> NSImage? {
         if let cached = cache[name] { return cached }
-        guard let url = Bundle.module.url(forResource: name, withExtension: "png"),
+        guard let url = Self.url(forResource: name, withExtension: "png"),
               let image = NSImage(contentsOf: url) else { return nil }
         cache[name] = image
         return image

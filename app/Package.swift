@@ -91,7 +91,7 @@ let package = Package(
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ],
             // Brand assets (menu-bar template glyph + empty-state illustrations),
-            // loaded at runtime via `Bundle.module` (see `KleothAssets`).
+            // loaded at runtime via `KleothAssets.resources`, never `Bundle.module` (#17).
             resources: [
                 .process("Resources")
             ],
