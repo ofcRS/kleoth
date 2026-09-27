@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-09-27
+
 ### Fixed
 
 - **Kleoth quit at launch on every Mac but the one that built it** ("could not load resource
