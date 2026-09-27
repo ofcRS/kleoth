@@ -248,6 +248,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Adding a KleothCore source file is invisible to a warm `app/.build` until
   `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
 - `Transcriber: Sendable` conformance must be declared in the type's own file.
+- Never `Bundle.module` in app code: SwiftPM's accessor looks only at the `.app` root and at the BUILD Mac's
+  `.build` folder, then `fatalError`s — invisible here, a launch crash on every other Mac (every release to 0.5.1,
+  #17). Use `KleothAssets.url(forResource:withExtension:)` (`Contents/Resources`); `make-app.sh` refuses the build.
 - `IsSecureEventInputEnabled()` is session-wide: a background Chromium browser can hold it with another app
   in front. `ioreg -l -w 0 | grep kCGSSessionSecureInputPID` names the holder (only while it's on; it can
   outlive a quit app by ~30 s). A windowless process is credited to the frontmost app.

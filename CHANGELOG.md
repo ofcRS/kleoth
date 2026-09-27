@@ -6,6 +6,14 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Kleoth quit at launch on every Mac but the one that built it** ("could not load resource
+  bundle", #17). The app looked for its images in a folder that exists only on the build Mac, so
+  every release so far crashed on first launch anywhere else. It now finds them inside the app.
+  If you worked around it by copying `KleothApp_KleothApp.bundle` to the top of Kleoth.app,
+  replacing the app with this version removes the copy (and restores the app's signature).
+
 ## [0.5.1] — 2026-09-26
 
 ### Added

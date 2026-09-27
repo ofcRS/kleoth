@@ -12,6 +12,14 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"     # the app/ package directory
 CONFIG="${1:-debug}"
 
+# SwiftPM's `Bundle.module` finds a resource bundle only at the .app ROOT or in THIS Mac's build
+# folder, and calls fatalError otherwise: fine here, a crash at launch on every other Mac (issue #17).
+# App code loads resources through `KleothAssets.resources` (Contents/Resources) instead.
+if grep -rnE 'Bundle\.module|bundle: *\.module' "$DIR/Sources" --include='*.swift' | grep -vE '^[^:]+:[0-9]+: *//'; then
+    echo "error: Bundle.module in app code — use KleothAssets.url(forResource:withExtension:) (issue #17)" >&2
+    exit 1
+fi
+
 echo "==> swift build ($CONFIG)"
 swift build --package-path "$DIR" -c "$CONFIG"
 
@@ -30,13 +38,15 @@ if [ -f "$DIR/bundle/Kleoth.icns" ]; then
     echo "    bundled app icon Kleoth.icns"
 fi
 
-# Bundle the SwiftPM resource bundle (menu-bar glyph + empty-state illustrations)
-# next to the executable so Bundle.module resolves at runtime.
+# The SwiftPM resource bundle (menu-bar glyph, empty-state illustrations, the welcome chime) goes in
+# Contents/Resources, where `KleothAssets.resources` looks (and where a signed app's resources belong).
 RESBUNDLE="$DIR/.build/$CONFIG/KleothApp_KleothApp.bundle"
-if [ -d "$RESBUNDLE" ]; then
-    cp -R "$RESBUNDLE" "$APP/Contents/Resources/"
-    echo "    bundled resources $(basename "$RESBUNDLE")"
+if [ ! -d "$RESBUNDLE" ]; then
+    echo "error: $RESBUNDLE is missing — the app would launch without its images" >&2
+    exit 1
 fi
+cp -R "$RESBUNDLE" "$APP/Contents/Resources/"
+echo "    bundled resources $(basename "$RESBUNDLE")"
 
 echo "==> codesigning"
 KC="$HOME/Library/Keychains/kleoth-codesign.keychain-db"
