@@ -315,7 +315,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   (providers, pill menu, screen recording, recordings viewer, summary §6) on 2026-09-25.
 - v0.5.1 (published 2026-09-27, without the visual checks — the user's call): context-aware dictation, on-device
   turns, covers full width, meetings in the pill + call detection. v0.5.2 (2026-09-27): the launch crash on every
-  Mac but the build Mac (#17, `Bundle.module`) — reported by the first outside user.
+  Mac but the build Mac (#17, `Bundle.module`) — reported by the first outside user. v0.5.3 (2026-09-28): the same
+  trap in KeyboardShortcuts, a Settings crash (#22); vendored + a release-build guard on any dependency.
 - Covers hero (0.5.1): full-width band + parallax + Quick Look + 56 pt
   rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
   before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).

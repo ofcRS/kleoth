@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-09-28
+
 ### Fixed
 
 - **Opening Settings crashed Kleoth on every Mac but the one that built it (#22).** The same trap
