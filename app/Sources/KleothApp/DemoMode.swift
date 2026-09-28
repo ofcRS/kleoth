@@ -40,7 +40,7 @@ enum DemoMode {
     /// Where `DemoDirector` writes the film (`-KleothDemoFilm <dir>`).
     static let filmDirectory: URL? = path("KleothDemoFilm")
 
-    /// Which film to shoot (`-KleothDemoScript meeting|viewer|still|cover`).
+    /// Which film to shoot (`-KleothDemoScript meeting|viewer|still|cover|smoke`).
     static let script: String? = argument("KleothDemoScript")
 
     /// The only Keychain a demo launch sees: consent and onboarding done,

@@ -37,17 +37,21 @@ swift build --package-path app       # app + capture packages compile-check
 
 ```sh
 bash app/setup-signing.sh            # one-time only: creates the "Kleoth Self-Signed" identity
-bash app/make-app.sh release         # builds, signs, installs to /Applications/Kleoth.app
+bash app/make-app.sh release         # builds, signs, smoke-tests, installs to /Applications/Kleoth.app
 pkill -x Kleoth 2>/dev/null; open -a Kleoth
 ```
 
+- [ ] The build's smoke test passed (`smoke: PASSED`; `make-app.sh release` stops before installing if
+      not). It runs the packaged app with this Mac's build folders out of reach, through History and
+      every Settings page: the crashes #17 and #22 only other Macs saw. CI runs it on every PR too.
 - [ ] App launches into the menu bar.
 - [ ] Quick record → stop → a transcript appears in `~/Kleoth`.
 - [ ] Settings opens; Usage / keys behave.
 
 `make-app.sh` signs with the local **"Kleoth Self-Signed"** keychain identity if present (so TCC
-permission grants persist across rebuilds), else ad-hoc. It bundles `Kleoth.icns` and the SwiftPM
-resource bundle, then copies the app to `/Applications`.
+permission grants persist across rebuilds), else ad-hoc. It bundles `Kleoth.icns` and every SwiftPM
+resource bundle, runs `app/smoke-test.sh` on a release build, then copies the app to `/Applications`
+(`KLEOTH_NO_INSTALL=1` stops before that).
 
 ## 5. Build the DMG — self-signed tier (ships today)
 
@@ -109,7 +113,8 @@ shasum -a 256 app/dist/Kleoth-<version>.dmg
 ```
 
 - [ ] Image checksum OK.
-- [ ] On a *second* Mac (or a fresh user), the install works: self-signed → Open Anyway (macOS 15+) or right-click → Open (14);
+- [ ] On a *second* Mac (or a fresh user), the install works (the smoke test stands in for the crash
+      part of this, not for Gatekeeper or permissions): self-signed → Open Anyway (macOS 15+) or right-click → Open (14);
       notarized → opens cleanly.
 
 ## 8. Update the changelog

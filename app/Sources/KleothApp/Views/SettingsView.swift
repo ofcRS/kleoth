@@ -129,7 +129,7 @@ struct SettingsView: View {
     ]
 
     /// The selected sidebar page, remembered across openings.
-    @AppStorage("dev.kleoth.settings.page") private var pageId: String = SettingsPage.meetings.rawValue
+    @AppStorage(SettingsPage.storageKey) private var pageId: String = SettingsPage.meetings.rawValue
     @EnvironmentObject private var screenRecording: ScreenRecordingController
 
     private var page: SettingsPage { SettingsPage(rawValue: pageId) ?? .meetings }
@@ -805,6 +805,9 @@ struct SettingsView: View {
     /// picker. Keeps the current selection present and shows a spinner while in
     /// flight. Safe to call repeatedly (Refresh button + initial `.task`).
     private func refreshModels() async {
+        // A demo launch (the smoke test) fetches nothing and writes no catalog
+        // cache into `~/.config/kleoth`: the picker keeps its curated seed.
+        guard !DemoMode.isOn else { return }
         isRefreshingModels = true
         defer { isRefreshingModels = false }
 

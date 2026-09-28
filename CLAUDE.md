@@ -13,10 +13,11 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (778 tests)
+swift build && swift test                        # core + CLI (778 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
 swift build --package-path app                   # app package
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
-bash app/make-app.sh release                     # bundle + sign + install /Applications/Kleoth.app
+bash app/make-app.sh release                     # bundle + sign + smoke test + install /Applications/Kleoth.app (KLEOTH_NO_INSTALL=1: dist only)
+bash app/smoke-test.sh [Kleoth.app]              # the shipped app, build folders hidden: History + all Settings pages (KLEOTH_SMOKE_FRAMES=<dir>)
 pkill -x Kleoth; open -a Kleoth                  # relaunch (make-app does NOT kill the running instance)
 pkill -x Kleoth; open -a Kleoth --args -KleothSimulateFirstRun YES   # first-run flows again, this launch only
 bash app/make-dmg.sh                             # app/dist/Kleoth-<version>.dmg (version = app/bundle/Info.plist)
@@ -253,8 +254,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   KeyboardShortcuts' recorder in Settings → General, hence `app/Vendor/KeyboardShortcuts`). App code uses
   `KleothAssets.url(forResource:withExtension:)`; every bundle ships in `Contents/Resources`. `make-app.sh release`
   fails on any build path left in the binary (a live accessor), except swift-transformers' Hub (reached only for a
-  tokenizer config without `tokenizer_class`; Whisper's have it). Removing the worktree an installed build came
-  from used to be enough to crash it here too.
+  tokenizer config without `tokenizer_class`; Whisper's have it), and its smoke test runs the app with the build
+  folders moved aside (red-tested on both bugs). Removing the worktree an installed build came from used to be
+  enough to crash it here too.
 - `IsSecureEventInputEnabled()` is session-wide: a background Chromium browser can hold it with another app
   in front. `ioreg -l -w 0 | grep kCGSSessionSecureInputPID` names the holder (only while it's on; it can
   outlive a quit app by ~30 s). A windowless process is credited to the frontmost app.
@@ -316,7 +318,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - v0.5.1 (published 2026-09-27, without the visual checks — the user's call): context-aware dictation, on-device
   turns, covers full width, meetings in the pill + call detection. v0.5.2 (2026-09-27): the launch crash on every
   Mac but the build Mac (#17, `Bundle.module`) — reported by the first outside user. v0.5.3 (2026-09-28): the same
-  trap in KeyboardShortcuts, a Settings crash (#22); vendored + a release-build guard on any dependency.
+  trap in KeyboardShortcuts, a Settings crash (#22); vendored + a release-build guard on any dependency. Since then:
+  the packaged-app smoke test (demo-mode design §7) in every `make-app.sh release` and in CI (`tests.yml`, macos-26).
 - Covers hero (0.5.1): full-width band + parallax + Quick Look + 56 pt
   rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
   before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).

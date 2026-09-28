@@ -28,7 +28,8 @@ VOLNAME="Kleoth"
 OUT_DMG="$DIST/Kleoth-$VERSION.dmg"
 
 # ---------------------------------------------------------------- 1. build app
-# make-app.sh builds, signs (self-signed tier), and refreshes /Applications —
+# make-app.sh builds, signs (self-signed tier), smoke-tests the app (smoke-test.sh)
+# and refreshes /Applications —
 # the dist copy is what gets packaged, so the DMG always matches what runs.
 echo "==> building release app bundle"
 bash "$DIR/make-app.sh" release

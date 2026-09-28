@@ -1,0 +1,14 @@
+{
+  "title": "Smoke fixture meeting",
+  "date": "2026-01-05",
+  "started_at": "2026-01-05T10:00:00Z",
+  "participants": [],
+  "consent_acknowledged": true,
+  "transcript_tier": "local-whisper",
+  "language_code": "en",
+  "cost": {
+    "transcription_cost": 0,
+    "summary_cost": 0,
+    "audio_duration_secs": 22
+  }
+}
