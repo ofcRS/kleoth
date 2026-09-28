@@ -12,7 +12,7 @@ import Foundation
         let started = Date()
         do {
             _ = try await withTimeout(seconds: 0.05) { () async throws -> Int in
-                try await Task.sleep(nanoseconds: 5_000_000_000)
+                try await Task.sleep(nanoseconds: 30_000_000_000)
                 return 1
             }
             Issue.record("Expected a timeout")
@@ -22,8 +22,9 @@ import Foundation
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
-        // Must return promptly, not after the operation's own 5 s sleep.
-        #expect(Date().timeIntervalSince(started) < 1.0)
+        // Must return promptly, not after the operation's own 30 s sleep. The
+        // bound is loose on purpose: a shared CI runner took 1.25 s for a 0.05 s deadline.
+        #expect(Date().timeIntervalSince(started) < 5)
     }
 
     @Test func cancelsTheLosingOperation() async {
@@ -92,7 +93,7 @@ import Foundation
         let started = Date()
         do {
             _ = try await withDeadline(seconds: 0.05) { [self] () async throws -> Int in
-                await uncancellable(after: 2, value: 1)
+                await uncancellable(after: 30, value: 1)
             }
             Issue.record("Expected a timeout")
         } catch let error as KleothTimeoutError {
@@ -100,14 +101,15 @@ import Foundation
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
-        // The whole point: it returns on the deadline, not on the operation.
-        #expect(Date().timeIntervalSince(started) < 1.0)
+        // The whole point: it returns on the deadline, not on the operation's 30 s
+        // (loose on purpose: a shared CI runner took 1.25 s here).
+        #expect(Date().timeIntervalSince(started) < 5)
     }
 
     @Test func outerCancellationEndsTheWaitPromptly() async {
         let task = Task { () async throws -> Int in
             try await withDeadline(seconds: 30) { [self] () async throws -> Int in
-                await uncancellable(after: 2, value: 1)
+                await uncancellable(after: 30, value: 1)
             }
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
@@ -118,6 +120,7 @@ import Foundation
         case .success: Issue.record("Expected a cancellation")
         case .failure(let error): #expect(error is CancellationError)
         }
-        #expect(Date().timeIntervalSince(started) < 1.0)
+        // Not the operation's 30 s (loose on purpose, for a shared CI runner).
+        #expect(Date().timeIntervalSince(started) < 5)
     }
 }

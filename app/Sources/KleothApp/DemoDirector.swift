@@ -30,7 +30,16 @@ final class DemoDirector {
         /// offsets, light then dark, then a meeting without one. Verification
         /// frames, not a README film.
         case cover
+        /// The packaged-app smoke test (`app/smoke-test.sh`): History's three
+        /// scopes with a meeting open, then Settings' six pages, one captioned
+        /// still each. Exits 1 on a failed check; a crash fails it too.
+        case smoke
     }
+
+    /// Words from the smoke fixture meeting's TL;DR
+    /// (`app/smoke/fixture/meeting-2026-01-05-100000/summary.json`): read off
+    /// the meeting page, they prove the page drew the meeting.
+    static let smokeFixturePhrase = "Lighthouse relaunch"
 
     /// The file `make-demo-data.ts` leaves in every folder it makes, and that
     /// hand-made fictional fixtures (the covers-hero ones) carry too. A folder
@@ -66,7 +75,7 @@ final class DemoDirector {
             return quit("-KleothDemoFilm needs an absolute folder")
         }
         guard let script = DemoMode.script.flatMap(Script.init(rawValue:)) else {
-            return quit("-KleothDemoScript must be meeting, viewer, still or cover")
+            return quit("-KleothDemoScript must be meeting, viewer, still, cover or smoke")
         }
         // The controllers History reads, built here (each sets its `shared`):
         // in demo mode no `KleothApp` exists to own them. Covers stay Off
@@ -108,8 +117,8 @@ final class DemoDirector {
 
     private init(script: Script, film: URL) {
         self.script = script
-        // The cover frames are stills too (Retina); their captions name each one.
-        writer = DemoFilmWriter(directory: film, stage: script == .still || script == .cover ? .still : .film)
+        // The cover and smoke frames are stills too (Retina); their captions name each one.
+        writer = DemoFilmWriter(directory: film, stage: script == .meeting || script == .viewer ? .film : .still)
     }
 
     private var windowSize: CGSize {
@@ -122,6 +131,7 @@ final class DemoDirector {
         // A detail pane of about 700 pt, so the band is about 350 pt: inside
         // the 200…400 rule, not at either end (`CoverHeroGeometryTests` pins those).
         case .cover: return CGSize(width: 1000, height: 680)
+        case .smoke: return CGSize(width: 1000, height: 680)
         }
     }
 
@@ -134,6 +144,8 @@ final class DemoDirector {
         // instance behind.
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(150))
+            // A smoke run that hangs has failed: never a clean exit.
+            if script == .smoke { Self.report("smoke failed: timed out"); exit(1) }
             Self.quit("timed out")
         }
         Task { @MainActor in
@@ -157,6 +169,17 @@ final class DemoDirector {
             case .viewer: await viewerScript()
             case .still: await stillScript(recording)
             case .cover: await coverScript(recording)
+            case .smoke:
+                let failures = await smokeScript(recording, dictation, screen)
+                writer.finish(hold: 0)
+                // `smoke-test.sh` looks for this line as well as the exit status.
+                guard failures.isEmpty else {
+                    failures.forEach { Self.report("smoke failed: \($0)") }
+                    exit(1)
+                }
+                Self.report("smoke passed: \(writer.frameCount) screens")
+                NSApp.terminate(nil)
+                return
             }
             captureTimer?.invalidate()
             writer.finish(hold: 2.2)
@@ -175,8 +198,25 @@ final class DemoDirector {
             .environmentObject(screen)
             .environmentObject(covers ?? CoverController())   // set in `start()`; History's views crash without one
             .frame(width: windowSize.width, height: windowSize.height)
+        return present(root, size: windowSize, title: "Meeting History")
+    }
+
+    /// Settings as the app shows it: the same view and controllers the
+    /// `Settings` scene injects, at the size the view fixes for itself.
+    private func makeSettingsWindow(recording: RecordingController, dictation: DictationController, screen: ScreenRecordingController) -> NSWindow {
+        let root = SettingsView()
+            .environmentObject(recording)
+            .environmentObject(dictation)
+            .environmentObject(screen)
+            .environmentObject(covers ?? CoverController())
+            // Its `start()` is a no-op in demo mode: nothing listens to the mic.
+            .environmentObject(MeetingDetectionController.sharedInstance())
+        return present(root, size: CGSize(width: 780, height: 560), title: "Settings")
+    }
+
+    private func present<Root: View>(_ root: Root, size: CGSize, title: String) -> NSWindow {
         let window = DemoWindow(
-            contentRect: CGRect(origin: .zero, size: windowSize),
+            contentRect: CGRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         // A hosting view straight in `contentView` of a window whose frame is
@@ -190,10 +230,10 @@ final class DemoDirector {
         window.contentView = host
         if let visible = NSScreen.main?.visibleFrame {
             window.pinnedFrame = CGRect(
-                x: visible.midX - windowSize.width / 2, y: visible.midY - windowSize.height / 2,
-                width: windowSize.width, height: windowSize.height)
+                x: visible.midX - size.width / 2, y: visible.midY - size.height / 2,
+                width: size.width, height: size.height)
         }
-        window.title = "Meeting History"
+        window.title = title
         window.toolbarStyle = .unified
         window.isRestorable = false
         window.isReleasedWhenClosed = false
@@ -286,6 +326,74 @@ final class DemoDirector {
         await hold(1.5)
         caption = "light · no cover"
         capture()
+    }
+
+    /// `smoke`: the meeting page, History's other two scopes, then every
+    /// Settings page, each captured once. A `Bundle.module` trap (#17, #22)
+    /// fails the run by crashing it; the checks here fail it when a screen did
+    /// not really draw — two screens that look exactly alike (a scope or page
+    /// that never switched), the fixture meeting missing from its page, or the
+    /// shortcut recorder without its label. Returns the failures.
+    private func smokeScript(_ recording: RecordingController, _ dictation: DictationController, _ screen: ScreenRecordingController) async -> [String] {
+        var failures: [String] = []
+        var seen: [Int: String] = [:]
+        func shot(_ name: String) -> CGImage? {
+            guard let window, let image = CGWindowListCreateImage(
+                .null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]
+            ), image.width > 1 else {
+                failures.append("\(name): no capture of the window")
+                return nil
+            }
+            let hash = Self.pixelHash(image)
+            if let earlier = seen[hash] { failures.append("\(name) looks exactly like \(earlier)") }
+            seen[hash] = name
+            writer.add(image, pointSize: window.frame.size, caption: name, time: Double(seen.count))
+            return image
+        }
+        func expect(_ text: String, in image: CGImage?, on name: String) {
+            guard let image else { return }
+            let lines = Self.recognizeLines(in: image).map(\.0)
+            guard !lines.contains(where: { $0.localizedCaseInsensitiveContains(text) }) else { return }
+            failures.append("\(name): no “\(text)” on screen (read: \(lines.prefix(16).joined(separator: " | ")))")
+        }
+
+        guard let meeting = recording.recentMeetings.first else {
+            return ["History: no meeting listed from \(DemoMode.outputDir.path)"]
+        }
+        recording.selectedMeetingID = meeting.id
+        await hold(1.5)
+        let meetingShot = "History · a meeting"
+        expect(Self.smokeFixturePhrase, in: shot(meetingShot), on: meetingShot)
+        dictation.requestDictationHistory()
+        await hold(1.0)
+        _ = shot("History · Dictations")
+        screen.recordingsHistoryRequest &+= 1
+        await hold(1.0)
+        _ = shot("History · Recordings")
+
+        // Settings, page by page, through the page it remembers (`@AppStorage`).
+        window?.orderOut(nil)
+        window = makeSettingsWindow(recording: recording, dictation: dictation, screen: screen)
+        for page in SettingsPage.allCases {
+            UserDefaults.standard.set(page.rawValue, forKey: SettingsPage.storageKey)
+            await hold(1.2)
+            let name = "Settings · \(page.title)"
+            let image = shot(name)
+            // The recorder's placeholder comes from KeyboardShortcuts' own
+            // bundle: without it the row shows the key, "record_shortcut" (#22).
+            // A fresh demo copy has no shortcut set, so the placeholder shows.
+            if page == .general { expect("Record Shortcut", in: image, on: name) }
+        }
+        return failures
+    }
+
+    /// The capture's pixels, hashed: two screens alike to the byte hash alike.
+    private nonisolated static func pixelHash(_ image: CGImage) -> Int {
+        var hasher = Hasher()
+        if let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data) {
+            hasher.combine(bytes: UnsafeRawBufferPointer(start: bytes, count: CFDataGetLength(data)))
+        }
+        return hasher.finalize()
     }
 
     // MARK: - Camera

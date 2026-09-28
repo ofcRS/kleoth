@@ -1,0 +1,61 @@
+# On every pull request and every push to main:
+# - core: the KleothCore + CLI unit tests (`swift test`);
+# - app: the release app as it ships (`make-app.sh release`: its Bundle.module guards), then the packaged-app
+#   smoke test with the build folders out of reach (`app/smoke-test.sh`: History and every Settings page, the
+#   test that catches #17 and #22). One PNG per screen is kept as the `smoke-frames` artifact;
+# - marketing: the release-gate command parser (`marketing/sync.test.ts`).
+# The app is signed ad hoc here (no "Kleoth Self-Signed" identity) and never installed.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core tests
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - run: swift test
+
+  app:
+    name: Release app + smoke test
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - name: Build the release app (KLEOTH_NO_INSTALL=1) and smoke-test it
+        run: bash app/make-app.sh release
+        env:
+          KLEOTH_NO_INSTALL: "1"
+          KLEOTH_SMOKE_FRAMES: ${{ runner.temp }}/smoke-frames
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-frames
+          path: ${{ runner.temp }}/smoke-frames
+          if-no-files-found: ignore
+          retention-days: 14
+
+  marketing:
+    name: Release-gate parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun test ./marketing/sync.test.ts

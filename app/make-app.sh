@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build KleothApp and package it as a runnable, code-signed macOS .app bundle.
 #
-# Usage:  bash app/make-app.sh [debug|release]      (default: debug)
+# Usage:  bash app/make-app.sh [debug|release]      (default: debug; installs to /Applications)
+#         KLEOTH_NO_INSTALL=1 bash app/make-app.sh release   (app/dist/Kleoth.app only)
 # Then:   open app/dist/Kleoth.app
 #
 # Ad-hoc signing (`--sign -`) is enough to run locally and trigger the
@@ -77,7 +78,20 @@ else
 fi
 codesign -dv "$APP" 2>&1 | sed -n '1,2p' || true
 
-# Install to /Applications so it behaves like a normal, double-clickable app.
+# A release build must open its screens with this Mac's build folders out of reach before it
+# replaces /Applications/Kleoth.app or goes into a DMG: a crash there is a crash on every Mac
+# that did not build it (#17 at launch, #22 in Settings). ~20 s; app/smoke-test.sh.
+if [ "$CONFIG" = release ]; then
+    echo "==> smoke test"
+    bash "$DIR/smoke-test.sh" "$APP"
+fi
+
+# Install to /Applications so it behaves like a normal, double-clickable app — unless
+# KLEOTH_NO_INSTALL=1 (CI, or a branch build you only want to smoke-test).
+if [ "${KLEOTH_NO_INSTALL:-}" = 1 ]; then
+    echo "==> done. $APP (not installed: KLEOTH_NO_INSTALL=1)"
+    exit 0
+fi
 INSTALLED="/Applications/Kleoth.app"
 echo "==> installing to $INSTALLED"
 rm -rf "$INSTALLED"

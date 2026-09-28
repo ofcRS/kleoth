@@ -11,6 +11,9 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The UserDefaults key of the page Settings remembers across openings.
+    static let storageKey = "dev.kleoth.settings.page"
+
     /// The sidebar groups: features first, then the app.
     static let features: [SettingsPage] = [.meetings, .dictation, .screenRecording]
     static let app: [SettingsPage] = [.microphone, .accounts, .general]

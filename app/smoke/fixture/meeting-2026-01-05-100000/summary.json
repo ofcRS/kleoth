@@ -1,0 +1,31 @@
+{
+  "title": "Smoke fixture meeting",
+  "tldr": "Lighthouse relaunch agreed for Friday.",
+  "overview": "A fictional two-person call used by app/smoke-test.sh: the relaunch date, the notice and the generator check.",
+  "action_items": [
+    {
+      "task": "Send the relaunch notice to the harbour office",
+      "owner": "You"
+    },
+    {
+      "task": "Check the generator before the lens goes in",
+      "owner": "Them"
+    }
+  ],
+  "per_speaker_highlights": [
+    {
+      "speaker": "You",
+      "highlights": [
+        "Confirmed Friday",
+        "Owns the harbour notice"
+      ]
+    },
+    {
+      "speaker": "Them",
+      "highlights": [
+        "New lens arrives Thursday",
+        "Owns the generator check"
+      ]
+    }
+  ]
+}
