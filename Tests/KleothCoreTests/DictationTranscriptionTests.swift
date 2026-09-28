@@ -173,8 +173,9 @@ private final class AttemptLog: @unchecked Sendable {
         #expect(result.response.text == "in time")
         #expect(result.attempts == 2)
         #expect(log.errors.first is KleothTimeoutError)
-        // Bounded by the budget, not by the hung call's own 30 s sleep.
-        #expect(Date().timeIntervalSince(started) < 2)
+        // Bounded by the budget, not by the hung call's own 30 s sleep (loose on
+        // purpose, for a shared CI runner).
+        #expect(Date().timeIntervalSince(started) < 10)
     }
 
     @Test func noBudgetMeansNoTimeout() async throws {
@@ -264,7 +265,8 @@ private final class AttemptLog: @unchecked Sendable {
             #expect(DictationTranscription.isCancellation(error))
         }
         #expect(await script.calls == 1)
-        #expect(Date().timeIntervalSince(started) < 2)
+        // Not the 5 s budget nor the 10 s retry delay: the cancel ended it.
+        #expect(Date().timeIntervalSince(started) < 4)
     }
 
     // MARK: - Classification

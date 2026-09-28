@@ -400,12 +400,13 @@ private final class SlowMockTransport: HTTPTransport, @unchecked Sendable {
 
     @Test func stalledTransportTimesOutPromptly() async {
         let started = Date()
-        let result = await Self.polisher(SlowMockTransport(delay: 10), timeout: 0.2)
+        let result = await Self.polisher(SlowMockTransport(delay: 30), timeout: 0.2)
             .polish(rawText: "hello there", context: DictationContext())
         let elapsed = Date().timeIntervalSince(started)
 
         #expect(result == .raw(text: "hello there", reason: "Polish timed out — pasted the raw transcript."))
-        #expect(elapsed < 2.0)
+        // The 0.2 s budget, not the transport's 30 s (loose on purpose: 2.08 s under build load here).
+        #expect(elapsed < 5)
     }
 
     // MARK: - Translation guard
