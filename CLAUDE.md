@@ -59,7 +59,7 @@ Crash reports: `~/Library/Logs/DiagnosticReports/Kleoth-*.ips`. Reset TCC: `tccu
 - `kleoth` CLI: `transcribe`, `summarize`, `rename`, `render`, `illustrate`. `KleothCoreTests`.
 
 **`app/` package** (macOS 14.4; deps: `..` as `.package(name: "kleoth-app", path: "..")`,
-KeyboardShortcuts, WhisperKit 0.18)
+KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, WhisperKit 0.18)
 - `KleothCapture`: `Recorder` (mic.m4a + system.m4a → 2-channel meeting.m4a), `MicCapture`,
   `SystemAudioTap` (Core Audio process tap), `LocalTranscriber` (WhisperKit), `DictationCapture`,
   `InputDevices`, `AudioFormat` (AAC bit-rate clamp, `TapWriter`), `ObjCExceptions`,
@@ -248,9 +248,13 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Adding a KleothCore source file is invisible to a warm `app/.build` until
   `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
 - `Transcriber: Sendable` conformance must be declared in the type's own file.
-- Never `Bundle.module` in app code: SwiftPM's accessor looks only at the `.app` root and at the BUILD Mac's
-  `.build` folder, then `fatalError`s — invisible here, a launch crash on every other Mac (every release to 0.5.1,
-  #17). Use `KleothAssets.url(forResource:withExtension:)` (`Contents/Resources`); `make-app.sh` refuses the build.
+- Never `Bundle.module`, in app code OR a dependency: SwiftPM's accessor looks only at the `.app` root and at the
+  BUILD Mac's `.build` folder, then `fatalError`s — invisible here, a crash on every other Mac (#17 at launch; then
+  KeyboardShortcuts' recorder in Settings → General, hence `app/Vendor/KeyboardShortcuts`). App code uses
+  `KleothAssets.url(forResource:withExtension:)`; every bundle ships in `Contents/Resources`. `make-app.sh release`
+  fails on any build path left in the binary (a live accessor), except swift-transformers' Hub (reached only for a
+  tokenizer config without `tokenizer_class`; Whisper's have it). Removing the worktree an installed build came
+  from used to be enough to crash it here too.
 - `IsSecureEventInputEnabled()` is session-wide: a background Chromium browser can hold it with another app
   in front. `ioreg -l -w 0 | grep kCGSSessionSecureInputPID` names the holder (only while it's on; it can
   outlive a quit app by ~30 s). A windowless process is credited to the frontmost app.
@@ -311,7 +315,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   (providers, pill menu, screen recording, recordings viewer, summary §6) on 2026-09-25.
 - v0.5.1 (published 2026-09-27, without the visual checks — the user's call): context-aware dictation, on-device
   turns, covers full width, meetings in the pill + call detection. v0.5.2 (2026-09-27): the launch crash on every
-  Mac but the build Mac (#17, `Bundle.module`) — reported by the first outside user.
+  Mac but the build Mac (#17, `Bundle.module`) — reported by the first outside user. v0.5.3 (2026-09-28): the same
+  trap in KeyboardShortcuts, a Settings crash (#22); vendored + a release-build guard on any dependency.
 - Covers hero (0.5.1): full-width band + parallax + Quick Look + 56 pt
   rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
   before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).

@@ -15,7 +15,8 @@ let package = Package(
         // the directory name, so the app package could only build from a checkout
         // named `kleoth-app` (every worktree hit this).
         .package(name: "kleoth-app", path: ".."),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0"),
+        // Vendored with a one-line patch: upstream loads its strings via `Bundle.module` (Vendor/KeyboardShortcuts/README.md).
+        .package(path: "Vendor/KeyboardShortcuts"),
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "0.9.0"),
     ],
     targets: [

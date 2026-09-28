@@ -13,8 +13,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"     # the app/ package directory
 CONFIG="${1:-debug}"
 
 # SwiftPM's `Bundle.module` finds a resource bundle only at the .app ROOT or in THIS Mac's build
-# folder, and calls fatalError otherwise: fine here, a crash at launch on every other Mac (issue #17).
-# App code loads resources through `KleothAssets.resources` (Contents/Resources) instead.
+# folder, and calls fatalError otherwise: fine here, a crash on every other Mac (#17 at launch; the
+# vendored KeyboardShortcuts in Settings → General). App code loads resources through
+# `KleothAssets.resources` (Contents/Resources) instead.
 if grep -rnE 'Bundle\.module|bundle: *\.module' "$DIR/Sources" --include='*.swift' | grep -vE '^[^:]+:[0-9]+: *//'; then
     echo "error: Bundle.module in app code — use KleothAssets.url(forResource:withExtension:) (issue #17)" >&2
     exit 1
@@ -25,6 +26,18 @@ swift build --package-path "$DIR" -c "$CONFIG"
 
 BIN="$DIR/.build/$CONFIG/KleothApp"
 APP="$DIR/dist/Kleoth.app"
+
+# The same trap in any DEPENDENCY: a live `Bundle.module` leaves this Mac's build path in the binary
+# (a release build strips the unused ones). Allowed: swift-transformers' Hub, reached only for a
+# tokenizer config without `tokenizer_class`, which WhisperKit's Whisper configs always have.
+if [ "$CONFIG" = release ]; then
+    LIVE="$(strings "$BIN" | grep -E '/\.build/.*\.bundle$' | grep -v '/swift-transformers_Hub\.bundle$' || true)"
+    if [ -n "$LIVE" ]; then
+        echo "error: Bundle.module is live for (a crash on every other Mac):" >&2
+        echo "$LIVE" | sed 's/^/    /' >&2
+        exit 1
+    fi
+fi
 
 echo "==> assembling $APP"
 rm -rf "$APP"
@@ -38,15 +51,18 @@ if [ -f "$DIR/bundle/Kleoth.icns" ]; then
     echo "    bundled app icon Kleoth.icns"
 fi
 
-# The SwiftPM resource bundle (menu-bar glyph, empty-state illustrations, the welcome chime) goes in
-# Contents/Resources, where `KleothAssets.resources` looks (and where a signed app's resources belong).
-RESBUNDLE="$DIR/.build/$CONFIG/KleothApp_KleothApp.bundle"
-if [ ! -d "$RESBUNDLE" ]; then
-    echo "error: $RESBUNDLE is missing — the app would launch without its images" >&2
-    exit 1
-fi
-cp -R "$RESBUNDLE" "$APP/Contents/Resources/"
-echo "    bundled resources $(basename "$RESBUNDLE")"
+# Every SwiftPM resource bundle goes in Contents/Resources, where `KleothAssets.resources` and the
+# vendored KeyboardShortcuts look (and where a signed app's resources belong). These two are required.
+for NAME in KleothApp_KleothApp KeyboardShortcuts_KeyboardShortcuts; do
+    if [ ! -d "$DIR/.build/$CONFIG/$NAME.bundle" ]; then
+        echo "error: $NAME.bundle is missing — the app would run without its images or strings" >&2
+        exit 1
+    fi
+done
+for RESBUNDLE in "$DIR/.build/$CONFIG/"*.bundle; do
+    cp -R "$RESBUNDLE" "$APP/Contents/Resources/"
+    echo "    bundled resources $(basename "$RESBUNDLE")"
+done
 
 echo "==> codesigning"
 KC="$HOME/Library/Keychains/kleoth-codesign.keychain-db"
