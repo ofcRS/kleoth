@@ -6,6 +6,14 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Opening Settings crashed Kleoth on every Mac but the one that built it (#22).** The same trap
+  as #17, one level down: Settings opens on General, whose keyboard-shortcut recorder (Start / stop
+  recording) comes from the KeyboardShortcuts package, which looked for its labels in a folder
+  that exists only on the build Mac. Kleoth now ships a copy of that package that finds them inside
+  the app, and the release build refuses any dependency still looking in the build folder.
+
 ## [0.5.2] — 2026-09-27
 
 ### Fixed
