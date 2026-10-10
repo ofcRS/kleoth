@@ -8,7 +8,7 @@ Keep this file short: commands, architecture, decisions, gotchas. Session narrat
 `docs/SESSION-LOG.md` (archived history) or the design docs under `docs/plans/`, never here.
 
 ## Environment
-macOS 26 (Tahoe), Apple Silicon, Swift 6.3, Xcode 26. Floors: KleothCore/CLI = macOS 13; app = 14.4.
+macOS 26 (Tahoe), Apple Silicon, Swift 6.4, Xcode 27.0 (since 2026-10). Floors: KleothCore/CLI = macOS 13; app = 14.4.
 Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
@@ -252,6 +252,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Adding a KleothCore source file is invisible to a warm `app/.build` until
   `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
 - `Transcriber: Sendable` conformance must be declared in the type's own file.
+- `swift test` fails on every `@Test` with "module 'Testing' has no member named `__SourceBounds`" when Xcode is newer
+  than the Command Line Tools: the compiler takes the macro plugin from Xcode and `Testing.framework` from
+  `/Library/Developer/CommandLineTools`. Fix = install the matching "Command Line Tools for Xcode" (`softwareupdate
+  --list`), not a clean build. `swift build` is unaffected; CI runs the tests either way.
 - Never `Bundle.module`, in app code OR a dependency: SwiftPM's accessor looks only at the `.app` root and at the
   BUILD Mac's `.build` folder, then `fatalError`s — invisible here, a crash on every other Mac (#17 at launch; then
   KeyboardShortcuts' recorder in Settings → General, hence `app/Vendor/KeyboardShortcuts`). App code uses
