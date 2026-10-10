@@ -6,6 +6,13 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Meeting covers are drawn wide.** The meeting page shows its cover as a full-width band, and a
+  square picture showed only its middle third there. New covers are 16:9, with the characters kept
+  in the middle so the small square in the meetings list still shows them. Covers you already have
+  stay as they are; choose New Cover to redraw one wide.
+
 ## [0.5.3] — 2026-09-28
 
 ### Fixed

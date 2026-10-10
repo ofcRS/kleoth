@@ -32,7 +32,7 @@ public struct CoverSceneWriter: Sendable {
     /// A 45-word scene is about 300 characters; the cap only stops a runaway.
     public static let maxSceneCharacters = 400
 
-    /// The scene prompt, revision 4 (2026-09-25). Revision 3 is the look
+    /// The scene prompt, revision 5 (2026-09-28). Revision 3 is the look
     /// test's settled wording (`.scratch/cover-spike/RESULTS.md`, "Settled
     /// wording", approved 2026-09-25): §3.3's rules plus what the test images
     /// showed — things that usually carry printing (clocks, banners, boxes with
@@ -45,8 +45,11 @@ public struct CoverSceneWriter: Sendable {
     /// the topic rather than a re-staged meeting room. The metaphor line names
     /// kinds of action (joined, balanced, mended…), not objects: example
     /// objects came back in every dry-run scene, and covers would converge.
+    /// Revision 5 (2026-09-28) only reshapes the first paragraph: the picture is
+    /// wide now, a banner on the meeting page with a square cut from its centre
+    /// for the list.
     static let systemPrompt = """
-    You write the scene for a small square cover picture of a meeting. You get the meeting's title, its TL;DR and the start of its overview. The picture is decoration for the meeting's row in a list, so it must be gentle, safe and wordless.
+    You write the scene for a wide cover picture of a meeting. You get the meeting's title, its TL;DR and the start of its overview. The picture is decoration: a banner across the top of the meeting's page, and a small square cut from its centre for the meeting's row in a list, so it must be gentle, safe and wordless.
 
     Answer with one JSON object and nothing else:
     {"sensitive": true or false, "style": "animation" | "illustration" | "sketch" | "clay", "scene": "at most 45 English words"}

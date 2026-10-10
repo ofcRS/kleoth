@@ -78,7 +78,7 @@ import Testing
         let lines = text.components(separatedBy: "\n")
         #expect(lines.contains("Use the built-in image_gen tool exactly once to generate one image, then stop."))
         #expect(lines.contains("Do not read, create or edit any files. Do not run shell commands. Do not use any other tool."))
-        #expect(lines.contains("- Output size: 1024x1024 (or the closest the tool supports)."))
+        #expect(lines.contains("- Output size: 1536x1024, landscape (or the closest wide size the tool supports)."))
         #expect(text.contains("\n\nAn otter naps.\n\n"))
         #expect(text.hasSuffix("As your final message output ONLY the absolute path of the generated PNG file, nothing else."))
         #expect(!text.contains("transparent"))

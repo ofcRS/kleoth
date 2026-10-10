@@ -11,13 +11,16 @@ import Foundation
 /// negative once the page has scrolled, positive while it is pulled past its
 /// top (the rubber band).
 public enum CoverHeroGeometry {
-    /// Band width : height. A 2:1 band shows the middle half of a square cover,
-    /// which keeps the "one clear focal scene, centred" the prompt asks for.
+    /// Band width : height. The picture behind the band is taller by the hidden
+    /// `reveal`, so a 16:9 cover loses a little of its sides on a narrow pane and
+    /// of its top and bottom on a wide one; the prompt keeps the subject in the
+    /// middle for both.
     public static let aspect: CGFloat = 2
     /// The narrowest detail pane (440 pt) still gets a band worth looking at.
     public static let minHeight: CGFloat = 200
-    /// Wide panes stop here, so the band stays a readable header; past a 1,200 pt pane the
-    /// crop is a little under a third of the square (1,400 pt shows 29 %).
+    /// Wide panes stop here, so the band stays a readable header; a 1,400 pt pane
+    /// shows the middle 51 % of a 16:9 cover's height (29 % of a square one's —
+    /// covers drawn before 2026-09-28, or a dropped-in `cover.png`).
     public static let maxHeight: CGFloat = 400
     /// Extra picture above and below the band, hidden at rest, that the
     /// parallax slides into — so the slide never uncovers a gap, whatever the

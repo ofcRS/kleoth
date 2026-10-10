@@ -5,45 +5,63 @@ import UniformTypeIdentifiers
 
 /// Turns whatever an image engine returns into the one file History shows
 /// (design doc 2026-09-24 §3.4). Engines answer with PNG, JPEG or WebP at
-/// 1024–1254 px, and not always square; `cover.jpg` is always a square of at
-/// most 1024 px at JPEG 0.85 (about 150–300 KB) with none of the source's
-/// metadata (no EXIF, GPS, IPTC or TIFF), so every
-/// cover looks and weighs the same whichever engine drew it.
+/// 1024–1536 px, and not always in the shape asked for; `cover.jpg` is always
+/// 16:9, at most 1536 px wide, at JPEG 0.85 (about 200–450 KB) with none of the
+/// source's metadata (no EXIF, GPS, IPTC or TIFF), so every cover looks and
+/// weighs the same whichever engine drew it. Wide because the meeting page shows
+/// it as a full-width band (§10 landscape addendum, 2026-09-28): a square cover
+/// showed only its middle third there.
 ///
 /// ImageIO and Core Graphics only (both on macOS 13), no AppKit: the CLI
 /// normalizes too.
 public enum CoverImageFile {
-    /// The longest side kept. Smaller pictures are never upscaled.
-    public static let maxPixelSize = 1024
+    /// Width : height of every `cover.jpg`.
+    public static let aspectWidth = 16
+    public static let aspectHeight = 9
+    /// `aspectWidth / aspectHeight`, for views that size a thumbnail by its short side.
+    public static let aspect = Double(aspectWidth) / Double(aspectHeight)
+    /// The widest picture kept: Codex's 1536 px. Smaller pictures are never upscaled.
+    public static let maxPixelWidth = 1536
     public static let jpegQuality = 0.85
 
-    /// PNG/JPEG/WebP → centre-cropped square, ≤ 1024 px, JPEG 0.85, no metadata (ImageIO).
+    /// PNG/JPEG/WebP → the largest centred 16:9 crop, ≤ 1536 px wide, JPEG 0.85,
+    /// no metadata (ImageIO). A wider source loses columns on both sides, a
+    /// taller one (Codex's 3:2, or a square from an engine that ignored the
+    /// size) rows off the top and bottom.
     ///
     /// The picture is redrawn into a fresh sRGB bitmap rather than re-encoded
     /// from the source, so nothing of the source's EXIF/GPS/IPTC/TIFF can ride
     /// along; the only metadata left is ImageIO's own bare `{Exif}` (colour
     /// space and pixel dimensions). Throws `CoverError.unreadableImage` for
     /// bytes ImageIO can't decode, and for an output whose header doesn't read
-    /// back as the target square.
+    /// back as the target size.
     ///
     /// EXIF orientation is not applied: no engine emits it, and a user's own
     /// `cover.png` bypasses `normalize`.
     public static func normalize(_ data: Data) throws -> Data {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw CoverError.unreadableImage }
-        let side = min(image.width, image.height)
-        guard side > 0 else { throw CoverError.unreadableImage }
-        let crop = CGRect(x: (image.width - side) / 2, y: (image.height - side) / 2, width: side, height: side)
-        guard let square = image.cropping(to: crop) else { throw CoverError.unreadableImage }
-        let target = min(side, maxPixelSize)
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: target, height: target, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        // Integer maths: a source 16:9 up to rounding loses only those few rows
+        // (OpenRouter's 1344×768 keeps 1344×756).
+        let wider = image.width * aspectHeight >= image.height * aspectWidth
+        let cropWidth = wider ? image.height * aspectWidth / aspectHeight : image.width
+        let cropHeight = wider ? image.height : image.width * aspectHeight / aspectWidth
+        guard cropWidth > 0, cropHeight > 0 else { throw CoverError.unreadableImage }
+        let crop = CGRect(x: (image.width - cropWidth) / 2, y: (image.height - cropHeight) / 2,
+                          width: cropWidth, height: cropHeight)
+        guard let cropped = image.cropping(to: crop) else { throw CoverError.unreadableImage }
+        let targetWidth = min(cropWidth, maxPixelWidth)
+        let targetHeight = targetWidth == cropWidth ? cropHeight : targetWidth * aspectHeight / aspectWidth
+        guard targetHeight > 0,
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: targetWidth, height: targetHeight, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
         else { throw CoverError.unreadableImage }
+        let target = CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight)
         context.interpolationQuality = .high
         context.setFillColor(CGColor(gray: 1, alpha: 1))        // a transparent PNG flattens onto white — JPEG has no alpha
-        context.fill(CGRect(x: 0, y: 0, width: target, height: target))
-        context.draw(square, in: CGRect(x: 0, y: 0, width: target, height: target))
+        context.fill(target)
+        context.draw(cropped, in: target)
         guard let scaled = context.makeImage() else { throw CoverError.unreadableImage }
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
@@ -59,7 +77,7 @@ public enum CoverImageFile {
         guard CGImageDestinationFinalize(destination) else { throw CoverError.unreadableImage }
         // Finalize's true is not proof of a good file (see above), so read the
         // header back: a broken JPEG must fail here, not become cover.jpg.
-        guard let written = pixelSize(of: output as Data), written.width == target, written.height == target
+        guard let written = pixelSize(of: output as Data), written.width == targetWidth, written.height == targetHeight
         else { throw CoverError.unreadableImage }
         return output as Data
     }

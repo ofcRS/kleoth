@@ -201,7 +201,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   stretch, none under Reduce Motion; `visualEffect` + `.scrollView`, macOS 14), title + TL;DR under it, Quick Look
   on click, the menu on right-click / `…` or a header chip without a picture; rows 56 pt only with a picture or a
   job; a demo launch shows covers (`showsCovers`) and draws none. Design: `docs/plans/2026-09-24-meeting-illustrations.md`
-  (§10 addendum for the full-width cover).
+  (§10 addendum for the full-width cover). Wide since 2026-09-28 (§10 landscape addendum): every `cover.jpg` is a
+  centred 16:9 crop ≤ 1536 px wide (OpenRouter `aspect_ratio` 16:9, Codex and local 1536×1024), the prompt keeps
+  the characters together in the centre, and the 56 pt tile is a centre square sized by its SHORT side. Older
+  square covers still show; New Cover redraws one wide.
 - **Meetings in the pill (2026-09-25):** the meeting bar shows for EVERY meeting (any start path; dictation off
   or the pill hidden for the hour too — the hot-mic rule). `.saving` is owner-checked (both captures use it);
   one queued confirmation slot with its owner. The pill's Meeting button just calls `start()` (consent = the
@@ -324,7 +327,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
   before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).
   Not yet human-verified: the Quick Look click, Reduce Motion, the rubber band, a window resize, "Show scroll bars:
-  Always", the chip states with Covers on, macOS 14–15. Follow-ups: landscape covers (needs a paid look test), a
+  Always", the chip states with Covers on, macOS 14–15. Follow-ups: a
   bottom-pinned mini-player, a cover in the README demo data.
 - Context-aware dictation (merged for 0.5.1; design `docs/plans/2026-09-24-dictation-context.md`): the field's
   selection + 1,500/500 chars around the cursor go to OpenRouter/Claude Code with the words; a selection merges in

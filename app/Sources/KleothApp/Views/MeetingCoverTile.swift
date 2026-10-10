@@ -4,11 +4,11 @@ import ImageIO
 import KleothCore
 
 /// ImageIO thumbnails of meeting covers, keyed by path + mtime + pixel size
-/// (design doc 2026-09-24 §4.4). A cover is a ~1024 px JPEG and a History row
+/// (design doc 2026-09-24 §4.4). A cover is a ≤ 1536 px 16:9 JPEG and a History row
 /// shows it at 56 pt, so decoding the full picture for every row would be
 /// wasted work; `CGImageSourceCreateThumbnailAtIndex` decodes straight to the
 /// size asked for. The meeting page's band asks for the full file
-/// (`pixelSize` ≥ 1024), with the same key scheme. The mtime is in the key
+/// (`pixelSize` ≥ 1536), with the same key scheme. The mtime is in the key
 /// because New Cover writes the same `cover.jpg` path: a new picture is a new
 /// key, never a stale hit.
 ///
@@ -51,8 +51,12 @@ struct MeetingCoverTile: View {
     var body: some View {
         let isBusy = covers.isBusy(meeting.directory)
         let thumbnail = meeting.coverImageURL.flatMap {
-            // 2× for Retina: a 56 pt tile needs 112 px.
-            CoverThumbnailCache.thumbnail(url: $0, modifiedAt: meeting.coverModifiedAt, pixelSize: Int(size * 2))
+            // 2× for Retina: a 56 pt tile needs 112 px on its SHORT side, and the
+            // cache sizes the long one — a 16:9 cover needs 200 px across, or the
+            // tile's centre square is upscaled from 63 px. A square cover gets a
+            // little more than it needs.
+            CoverThumbnailCache.thumbnail(url: $0, modifiedAt: meeting.coverModifiedAt,
+                                          pixelSize: Int((size * 2 * CoverImageFile.aspect).rounded(.up)))
         }
 
         ZStack {

@@ -9,9 +9,10 @@ import Testing
         for style in CoverStyle.allCases {
             let prompt = CoverPrompt.imagePrompt(scene: "an otter naps", style: style)
 
-            #expect(prompt.hasPrefix("A square cover illustration for a meeting. an otter naps "), "\(style)")
+            #expect(prompt.hasPrefix("A wide 16:9 cover illustration for a meeting. an otter naps "), "\(style)")
             #expect(prompt.contains("Style: \(style.promptSentence)"), "\(style)")
-            #expect(prompt.contains("it must read as a small thumbnail."), "\(style)")
+            #expect(prompt.contains("as a small square thumbnail cut from its centre."), "\(style)")
+            #expect(!prompt.contains("square cover"), "\(style)")
             #expect(prompt.hasSuffix(CoverPrompt.guardrail), "\(style)")
         }
     }

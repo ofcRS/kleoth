@@ -70,7 +70,7 @@ public struct ImageGenerationClient: CoverImageGenerating {
         }
     }
 
-    /// Asks for one square picture and returns its bytes and reported cost.
+    /// Asks for one wide picture and returns its bytes and reported cost.
     ///
     /// Throws, besides the transport's own errors:
     /// - `ProviderError.unreachable(url:)` when nothing listens at a local
@@ -141,18 +141,21 @@ public struct ImageGenerationClient: CoverImageGenerating {
     /// The request body. OpenRouter takes an aspect ratio and a resolution
     /// tier and can be asked for JPEG (smaller to download); the OpenAI shape
     /// takes a pixel size and must be asked for base64, or it may answer with
-    /// a URL. Both ask for one picture.
+    /// a URL. Both ask for one wide picture, which `CoverImageFile.normalize`
+    /// crops to 16:9: OpenRouter answers 16:9 itself; 1536×1024 is the one
+    /// landscape size OpenAI's own image models take, and Flux takes any
+    /// multiple of 16 (about 1.5× the pixels, and the time, of 1024×1024).
     static func body(prompt: String, model: String, dialect: Dialect) -> [String: Any] {
         switch dialect {
         case .openRouter:
             return [
                 "model": model, "prompt": prompt, "n": 1,
-                "aspect_ratio": "1:1", "resolution": "1K", "output_format": "jpeg",
+                "aspect_ratio": "16:9", "resolution": "1K", "output_format": "jpeg",
             ]
         case .openAICompatible:
             return [
                 "model": model, "prompt": prompt, "n": 1,
-                "size": "1024x1024", "response_format": "b64_json",
+                "size": "1536x1024", "response_format": "b64_json",
             ]
         }
     }
