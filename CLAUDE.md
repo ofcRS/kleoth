@@ -255,7 +255,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - `swift test` fails on every `@Test` with "module 'Testing' has no member named `__SourceBounds`" when Xcode is newer
   than the Command Line Tools: the compiler takes the macro plugin from Xcode and `Testing.framework` from
   `/Library/Developer/CommandLineTools`. Fix = install the matching "Command Line Tools for Xcode" (`softwareupdate
-  --list`), not a clean build. `swift build` is unaffected; CI runs the tests either way.
+  --list`) AND then `rm -rf .build` (a warm module cache keeps the old framework). `swift build` is unaffected; CI runs
+  the tests either way.
 - Never `Bundle.module`, in app code OR a dependency: SwiftPM's accessor looks only at the `.app` root and at the
   BUILD Mac's `.build` folder, then `fatalError`s — invisible here, a crash on every other Mac (#17 at launch; then
   KeyboardShortcuts' recorder in Settings → General, hence `app/Vendor/KeyboardShortcuts`). App code uses
