@@ -102,9 +102,9 @@ struct MeetingCoverBand: View {
     /// Set on click; `MeetingDetailView` shows it with `.quickLookPreview`.
     @Binding var previewURL: URL?
 
-    /// One decode per picture, whatever the pane's width: the source is a
-    /// 1024 px JPEG (ImageIO never scales a thumbnail past its source), and a
-    /// 2× pane up to 1024 pt wide gets every pixel. A size that followed the
+    /// One decode per picture, whatever the pane's width: the source is at
+    /// most a 1536 px JPEG (ImageIO never scales a thumbnail past its source),
+    /// so the full file is decoded, and any pane gets every pixel there is. A size that followed the
     /// width would decode again at every step of a live resize, each step a
     /// new cache key.
     private static let bandPixelSize = 2048

@@ -98,7 +98,7 @@ private final class HangingSceneClient: ChatCompleting, @unchecked Sendable {
 @Suite struct CoverDrawingTests {
     private let good = #"{"sensitive":false,"style":"sketch","scene":"Two otters stack pebbles."}"#
     private let sensitive = #"{"sensitive":true,"style":"sketch","scene":""}"#
-    private let png = CoverTestImages.png(width: 64, height: 64)
+    private let png = CoverTestImages.png(width: 64, height: 36)
     private let now: @Sendable () -> Date = { Date(timeIntervalSince1970: 1_790_000_000) }
     private let store = CoverStore()
 
@@ -198,7 +198,7 @@ private final class HangingSceneClient: ChatCompleting, @unchecked Sendable {
         }
         let jpeg = try Data(contentsOf: dir.appendingPathComponent("cover.jpg"))
         let size = try #require(CoverImageFile.pixelSize(of: jpeg))
-        #expect(size.width == 64 && size.height == 64)
+        #expect(size.width == 64 && size.height == 36)
         #expect(record.state == .drawn)
         #expect(record.engine == "openrouter")
         #expect(record.model == "m")

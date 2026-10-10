@@ -6,21 +6,21 @@ import UniformTypeIdentifiers
 @testable import KleothCore
 
 /// Whatever an image engine returns becomes one `cover.jpg` (design doc
-/// 2026-09-24 §3.4): a centre-cropped square of at most 1024 px, JPEG 0.85,
-/// with no EXIF/GPS/IPTC/TIFF metadata.
+/// 2026-09-24 §3.4, §10 landscape addendum): a centre-cropped 16:9 picture at
+/// most 1536 px wide, JPEG 0.85, with no EXIF/GPS/IPTC/TIFF metadata.
 @Suite struct CoverImageFileTests {
     private static let red = CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
     private static let green = CGColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
     private static let blue = CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)
 
-    /// The output is a JPEG exactly `side`×`side`.
-    private func expectSquareJPEG(
-        _ data: Data, side: Int, sourceLocation: SourceLocation = #_sourceLocation
+    /// The output is a JPEG exactly `width`×`height`.
+    private func expectJPEG(
+        _ data: Data, width: Int, height: Int, sourceLocation: SourceLocation = #_sourceLocation
     ) throws {
         #expect(CoverTestImages.imageType(of: data) == "public.jpeg", sourceLocation: sourceLocation)
         let size = try #require(CoverImageFile.pixelSize(of: data), sourceLocation: sourceLocation)
-        #expect(size.width == side, sourceLocation: sourceLocation)
-        #expect(size.height == side, sourceLocation: sourceLocation)
+        #expect(size.width == width, sourceLocation: sourceLocation)
+        #expect(size.height == height, sourceLocation: sourceLocation)
     }
 
     /// A JPEG re-encoding of `png` that carries every metadata dictionary a
@@ -45,33 +45,58 @@ import UniformTypeIdentifiers
         return output as Data
     }
 
-    @Test func largePNGBecomesA1024SquareJPEG() throws {
-        let normalized = try CoverImageFile.normalize(CoverTestImages.png(width: 1254, height: 1254))
+    @Test func largeWidePNGBecomesA1536By864JPEG() throws {
+        let normalized = try CoverImageFile.normalize(CoverTestImages.png(width: 2048, height: 1152))
 
-        try expectSquareJPEG(normalized, side: 1024)
-        #expect(normalized.count < 400_000)
+        try expectJPEG(normalized, width: 1536, height: 864)
+        #expect(normalized.count < 600_000)
     }
 
-    @Test func wideImageIsCentreCropped() throws {
-        let wide = CoverTestImages.png(width: 1536, height: 1024, bands: [Self.red, Self.green, Self.blue])
+    /// What OpenRouter (`aspect_ratio: 16:9`) and a Flux server answer with.
+    @Test func openRouterSizeIsCroppedToExactly16By9() throws {
+        let normalized = try CoverImageFile.normalize(CoverTestImages.png(width: 1344, height: 768))
+
+        try expectJPEG(normalized, width: 1344, height: 756)
+    }
+
+    /// What Codex `image_gen` answers with: 3:2, so rows come off top and bottom.
+    @Test func threeByTwoImageLosesRowsNotColumns() throws {
+        let normalized = try CoverImageFile.normalize(CoverTestImages.png(width: 1536, height: 1024))
+
+        try expectJPEG(normalized, width: 1536, height: 864)
+    }
+
+    @Test func extraWideImageIsCentreCropped() throws {
+        let wide = CoverTestImages.png(width: 3072, height: 864, bands: [Self.red, Self.green, Self.blue])
 
         let normalized = try CoverImageFile.normalize(wide)
 
-        try expectSquareJPEG(normalized, side: 1024)
-        // The crop keeps source columns 256…1280: the last third of red, all of
-        // green, the first third of blue.
-        let left = try #require(CoverTestImages.pixel(in: normalized, x: 8, y: 512))
-        let middle = try #require(CoverTestImages.pixel(in: normalized, x: 512, y: 512))
-        let right = try #require(CoverTestImages.pixel(in: normalized, x: 1016, y: 512))
+        try expectJPEG(normalized, width: 1536, height: 864)
+        // The crop keeps source columns 768…2304: the last quarter of red, all of
+        // green, the first quarter of blue.
+        let left = try #require(CoverTestImages.pixel(in: normalized, x: 8, y: 432))
+        let middle = try #require(CoverTestImages.pixel(in: normalized, x: 768, y: 432))
+        let right = try #require(CoverTestImages.pixel(in: normalized, x: 1528, y: 432))
         #expect(left.r > 180 && left.g < 90 && left.b < 90)
         #expect(middle.g > 180 && middle.r < 90 && middle.b < 90)
         #expect(right.b > 180 && right.r < 90 && right.g < 90)
     }
 
-    @Test func smallImageIsNotUpscaled() throws {
-        let normalized = try CoverImageFile.normalize(CoverTestImages.png(width: 640, height: 640))
+    /// An engine that ignores the size and answers square keeps its full width.
+    @Test func squareImageKeepsItsWidth() throws {
+        let square = CoverTestImages.png(width: 1024, height: 1024, bands: [Self.red, Self.green, Self.blue])
 
-        try expectSquareJPEG(normalized, side: 640)
+        let normalized = try CoverImageFile.normalize(square)
+
+        try expectJPEG(normalized, width: 1024, height: 576)
+        let left = try #require(CoverTestImages.pixel(in: normalized, x: 8, y: 288))
+        #expect(left.r > 180 && left.g < 90 && left.b < 90)
+    }
+
+    @Test func smallImageIsNotUpscaled() throws {
+        let normalized = try CoverImageFile.normalize(CoverTestImages.png(width: 640, height: 360))
+
+        try expectJPEG(normalized, width: 640, height: 360)
     }
 
     @Test func garbageThrowsUnreadableImage() {
@@ -115,17 +140,17 @@ import UniformTypeIdentifiers
 
         let normalized = try CoverImageFile.normalize(CoverTestImages.webp16)
 
-        try expectSquareJPEG(normalized, side: 16)
-        let pixel = try #require(CoverTestImages.pixel(in: normalized, x: 8, y: 8))
+        try expectJPEG(normalized, width: 16, height: 9)
+        let pixel = try #require(CoverTestImages.pixel(in: normalized, x: 8, y: 4))
         #expect(pixel.g > 120 && pixel.r < 90 && pixel.b < 130, "pixel \(pixel)")
     }
 
     @Test func jpegInputIsAccepted() throws {
-        let jpeg = try CoverImageFile.normalize(CoverTestImages.png(width: 1254, height: 1254))
+        let jpeg = try CoverImageFile.normalize(CoverTestImages.png(width: 2048, height: 1152))
         #expect(CoverTestImages.imageType(of: jpeg) == "public.jpeg")
 
         let normalized = try CoverImageFile.normalize(jpeg)
 
-        try expectSquareJPEG(normalized, side: 1024)
+        try expectJPEG(normalized, width: 1536, height: 864)
     }
 }

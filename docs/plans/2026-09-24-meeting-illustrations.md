@@ -1076,10 +1076,36 @@ its reason:
 
 *Follow-ups, not built*
 
-- Landscape (16:9) covers: a paid look test (OpenRouter `aspect_ratio`, Codex `image_gen` sizes, and whether "one
-  close moment" survives the format), a change to `CoverImageFile.normalize` (it centre-crops to a square) and a
-  rule for the 56 pt row tile (crop or letterbox).
 - A bottom-pinned mini-player (`safeAreaInset(edge: .bottom)`), now that the player scrolls away with the page.
 - A cover in the README demo data and screenshot: `make-demo-data.ts` draws none, since that is a paid call.
 - The band's rest position on macOS 14–15: probed on macOS 26 only. If those report the toolbar inset inside
   `.scrollView`, the band would rest slightly stretched (about 1.16 at a 330 pt band).
+
+**Addendum (2026-09-28): landscape covers.** The full-width band showed only the middle third of a square cover
+(the user, on a real meeting: the picture should be wide, not a square cropped by the layout). Built on
+`feat/landscape-covers`; this replaces the landscape follow-up above.
+
+- *Shape.* `CoverImageFile.normalize` keeps the largest centred 16:9 crop (integer maths; a wider source loses
+  columns, a taller one rows) at most `maxPixelWidth` = 1536 px wide, never upscaled; `aspectWidth`/`aspectHeight`
+  /`aspect` are public. The read-back checks the exact target size. A dropped-in `cover.png` still bypasses it.
+- *Engines.* OpenRouter `aspect_ratio: "16:9"` (answers 1376×768 → 1365×768); the OpenAI-compatible body asks
+  `1536x1024`, the one landscape size OpenAI's own image models take (Flux takes any multiple of 16; about 1.5×
+  the pixels of 1024×1024, so a local cover takes longer — not measured, no local server on this Mac); Codex is
+  asked for "1536x1024, landscape" (answers 1536×1024 → 1536×864).
+- *Prompt (§3.4).* "A wide 16:9 cover illustration for a meeting. ‹scene› Style: ‹sentence› One clear focal scene:
+  the characters close together in the centre of the picture, fully in view with their heads well clear of the top
+  edge, and open, simple, uncluttered background on both sides that carries on to the left and right edges; it
+  must read as a wide banner and as a small square thumbnail cut from its centre. The picture fills the whole frame
+  edge to edge: no border, mat, card or vignette. ‹guardrail›". Sketch's washes "fill the whole picture". Scene
+  prompt revision 5: only the first paragraph, which now describes a wide banner with a square cut from its centre.
+- *Tile.* Still a centre square (no letterbox): `MeetingCoverTile` asks the thumbnail cache for
+  `size × 2 × aspect` px on the long side, so the square's short side keeps 2× pixels. `CoverHeroGeometry` is
+  unchanged (2:1 band, 200–400 pt): at a 1,400 pt pane the band shows the middle 51 % of a 16:9 cover's height.
+- *Look test (paid, the user's go).* The user's meetings' summaries, copied to a scratch folder (the real folders
+  untouched), scene via Claude Code: round 1 = 6 OpenRouter (one per style + 2 auto, $0.20) + 3 Codex; round 2,
+  after "in the middle third of the width" became "close together in the centre", 3 OpenRouter ($0.10) + 2 Codex.
+  Judged as the band at 1,400 and 800 pt panes and as the square tile. Every picture filled the band; no humans; no
+  frame or mat. Round 1 often put two characters at opposite edges, so the tile halved one; round 2 kept them
+  together in 4 of 5. Lettering: one OpenRouter picture (a sorting-by-size scene) wrote "SMALL/BIG ACORNS" on
+  baskets — the same leak the square look test saw (5 of 23 there), not the format's; Codex none. Scenes still
+  break "one to three characters" now and then (one had four) and lean on sorting metaphors; both predate this.

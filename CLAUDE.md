@@ -8,7 +8,7 @@ Keep this file short: commands, architecture, decisions, gotchas. Session narrat
 `docs/SESSION-LOG.md` (archived history) or the design docs under `docs/plans/`, never here.
 
 ## Environment
-macOS 26 (Tahoe), Apple Silicon, Swift 6.3, Xcode 26. Floors: KleothCore/CLI = macOS 13; app = 14.4.
+macOS 26 (Tahoe), Apple Silicon, Swift 6.4, Xcode 27.0 (since 2026-10). Floors: KleothCore/CLI = macOS 13; app = 14.4.
 Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
@@ -201,7 +201,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   stretch, none under Reduce Motion; `visualEffect` + `.scrollView`, macOS 14), title + TL;DR under it, Quick Look
   on click, the menu on right-click / `…` or a header chip without a picture; rows 56 pt only with a picture or a
   job; a demo launch shows covers (`showsCovers`) and draws none. Design: `docs/plans/2026-09-24-meeting-illustrations.md`
-  (§10 addendum for the full-width cover).
+  (§10 addendum for the full-width cover). Wide since 2026-09-28 (§10 landscape addendum): every `cover.jpg` is a
+  centred 16:9 crop ≤ 1536 px wide (OpenRouter `aspect_ratio` 16:9, Codex and local 1536×1024), the prompt keeps
+  the characters together in the centre, and the 56 pt tile is a centre square sized by its SHORT side. Older
+  square covers still show; New Cover redraws one wide.
 - **Meetings in the pill (2026-09-25):** the meeting bar shows for EVERY meeting (any start path; dictation off
   or the pill hidden for the hour too — the hot-mic rule). `.saving` is owner-checked (both captures use it);
   one queued confirmation slot with its owner. The pill's Meeting button just calls `start()` (consent = the
@@ -249,6 +252,11 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Adding a KleothCore source file is invisible to a warm `app/.build` until
   `app/.build/arm64-apple-macosx/debug/description.json` is deleted.
 - `Transcriber: Sendable` conformance must be declared in the type's own file.
+- `swift test` fails on every `@Test` with "module 'Testing' has no member named `__SourceBounds`" when Xcode is newer
+  than the Command Line Tools: the compiler takes the macro plugin from Xcode and `Testing.framework` from
+  `/Library/Developer/CommandLineTools`. Fix = install the matching "Command Line Tools for Xcode" (`softwareupdate
+  --list`) AND then `rm -rf .build` (a warm module cache keeps the old framework). `swift build` is unaffected; CI runs
+  the tests either way.
 - Never `Bundle.module`, in app code OR a dependency: SwiftPM's accessor looks only at the `.app` root and at the
   BUILD Mac's `.build` folder, then `fatalError`s — invisible here, a crash on every other Mac (#17 at launch; then
   KeyboardShortcuts' recorder in Settings → General, hence `app/Vendor/KeyboardShortcuts`). App code uses
@@ -324,7 +332,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   rows + scene prompt rev. 4 + slash/temp fixes. Verified: core tests, both builds, `illustrate --dry-run`
   before/after. Still to film: the demo-mode frames (`KLEOTH_DEMO_FRAMES`: light/dark × 3 offsets, a no-cover page).
   Not yet human-verified: the Quick Look click, Reduce Motion, the rubber band, a window resize, "Show scroll bars:
-  Always", the chip states with Covers on, macOS 14–15. Follow-ups: landscape covers (needs a paid look test), a
+  Always", the chip states with Covers on, macOS 14–15. Follow-ups: a
   bottom-pinned mini-player, a cover in the README demo data.
 - Context-aware dictation (merged for 0.5.1; design `docs/plans/2026-09-24-dictation-context.md`): the field's
   selection + 1,500/500 chars around the cursor go to OpenRouter/Claude Code with the words; a selection merges in

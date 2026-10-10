@@ -18,8 +18,9 @@ public enum CoverStyle: String, Codable, CaseIterable, Sendable, Identifiable {
 
     /// The sentence after "Style:" in the image prompt (design doc §3.4, as
     /// settled by the look test on 2026-09-25: Sketch's washes now fill the
-    /// square, because "on warm off-white paper" drew a paper margin in 3 of 4
-    /// sketches). The style lives in the prompt, not in the scene: the scene
+    /// picture, because "on warm off-white paper" drew a paper margin in 3 of 4
+    /// sketches; "the square" became "the whole picture" when covers went wide
+    /// on 2026-09-28). The style lives in the prompt, not in the scene: the scene
     /// step is told to describe only what is visible, so one scene can be
     /// redrawn in any style.
     public var promptSentence: String {
@@ -29,7 +30,7 @@ public enum CoverStyle: String, Codable, CaseIterable, Sendable, Identifiable {
         case .illustration:
             return "flat 2D storybook illustration, simple rounded shapes, soft pastel palette, subtle paper grain, clean outlines."
         case .sketch:
-            return "friendly hand-drawn pencil sketch with light watercolour washes that fill the square, warm off-white paper tone."
+            return "friendly hand-drawn pencil sketch with light watercolour washes that fill the whole picture, warm off-white paper tone."
         case .clay:
             return "handmade clay-and-felt miniature diorama, stop-motion look, tactile textures, soft studio light."
         }

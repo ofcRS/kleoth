@@ -87,7 +87,7 @@ import FoundationNetworking
         #expect(body["model"] as? String == "google/gemini-3.1-flash-lite-image")
         #expect(body["prompt"] as? String == "p")
         #expect(body["n"] as? Int == 1)
-        #expect(body["aspect_ratio"] as? String == "1:1")
+        #expect(body["aspect_ratio"] as? String == "16:9")
         #expect(body["resolution"] as? String == "1K")
         #expect(body["output_format"] as? String == "jpeg")
         #expect(body["provider"] == nil)
@@ -161,7 +161,7 @@ import FoundationNetworking
         #expect(body["model"] as? String == "x/flux2-klein")
         #expect(body["prompt"] as? String == "p")
         #expect(body["n"] as? Int == 1)
-        #expect(body["size"] as? String == "1024x1024")
+        #expect(body["size"] as? String == "1536x1024")
         #expect(body["response_format"] as? String == "b64_json")
     }
 

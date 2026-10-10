@@ -96,7 +96,7 @@ public struct CodexImageClient: CoverImageGenerating {
         return args
     }
 
-    /// The /gpt-images wrapper (`gpt-images.ts` `wrap()`) for a square, opaque
+    /// The /gpt-images wrapper (`gpt-images.ts` `wrap()`) for a landscape, opaque
     /// job with no reference images. The image prompt goes in verbatim — only
     /// trimmed, as `wrap()` trims — between the instructions that keep the
     /// agent to one `image_gen` call and a bare path as its answer.
@@ -107,7 +107,7 @@ public struct CodexImageClient: CoverImageGenerating {
             "Do not ask questions; if something is ambiguous, follow the prompt as written.",
             "",
             "Requirements:",
-            "- Output size: 1024x1024 (or the closest the tool supports).",
+            "- Output size: 1536x1024, landscape (or the closest wide size the tool supports).",
             "",
             "Image prompt (follow it verbatim; do not add subjects, text or props):",
             "",
