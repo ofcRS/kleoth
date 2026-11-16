@@ -196,6 +196,24 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // The updater's end-to-end probe (app/updater-e2e.sh runs it): Sparkle's real updater
+        // against a COPY of the app and a feed of your choosing (a local appcast + signed DMG),
+        // with a user driver that prints. It installs over the copy (not running, so at once);
+        // refuses /Applications and dev.kleoth.app; never relaunches.
+        //   updatecheck <copy/Kleoth.app> [--feed <url>] | --compare <a> <b>
+        .executableTarget(
+            name: "updatecheck",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ],
+            // SwiftPM copies Sparkle.framework next to the binary but gives this target no rpath to it.
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path"]),
+            ]
+        ),
         // The capture lanes' file and format logic, on synthetic buffers: no
         // microphone, no TCC grant.   swift test --package-path app
         .testTarget(
