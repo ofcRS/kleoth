@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import Accelerate
 
 /// Helpers for producing AAC encoder settings used when writing `.m4a` files,
 /// and for constructing matching `AVAudioFormat` values.
@@ -89,9 +90,13 @@ public enum AudioFormat {
     /// still refuses the (clamped) bit rate — an input format the range query
     /// did not anticipate — it retries once with no bit rate at all, letting
     /// the encoder pick its own, so a capture never fails on bit rate alone.
+    ///
+    /// The file never has more than two channels (``fileChannels(forSource:)``):
+    /// a source with more is written mono, and ``TapWriter`` mixes it down.
     public static func openAACFile(
         at url: URL, sampleRate: Double, channels: Int, bitRate: Int = defaultBitRate
     ) throws -> AVAudioFile {
+        let channels = fileChannels(forSource: channels)
         var settings = aacSettings(sampleRate: sampleRate, channels: channels, bitRate: bitRate)
         do {
             return try AVAudioFile(forWriting: url, settings: settings)
@@ -99,6 +104,19 @@ public enum AudioFormat {
             settings.removeValue(forKey: AVEncoderBitRateKey)
             return try AVAudioFile(forWriting: url, settings: settings)
         }
+    }
+
+    /// How many channels a capture file gets for a source of `channels`: one or
+    /// two as they are, anything wider mono.
+    ///
+    /// A MacBook's built-in microphone array can report THREE channels (seen on
+    /// macOS 27 with a Bluetooth headset as the output, 3 ch / 44.1 kHz). The
+    /// AAC encoder opens a 3-channel file without complaint and then refuses
+    /// every write ('!dat'), which left a 28-byte `mic.m4a` and a meeting that
+    /// could not be combined or transcribed (2026-11-16). A microphone's extra
+    /// channels are the same voice from other capsules, so mono loses nothing.
+    public static func fileChannels(forSource channels: Int) -> Int {
+        channels > 2 ? 1 : max(1, channels)
     }
 
     /// A standard 32-bit float, non-interleaved PCM format for processing
@@ -182,6 +200,9 @@ final class TapWriter: @unchecked Sendable {
     let sourceFormat: AVAudioFormat
     private let converter: AVAudioConverter?
     private let scratch: AVAudioPCMBuffer?
+    /// Set for a source wider than two channels: every tap buffer is averaged
+    /// to mono before the converter or the file sees it (``MonoDownmix``).
+    private let downmix: MonoDownmix?
 
     /// - Parameters:
     ///   - file: the open destination; its `processingFormat` is the target.
@@ -193,13 +214,23 @@ final class TapWriter: @unchecked Sendable {
         self.file = file
         self.sourceFormat = sourceFormat
         let target = file.processingFormat
-        if Self.matches(sourceFormat, target) {
+        // What the converter (or the file) is fed: the tap's own format, or
+        // the mono mix of a source wider than two channels.
+        var feed = sourceFormat
+        if MonoDownmix.isNeeded(for: sourceFormat) {
+            guard let mix = MonoDownmix(source: sourceFormat, bufferSize: bufferSize) else { return nil }
+            downmix = mix
+            feed = mix.format
+        } else {
+            downmix = nil
+        }
+        if Self.matches(feed, target) {
             converter = nil
             scratch = nil
             return
         }
-        guard let converter = AVAudioConverter(from: sourceFormat, to: target) else { return nil }
-        let ratio = target.sampleRate / max(sourceFormat.sampleRate, 1)
+        guard let converter = AVAudioConverter(from: feed, to: target) else { return nil }
+        let ratio = target.sampleRate / max(feed.sampleRate, 1)
         let capacity = AVAudioFrameCount((Double(bufferSize) * 4 * ratio).rounded(.up)) + 1024
         guard let scratch = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
         self.converter = converter
@@ -227,7 +258,13 @@ final class TapWriter: @unchecked Sendable {
     /// Writes one tap buffer. Returns the number of frames appended to the
     /// file **at the file's sample rate**, so callers can derive a duration
     /// that stays right across a format change.
-    func write(_ buffer: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+    func write(_ tapBuffer: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+        var buffer = tapBuffer
+        if let downmix {
+            guard let mono = downmix.mix(tapBuffer) else { throw ChannelAudio.AudioError.formatUnavailable }
+            guard mono.frameLength > 0 else { return 0 }
+            buffer = mono
+        }
         guard let converter, let scratch else {
             try file.write(from: buffer)
             return buffer.frameLength
@@ -252,6 +289,73 @@ final class TapWriter: @unchecked Sendable {
         guard scratch.frameLength > 0 else { return 0 }
         try file.write(from: scratch)
         return scratch.frameLength
+    }
+}
+
+/// Averages a microphone wider than two channels down to mono, on the render
+/// thread, into a buffer allocated up front.
+///
+/// Why it exists: a MacBook's built-in microphone array can report three
+/// channels (macOS 27 with a Bluetooth headset as the output: 3 ch / 44.1 kHz).
+/// `AVAudioConverter` cannot be trusted with that step — asked to turn a
+/// 3-channel discrete layout into mono or stereo it answers success and
+/// SILENCE (channel map all -1; probed 2026-11-16) — so every capture mixes a
+/// wide source itself and hands the converter plain mono. The extra channels
+/// are the same voice from other capsules; their average is the voice.
+///
+/// `@unchecked Sendable` for the same reason as ``TapWriter``: only the one
+/// render thread touches it between start and stop.
+final class MonoDownmix: @unchecked Sendable {
+    /// Mono Float32 at the source's sample rate: what ``mix(_:)`` returns.
+    let format: AVAudioFormat
+    private let buffer: AVAudioPCMBuffer
+
+    /// One- and two-channel sources go to the converter as they are.
+    static func isNeeded(for source: AVAudioFormat) -> Bool {
+        source.channelCount > 2
+    }
+
+    /// - Returns: `nil` for a source that is not Float32 (no device seen so
+    ///   far), or when the scratch buffer cannot be allocated.
+    init?(source: AVAudioFormat, bufferSize: AVAudioFrameCount) {
+        guard source.commonFormat == .pcmFormatFloat32,
+              let mono = AudioFormat.pcmFloat32(sampleRate: source.sampleRate, channels: 1),
+              // Same headroom as the converters' scratch: Core Audio may
+              // deliver more than the requested tap size.
+              let buffer = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: bufferSize * 4 + 1024)
+        else { return nil }
+        format = mono
+        self.buffer = buffer
+    }
+
+    /// The mono average of `source`'s channels, valid until the next call, or
+    /// `nil` when the buffer carries no float samples. Real-time safe: `vDSP`
+    /// over preallocated memory. Frames past the scratch capacity are dropped
+    /// rather than written out of bounds.
+    func mix(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let planes = source.floatChannelData, let out = buffer.floatChannelData?[0] else { return nil }
+        let channels = Int(source.format.channelCount)
+        let frames = min(Int(source.frameLength), Int(buffer.frameCapacity))
+        guard channels > 0, frames > 0 else {
+            buffer.frameLength = 0
+            return buffer
+        }
+        let count = vDSP_Length(frames)
+        vDSP_vclr(out, 1, count)
+        if source.format.isInterleaved {
+            // One plane, the channels' samples side by side: stride over each.
+            for channel in 0..<channels {
+                vDSP_vadd(out, 1, planes[0].advanced(by: channel), vDSP_Stride(channels), out, 1, count)
+            }
+        } else {
+            for channel in 0..<channels {
+                vDSP_vadd(out, 1, planes[channel], 1, out, 1, count)
+            }
+        }
+        var scale = 1 / Float(channels)
+        vDSP_vsmul(out, 1, &scale, out, 1, count)
+        buffer.frameLength = AVAudioFrameCount(frames)
+        return buffer
     }
 }
 

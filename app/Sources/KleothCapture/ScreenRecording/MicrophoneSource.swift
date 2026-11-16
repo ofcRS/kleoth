@@ -153,9 +153,21 @@ final class MicrophoneSource: @unchecked Sendable {
         let scratch: AVAudioPCMBuffer
         let channels: Int
         let ratio: Double
+        /// Set for a microphone wider than two channels (a MacBook's array can
+        /// report three): it is averaged to mono before the converter, which
+        /// would otherwise answer with silence — see ``MonoDownmix``.
+        let downmix: MonoDownmix?
 
         init?(from source: AVAudioFormat, sampleRate: Double, bufferSize: AVAudioFrameCount) {
-            let channelCount = min(Int(source.channelCount), Int(ScreenRecordingDefaults.audioChannels))
+            var feed = source
+            if MonoDownmix.isNeeded(for: source) {
+                guard let mix = MonoDownmix(source: source, bufferSize: bufferSize) else { return nil }
+                downmix = mix
+                feed = mix.format
+            } else {
+                downmix = nil
+            }
+            let channelCount = min(Int(feed.channelCount), Int(ScreenRecordingDefaults.audioChannels))
             guard channelCount > 0,
                   let target = AVAudioFormat(
                       commonFormat: .pcmFormatFloat32,
@@ -163,9 +175,9 @@ final class MicrophoneSource: @unchecked Sendable {
                       channels: AVAudioChannelCount(channelCount),
                       interleaved: true
                   ),
-                  let converter = AVAudioConverter(from: source, to: target)
+                  let converter = AVAudioConverter(from: feed, to: target)
             else { return nil }
-            let ratio = sampleRate / max(source.sampleRate, 1)
+            let ratio = sampleRate / max(feed.sampleRate, 1)
             let capacity = AVAudioFrameCount((Double(bufferSize) * 4 * ratio).rounded(.up)) + 1024
             guard let scratch = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
             self.converter = converter
@@ -207,7 +219,12 @@ final class MicrophoneSource: @unchecked Sendable {
             // converted block is copied into a small array that is handed to
             // the audio queue. One allocation per ~43 ms; the dictation path
             // runs the whole AAC encoder on this thread today.
-            let source = ConsumableBuffer(buffer)
+            var input = buffer
+            if let downmix = converter.downmix {
+                guard let mono = downmix.mix(buffer), mono.frameLength > 0 else { return }
+                input = mono
+            }
+            let source = ConsumableBuffer(input)
             var error: NSError?
             converter.scratch.frameLength = 0
             let status = converter.converter.convert(to: converter.scratch, error: &error) { _, outStatus in

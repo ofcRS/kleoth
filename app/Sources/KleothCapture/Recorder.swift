@@ -116,6 +116,10 @@ public final class Recorder {
         try start(outputDir: directory)
     }
 
+    /// Whether the microphone lane failed to write a buffer during the last
+    /// session, so `mic.m4a` is short or empty. Valid after ``stop()``.
+    public var micWriteFailed: Bool { mic.didEncounterWriteFailure }
+
     /// Stops recording and finalizes both output files. Idempotent.
     public func stop() throws {
         guard isRecording else { return }
@@ -164,6 +168,14 @@ public final class Recorder {
     @discardableResult
     public static func combineChannels(micURL: URL, systemURL: URL, outputURL: URL) throws -> URL {
         try combine(channel0: micURL, channel1: systemURL, outputURL: outputURL)
+    }
+
+    /// Whether the file at `url` opens and holds at least one frame. A capture
+    /// whose every write failed leaves a header-only file that exists and
+    /// decodes to nothing.
+    public static func holdsAudio(_ url: URL) -> Bool {
+        guard let file = try? AVAudioFile(forReading: url) else { return false }
+        return file.length > 0
     }
 
     /// Spec-named convenience: builds the 2-channel upload file at
@@ -263,10 +275,16 @@ public final class Recorder {
     }
 
     /// Reads the whole file and converts it to a single mono float32 buffer, or
-    /// returns `nil` if the file does not exist.
+    /// returns `nil` if the file does not exist or holds no audio.
+    ///
+    /// A file that cannot even be OPENED counts as holding none: a capture
+    /// whose every write failed leaves a 28-byte header (`mic.m4a`,
+    /// 2026-11-16), and treating that as an error threw away the combine — so
+    /// the other, intact channel never became `meeting.m4a` and the meeting
+    /// could not be played or transcribed.
     private static func decodeToMono(_ url: URL) throws -> AVAudioPCMBuffer? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let file = try AVAudioFile(forReading: url)
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
         let sourceFormat = file.processingFormat
         let frameCount = AVAudioFrameCount(file.length)
         if frameCount == 0 { return nil }
