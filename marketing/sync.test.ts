@@ -1,6 +1,6 @@
 // bun test marketing/ — the release gate's command parser.
 import { describe, expect, test } from "bun:test";
-import { releaseCommand } from "./sync.ts";
+import { publishesWithoutAppcast, releaseCommand } from "./sync.ts";
 
 describe("releaseCommand: blocks what tags or publishes a release", () => {
   const cases: [string, string | null][] = [
@@ -47,5 +47,36 @@ describe("releaseCommand: lets everything else through", () => {
     "git commit -m \"docs: how git tag v0.5.0 is gated\"",
   ]) {
     test(command, () => expect(releaseCommand(command)).toBeNull());
+  }
+});
+
+describe("publishesWithoutAppcast: a published release must carry the in-app update feed", () => {
+  for (const command of [
+    "gh release create v0.5.0 app/dist/Kleoth-0.5.0.dmg",
+    "gh release create v0.5.0 app/dist/Kleoth-0.5.0.dmg app/dist/Kleoth-0.5.0.dmg.sha256 --title \"Kleoth 0.5.0\"",
+    "git push origin v0.5.0 && gh release create v0.5.0 app/dist/Kleoth-0.5.0.dmg --notes \"see appcast.xml\"",
+    "gh -R ofcRS/kleoth release create v0.5.0 x.dmg",
+    // Only the file make-appcast.ts writes counts, not any appcast.xml.
+    "gh release create v0.5.0 app/dist/Kleoth-0.5.0.dmg /tmp/appcast.xml",
+    "gh release create v0.5.0 app/dist/Kleoth-0.5.0.dmg other/app/dist/appcast.xml",
+    "gh release create v0.5.0 \\\n  app/dist/Kleoth-0.5.0.dmg \\\n  --title \"Kleoth 0.5.0\"",
+  ]) {
+    test(command, () => expect(publishesWithoutAppcast(command)).toBe(true));
+  }
+  for (const command of [
+    "gh release create v0.5.0 app/dist/Kleoth-0.5.0.dmg app/dist/Kleoth-0.5.0.dmg.sha256 app/dist/appcast.xml",
+    // docs/RELEASING.md step 11, as written there (three lines joined by backslashes).
+    "gh release create v0.5.0 \\\n" +
+      "  app/dist/Kleoth-0.5.0.dmg app/dist/Kleoth-0.5.0.dmg.sha256 app/dist/appcast.xml \\\n" +
+      "  --title \"Kleoth 0.5.0\" \\\n" +
+      "  --notes-file <(sed -n '/## \\[0.5.0\\]/,/## \\[/p' CHANGELOG.md)",
+    "gh release create v0.5.0 ./app/dist/appcast.xml#feed app/dist/Kleoth-0.5.0.dmg",
+    "gh release create v0.5.0 \"app/dist/appcast.xml\" app/dist/Kleoth-0.5.0.dmg",
+    "gh release create v0.5.0 --draft app/dist/Kleoth-0.5.0.dmg",
+    "git tag v0.5.0",
+    "gh release upload v0.5.0 app/dist/appcast.xml",
+    "gh release view v0.5.0",
+  ]) {
+    test(command, () => expect(publishesWithoutAppcast(command)).toBe(false));
   }
 });

@@ -16,6 +16,8 @@ struct SettingsView: View {
     /// `DictationController.shared` — a plain static read doesn't subscribe the
     /// view, so the live Accessibility state would never refresh.
     @EnvironmentObject private var dictation: DictationController
+    /// In-app updates (General → Updates).
+    @EnvironmentObject private var updates: UpdaterController
     @Environment(\.openWindow) private var openWindow
 
     // Local editable copies; committed to the controller (and Keychain) on change.
@@ -295,6 +297,7 @@ struct SettingsView: View {
         case .general:
             outputSection
             shortcutsSection
+            updatesSection
             onboardingSection
         }
     }
@@ -764,6 +767,30 @@ struct SettingsView: View {
             Text("Calendar")
         } footer: {
             captionFooter("When enabled, a recording started during a calendar event takes that event's title.")
+        }
+    }
+
+    /// The running version, Sparkle's daily check, and a check now. Inert in demo mode (no updater).
+    private var updatesSection: some View {
+        Section {
+            LabeledContent("Version") {
+                Text(updates.currentVersionLabel)
+                    .monospacedDigit()
+                    .textSelection(.enabled)
+            }
+            Toggle("Check for updates automatically", isOn: Binding(
+                get: { updates.automaticallyChecks },
+                set: { updates.setAutomaticallyChecks($0) }
+            ))
+            .disabled(!updates.isEnabled)
+            LabeledContent("Check now") {
+                Button("Check for Updates…") { updates.checkForUpdates() }
+                    .disabled(!updates.canCheckNow)
+            }
+        } header: {
+            Text("Updates")
+        } footer: {
+            captionFooter("Kleoth checks once a day and asks before it installs anything. An update never interrupts a recording, a transcription or a dictation: it waits until they finish.")
         }
     }
 

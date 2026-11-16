@@ -18,6 +18,9 @@ let package = Package(
         // Vendored with a one-line patch: upstream loads its strings via `Bundle.module` (Vendor/KeyboardShortcuts/README.md).
         .package(path: "Vendor/KeyboardShortcuts"),
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "0.9.0"),
+        // In-app updates (docs/plans/2026-11-16-updater.md). A binary XCFramework: `make-app.sh`
+        // copies Sparkle.framework into Contents/Frameworks and signs its helpers inside-out.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.1"),
     ],
     targets: [
         // One Objective-C function: `KLCatchObjCException`. AVFoundation raises
@@ -90,6 +93,7 @@ let package = Package(
                 "KleothOnDevice",
                 .product(name: "KleothCore", package: "kleoth-app"),
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             // Brand assets (menu-bar template glyph + empty-state illustrations),
             // loaded at runtime via `KleothAssets.resources`, never `Bundle.module` (#17).
@@ -107,7 +111,10 @@ let package = Package(
             // the moment the Recordings viewer mounts a player
             // ("failed to demangle superclass of VideoPlayerView", 2026-09-07).
             linkerSettings: [
-                .linkedFramework("AVKit")
+                .linkedFramework("AVKit"),
+                // Sparkle.framework is linked `@rpath/…`: SwiftPM's own rpath finds it next to the
+                // binary in `.build`; the app bundle carries it in Contents/Frameworks (make-app.sh).
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
             ]
         ),
         .executableTarget(
@@ -187,6 +194,24 @@ let package = Package(
             dependencies: ["KleothCapture"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
+            ]
+        ),
+        // The updater's end-to-end probe (app/updater-e2e.sh runs it): Sparkle's real updater
+        // against a COPY of the app and a feed of your choosing (a local appcast + signed DMG),
+        // with a user driver that prints. It installs over the copy (not running, so at once);
+        // refuses /Applications and dev.kleoth.app; never relaunches.
+        //   updatecheck <copy/Kleoth.app> [--feed <url>] | --compare <a> <b>
+        .executableTarget(
+            name: "updatecheck",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ],
+            // SwiftPM copies Sparkle.framework next to the binary but gives this target no rpath to it.
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path"]),
             ]
         ),
         // The capture lanes' file and format logic, on synthetic buffers: no

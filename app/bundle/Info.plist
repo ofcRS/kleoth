@@ -47,5 +47,17 @@
 	<string>Kleoth is open source. See the project repository for license terms.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Kleoth records your microphone to transcribe meetings locally.</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/ofcRS/kleoth/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>yTDbk+ou+S2tX0bHQon6IL6hEZxmjH3eKtPZJAViTjA=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

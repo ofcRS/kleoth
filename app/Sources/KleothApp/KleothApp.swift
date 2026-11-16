@@ -27,6 +27,9 @@ struct KleothApp: App {
     /// other view reads it; `applicationDidFinishLaunching` starts it, and
     /// whichever of the two asks first creates the one instance.
     @StateObject private var detection = MeetingDetectionController.sharedInstance()
+    /// In-app updates (Sparkle). The popover and Settings read it; `applicationDidFinishLaunching`
+    /// starts it, and whichever of the two asks first creates the one instance.
+    @StateObject private var updates = UpdaterController.sharedInstance()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -36,6 +39,7 @@ struct KleothApp: App {
                 .environmentObject(dictation)
                 .environmentObject(screenRecording)
                 .environmentObject(covers)
+                .environmentObject(updates)
         } label: {
             // The menu-bar label is the only view mounted at launch, so it's the
             // single place with a live SwiftUI environment from which the
@@ -94,7 +98,26 @@ struct KleothApp: App {
                 .environmentObject(screenRecording)
                 .environmentObject(covers)
                 .environmentObject(detection)
+                .environmentObject(updates)
         }
+        // The app menu exists while a window makes Kleoth a regular app (History, Settings):
+        // "Check for Updates…" sits under "About Kleoth", where Mac apps keep it.
+        .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand(updates: updates)
+            }
+        }
+    }
+}
+
+/// The app menu's "Check for Updates…". A view of its own so the item observes the controller
+/// and greys out while Sparkle is already checking (Sparkle's SwiftUI recipe).
+private struct CheckForUpdatesCommand: View {
+    @ObservedObject var updates: UpdaterController
+
+    var body: some View {
+        Button("Check for Updates…") { updates.checkForUpdates() }
+            .disabled(!updates.canCheckNow)
     }
 }
 

@@ -65,17 +65,39 @@ for RESBUNDLE in "$DIR/.build/$CONFIG/"*.bundle; do
     echo "    bundled resources $(basename "$RESBUNDLE")"
 done
 
-echo "==> codesigning"
+# Sparkle (in-app updates, docs/plans/2026-11-16-updater.md): the framework SwiftPM put next to
+# the binary goes in Contents/Frameworks, where the binary's `@executable_path/../Frameworks`
+# rpath finds it. `ditto` keeps its symlinks; the headers stay behind, as Xcode's embed does.
+SPARKLE="$DIR/.build/$CONFIG/Sparkle.framework"
+if [ ! -d "$SPARKLE" ]; then
+    echo "error: $SPARKLE is missing — the app would not launch (dyld: Sparkle not loaded)" >&2
+    exit 1
+fi
+if ! otool -l "$BIN" | grep -q '@executable_path/../Frameworks'; then
+    echo "error: the binary has no @executable_path/../Frameworks rpath (app/Package.swift linkerSettings)" >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
+FW="$APP/Contents/Frameworks/Sparkle.framework"
+for STRIP in Headers PrivateHeaders Modules; do
+    rm -rf "${FW:?}/$STRIP" "$FW/Versions/"*/"$STRIP"
+done
+echo "    embedded Sparkle.framework $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$FW/Resources/Info.plist")"
+
+echo "==> codesigning (inside-out: Sparkle's helpers, the framework, the app)"
 KC="$HOME/Library/Keychains/kleoth-codesign.keychain-db"
 IDENTITY="Kleoth Self-Signed"
 if security find-identity "$KC" 2>/dev/null | grep -q "$IDENTITY"; then
     security unlock-keychain -p kleoth-codesign "$KC" 2>/dev/null || true
-    codesign --force --sign "$IDENTITY" --keychain "$KC" --entitlements "$DIR/bundle/Kleoth.entitlements" "$APP"
-    echo "    signed with stable identity '$IDENTITY' (TCC grants persist across rebuilds)"
+    bash "$DIR/codesign-app.sh" "$APP" "$IDENTITY" --keychain "$KC"
+    echo "    signed with stable identity '$IDENTITY' (TCC grants persist across rebuilds; updates must match it)"
 else
-    codesign --force --sign - --entitlements "$DIR/bundle/Kleoth.entitlements" "$APP"
+    bash "$DIR/codesign-app.sh" "$APP" -
     echo "    signed ad-hoc — run 'bash $DIR/setup-signing.sh' for a stable identity"
 fi
+codesign --verify --deep --strict "$APP"
+echo "    signature verifies (--deep --strict)"
 codesign -dv "$APP" 2>&1 | sed -n '1,2p' || true
 
 # A release build must open its screens with this Mac's build folders out of reach before it
