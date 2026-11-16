@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-11-16
+
 ### Fixed
 
 - **A meeting could lose your microphone without a word, and then refuse to transcribe.** On some

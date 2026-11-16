@@ -226,6 +226,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   every later writer carries it whole (`runPipeline` reads the existing `meta.json` first). A `PillPrompt` prints
   as its id only: the opt-in pill trace must never log an offer's text.
 
+- **Releases need no asking (the user, 2026-11-16):** once a fix or feature is merged with CI green, cut the
+  release (`docs/RELEASING.md`) and install it, the second Mac included, without stopping to ask.
+
 ## Gotchas
 - `AppDelegate` → `@MainActor` controllers: use `MainActor.assumeIsolated`, never a `Task` hop
   (`applicationWillTerminate` may exit first).
@@ -366,9 +369,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Demo films (2026-09-25, merged PR #7; no captions under the GIFs by choice): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
   `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
   (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height.
-- Wide microphone fix (2026-11-16, for 0.5.4): the second Mac (macOS 27.2) lost a meeting's microphone to a
-  3-channel input. Verified: capture tests red without the fix and green with it, core tests, both builds. Not yet:
-  a real recording on that Mac. Wanted next: an updater (Sparkle; that Mac updates by hand), and a microphone
+- v0.5.4 (2026-11-16): the wide microphone fix + landscape covers. The second Mac (macOS 27.2, `shck@192.168.0.81`,
+  updated by hand over SSH) lost a meeting's microphone to a 3-channel input. Verified: capture tests red without
+  the fix and green with it, core tests, both builds. Not yet: a real recording on that Mac. Wanted next: an updater (Sparkle; that Mac updates by hand), and a microphone
   option that follows the call app's input (`kAudioProcessPropertyDevices`, unprobed).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
