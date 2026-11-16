@@ -3,7 +3,8 @@
 # - app: the release app as it ships (`make-app.sh release`: its Bundle.module guards), then the packaged-app
 #   smoke test with the build folders out of reach (`app/smoke-test.sh`: History and every Settings page, the
 #   test that catches #17 and #22). One PNG per screen is kept as the `smoke-frames` artifact;
-# - marketing: the release-gate command parser (`marketing/sync.test.ts`).
+# - marketing: the release-gate command parser (`marketing/sync.test.ts`) and the update feed's pure
+#   parts (`app/make-appcast.test.ts`).
 # The app is signed ad hoc here (no "Kleoth Self-Signed" identity) and never installed.
 name: tests
 
@@ -61,3 +62,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun test ./marketing/sync.test.ts
+      - name: Update feed (app/make-appcast.ts)
+        run: bun test ./app/make-appcast.test.ts

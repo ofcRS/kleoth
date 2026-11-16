@@ -83,7 +83,7 @@ function appcastResult(version: string): Result {
   if (item?.shortVersion !== version) {
     return { name, ok: false, detail: `its newest item is ${item?.shortVersion ?? "none"}, not ${version} — ${fix}` };
   }
-  if (!item.url?.endsWith(`/releases/download/v${version}/Kleoth-${version}.dmg`)) {
+  if (item.url !== `https://github.com/${pos().github.repo}/releases/download/v${version}/Kleoth-${version}.dmg`) {
     return { name, ok: false, detail: `its enclosure is ${item.url ?? "missing"}, not the v${version} release DMG — ${fix}` };
   }
   const dmg = P(`app/dist/Kleoth-${version}.dmg`);
@@ -420,7 +420,7 @@ const RELEASE_FILES = [
  * and the version, so `-m "fix -d"` or `-m "notes for v0.4.9"` can't mislead it.
  */
 export function releaseCommand(command: string): { version: string | null } | null {
-  for (const raw of command.split(/&&|\|\||;|\||\n/)) {
+  for (const raw of command.replace(/\\\r?\n/g, " ").split(/&&|\|\||;|\||\n/)) {
     let seg = raw.trim();
     for (;;) {
       const next = seg.replace(/^(?:[({!]\s*|(?:command|env|time|exec|nohup)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)/, "");
@@ -443,21 +443,26 @@ export function releaseCommand(command: string): { version: string | null } | nu
 
 /**
  * Whether a command publishes a release without the in-app update feed: a `gh release create` (not
- * `--draft`) whose files leave out appcast.xml. Every installed Kleoth reads
- * releases/latest/download/appcast.xml, so such a release would hide every update from then on.
+ * `--draft`) whose files leave out app/dist/appcast.xml (the file make-appcast.ts writes, by its
+ * repo-relative or absolute path). Every installed Kleoth reads releases/latest/download/appcast.xml,
+ * so such a release would hide every update from then on.
  */
 export function publishesWithoutAppcast(command: string): boolean {
   // gh release create's options that take a value: their value is never a file to upload.
   const valued = new Set(["-n", "--notes", "-F", "--notes-file", "-t", "--title", "--target", "-R", "--repo",
     "--discussion-category", "--notes-start-tag"]);
-  for (const raw of command.split(/&&|\|\||;|\||\n/)) {
+  const feed = (f: string) => {
+    const path = f.replace(/#.*$/, "").replace(/^\.\//, ""); // `file#label` is gh's display-label form
+    return path === APPCAST || path === P(APPCAST);
+  };
+  // A backslash-newline continues the command (RELEASING.md writes it over three lines).
+  for (const raw of command.replace(/\\\r?\n/g, " ").split(/&&|\|\||;|\||\n/)) {
     const bare = raw.replace(/"[^"]*"|'[^']*'/g, " ");
     if (!/(?:^|[\s({!])gh(?:\s+(?:-R\s+\S+|--repo(?:=|\s+)\S+))*\s+release\s+create\b/.test(bare)) continue;
     if (/(?:^|\s)--draft(?=\s|=|$)/.test(bare)) continue;
     const tokens = [...raw.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
     const files = tokens.filter((t, i) => !t.startsWith("-") && !valued.has(tokens[i - 1]));
-    // `file#label` is gh's display-label form.
-    if (!files.some((f) => /(^|\/)appcast\.xml$/.test(f.replace(/#.*$/, "")))) return true;
+    if (!files.some(feed)) return true;
   }
   return false;
 }
