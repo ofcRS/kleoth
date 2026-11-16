@@ -37,9 +37,10 @@ bash "$DIR/make-app.sh" release
 # ------------------------------------------------- 2. optional Developer ID re-sign
 if [ -n "${KLEOTH_SIGN_IDENTITY:-}" ]; then
     echo "==> re-signing for distribution: $KLEOTH_SIGN_IDENTITY"
-    codesign --force --deep --sign "$KLEOTH_SIGN_IDENTITY" \
-        --options runtime --timestamp \
-        --entitlements "$DIR/bundle/Kleoth.entitlements" "$APP"
+    # Inside-out, never --deep (Sparkle's helpers first). NOTE: a Developer ID app no longer
+    # satisfies the self-signed app's designated requirement, so the first Developer ID release
+    # reaches existing installs through the EdDSA signature alone (docs/plans/2026-11-16-updater.md).
+    bash "$DIR/codesign-app.sh" "$APP" "$KLEOTH_SIGN_IDENTITY" --hardened
 fi
 codesign --verify --deep --strict "$APP"
 echo "    app signature verifies"
@@ -137,3 +138,4 @@ SIZE="$(du -h "$OUT_DMG" | cut -f1 | tr -d ' ')"
 echo ""
 echo "==> done: $OUT_DMG  (v$VERSION, $SIZE)"
 shasum -a 256 "$OUT_DMG"
+echo "    next: the in-app update feed for this DMG: bun app/make-appcast.ts (docs/RELEASING.md)"
