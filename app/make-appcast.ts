@@ -13,7 +13,8 @@
 // --ed-key-file signs with a key file instead (the local end-to-end test only).
 //
 // It refuses — exit 1, nothing written — when anything a shipped updater relies on is off: the app
-// in the DMG doesn't match Info.plist, doesn't verify, or lacks Sparkle; its feed URL or minimum
+// in the DMG doesn't match Info.plist, doesn't verify, isn't signed with the "Kleoth Self-Signed"
+// certificate every installed copy is (SIGNING_LEAF), or lacks Sparkle; its feed URL or minimum
 // macOS is not the expected one; its build number is not a plain integer above every build already
 // published; the signature is missing, or does not verify against the SUPublicEDKey inside the DMG;
 // the CHANGELOG section is missing; the result is not well-formed XML.
@@ -32,6 +33,14 @@ const P = (rel: string) => join(ROOT, rel);
 export const REPO = "ofcRS/kleoth";
 export const FEED_URL = `https://github.com/${REPO}/releases/latest/download/appcast.xml`;
 export const MINIMUM_SYSTEM_VERSION = "14.4";
+/**
+ * SHA-1 of the "Kleoth Self-Signed" certificate: the leaf in every shipped Kleoth's designated
+ * requirement (`identifier "dev.kleoth.app" and certificate leaf = H"…"`, 0.5.x). macOS binds the
+ * permission grants to it and Sparkle's code-signing check compares against it. An app signed any
+ * other way (make-app.sh falls back to ad hoc when the identity is missing) would reset the grants
+ * on every Mac it updates. Changing this is a deliberate act: the Developer ID move (RELEASING §6).
+ */
+export const SIGNING_LEAF = "6d1f34d527983c056ca952702800a344a2e20e29";
 /** How many items the feed keeps: the newest decides; older ones carry history for "Version History". */
 export const MAX_ITEMS = 10;
 const SIGN_UPDATE = P("app/.build/artifacts/sparkle/Sparkle/bin/sign_update");
@@ -94,6 +103,21 @@ export function markdownToHTML(markdown: string): string {
   }
   flush();
   return out.join("\n");
+}
+
+/**
+ * Why an app's designated requirement (`codesign -d -r-` output) is not the shipped signer's, or null
+ * when it is: a certificate leaf equal to SIGNING_LEAF and an identifier equal to the bundle id.
+ */
+export function signerProblem(requirement: string, bundleId: string | null): string | null {
+  const dr = requirement.match(/designated => (.+)/)?.[1]?.trim();
+  if (!dr) return "it has no designated requirement (unsigned?)";
+  const leaf = dr.match(/certificate leaf = H"([0-9a-fA-F]{40})"/)?.[1]?.toLowerCase();
+  if (!leaf) return `it is not signed with a certificate (${dr.startsWith("cdhash") ? "ad hoc" : dr})`;
+  if (leaf !== SIGNING_LEAF) return `it is signed with another certificate (leaf ${leaf}, not "Kleoth Self-Signed" ${SIGNING_LEAF})`;
+  const id = dr.match(/identifier "([^"]+)"/)?.[1];
+  if (bundleId && id !== bundleId) return `its signature names ${id ?? "no identifier"}, not its bundle id ${bundleId}`;
+  return null;
 }
 
 /** Sparkle compares CFBundleVersion; Kleoth's is a plain positive integer. */
@@ -227,6 +251,12 @@ function inspectDmg(dmg: string): DmgApp {
     }
     const verified = run(["codesign", "--verify", "--deep", "--strict", app]);
     if (!verified.ok) refuse(`the app in the DMG fails codesign --verify --deep --strict: ${verified.err.trim()}`);
+    // --verify passes an ad hoc app too: the signer must be the one every installed Kleoth trusts.
+    const requirement = run(["codesign", "-d", "-r-", app]);
+    const problem = signerProblem(requirement.out + requirement.err, plistValue(plist, "CFBundleIdentifier"));
+    if (problem) {
+      refuse(`the app in the DMG is not signed like the Kleoth already installed: ${problem}. It would reset every Mac's permission grants. Build the release on the Mac that has the "Kleoth Self-Signed" identity (make-app.sh signs ad hoc without it)`);
+    }
     return {
       shortVersion: plistValue(plist, "CFBundleShortVersionString") ?? refuse("no CFBundleShortVersionString in the DMG's app"),
       build: plistValue(plist, "CFBundleVersion") ?? refuse("no CFBundleVersion in the DMG's app"),
@@ -289,7 +319,7 @@ async function main() {
 
   console.log(`==> inspecting ${dmg}`);
   const app = inspectDmg(dmg);
-  console.log(`    Kleoth ${app.shortVersion} (build ${app.build}), ${app.bundleId}, signature verifies`);
+  console.log(`    Kleoth ${app.shortVersion} (build ${app.build}), ${app.bundleId}, signed "Kleoth Self-Signed" (leaf ${SIGNING_LEAF.slice(0, 8)}…), verifies`);
   if (!explicitDmg && app.shortVersion !== sourceVersion) {
     refuse(`the DMG holds ${app.shortVersion} but app/bundle/Info.plist says ${sourceVersion}: rebuild the DMG`);
   }

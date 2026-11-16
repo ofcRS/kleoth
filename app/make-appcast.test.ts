@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import {
   appcastItems, appcastXML, buildNumber, changelogSection, markdownToHTML, MAX_ITEMS, newestItem,
-  type NewItem, rfc822, verifyEd25519,
+  type NewItem, rfc822, SIGNING_LEAF, signerProblem, verifyEd25519,
 } from "./make-appcast.ts";
 
 const CHANGELOG = `# Changelog
@@ -56,6 +56,22 @@ describe("markdownToHTML", () => {
     expect(html).toContain("<h3>Added</h3>");
     expect(html).toContain("<li><strong>Kleoth updates itself.</strong> A notice in the menu-bar popover, then one click. See <code>Settings → General</code>.</li>");
     expect(html).toContain('<a href="https://example.com/a?b=1&amp;c=2">link</a> &amp; &lt;angle&gt; text.');
+  });
+});
+
+describe("signerProblem (the DMG's app must be signed like every installed Kleoth)", () => {
+  const shipped = `Executable=/x/Kleoth.app/Contents/MacOS/Kleoth\ndesignated => identifier "dev.kleoth.app" and certificate leaf = H"${SIGNING_LEAF}"\n`;
+  test("the shipped requirement passes", () => {
+    expect(signerProblem(shipped, "dev.kleoth.app")).toBeNull();
+    expect(signerProblem(shipped.replace(SIGNING_LEAF, SIGNING_LEAF.toUpperCase()), "dev.kleoth.app")).toBeNull();
+  });
+  test("ad hoc is refused (make-app.sh's fallback without the identity)", () => {
+    expect(signerProblem(`designated => cdhash H"0123456789abcdef0123456789abcdef01234567"`, "dev.kleoth.app")).toContain("ad hoc");
+  });
+  test("another certificate, another identifier, nothing at all are refused", () => {
+    expect(signerProblem(`designated => identifier "dev.kleoth.app" and certificate leaf = H"${"a".repeat(40)}"`, "dev.kleoth.app")).toContain("another certificate");
+    expect(signerProblem(shipped, "dev.kleoth.other")).toContain("not its bundle id");
+    expect(signerProblem("code object is not signed at all", "dev.kleoth.app")).toContain("no designated requirement");
   });
 });
 
