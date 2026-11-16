@@ -237,13 +237,18 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 
 - **In-app updates (2026-11-16, ships 0.5.5):** Sparkle 2, EdDSA-signed DMG from GitHub Releases; feed =
   the `appcast.xml` ASSET of the latest release (`releases/latest/download/appcast.xml`), never a file on
-  `main` (one `gh release create` publishes DMG + feed together). Sparkle accepts an update if EdDSA OR the
-  code signature (installed app's DR: "Kleoth Self-Signed") passes; every nested Sparkle piece is signed
-  inside-out with the app's identity (`app/codesign-app.sh`, never `--deep`). Daily check on, no silent
+  `main` (one `gh release create` publishes DMG + feed together). `SUVerifyUpdateBeforeExtraction` YES: the
+  EdDSA signature is mandatory and checked before the DMG is opened (Sparkle's default "EdDSA OR code
+  signature" would let the public-password "Kleoth Self-Signed" keychain rotate the key; cost: a lost EdDSA
+  key = one manual reinstall everywhere). `make-appcast.ts` refuses a DMG whose DR leaf isn't "Kleoth
+  Self-Signed" (`SIGNING_LEAF`: grants). Every nested Sparkle piece is signed inside-out with the app's
+  identity (`app/codesign-app.sh`, never `--deep`). The feed is always Info.plist's (`feedURLString(for:)`:
+  Sparkle reads a `SUFeedURL` default/launch arg first otherwise). Daily check on, no silent
   installs (`SUAllowsAutomaticUpdates` NO). Gentle reminders: Sparkle's alert only near launch with nothing
   in flight and no first run (`UpdatePolicy`); else the popover's "New version of Kleoth is available" +
-  Update. Relaunch held (`shouldPostponeRelaunch`) while a meeting records/processes, a screen recording or a
-  dictation runs. Demo mode never creates the updater. No feed override in the app (e2e uses `updatecheck`).
+  Update. Relaunch held (`shouldPostponeRelaunch`) while a meeting records/processes, a screen recording runs
+  or transcribes, a dictation runs, or a pipeline job / cover is in flight; every Check for Updates is off
+  meanwhile (`canCheckNow`). Demo mode never creates the updater. No feed override in the app (e2e uses `updatecheck`).
   Design: `docs/plans/2026-11-16-updater.md`.
 - **Releases need no asking (the user, 2026-11-16):** once a fix or feature is merged with CI green, cut the
   release (`docs/RELEASING.md`) and install it, the second Mac included, without stopping to ask.
@@ -402,7 +407,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   option that follows the call app's input (`kAudioProcessPropertyDevices`, unprobed).
 - In-app updater (branch `feature/updater`, for 0.5.5; not bumped/tagged): Sparkle 2.10.1, key generated
   2026-11-16 (login Keychain, back it up: RELEASING.md §9). Verified: core tests, both builds, capture tests,
-  the release build + smoke test, `updater-e2e.sh` (refuses a tampered signature, installs 9 → 10 over a copy).
+  the release build + smoke test, `updater-e2e.sh` (refuses a tampered signature and a same-certificate
+  rotated key before extraction, installs 9 → 10 over a copy). Review fixes (PR #28) in.
   Not yet: a real install updating itself (design §6 checklist), the popover notice by eye. 0.5.4 → 0.5.5 is
   the last manual install (both Macs).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`

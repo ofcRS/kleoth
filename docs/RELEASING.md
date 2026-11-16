@@ -151,8 +151,11 @@ Mac's login Keychain; the first run shows a Keychain prompt for `sign_update`: *
 **The signing key** lives only in this Mac's login Keychain (service `https://sparkle-project.org`,
 account `ed25519`). Back it up once, never into the repo:
 `app/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x <file>` → a password manager, then delete
-the file; on another Mac `generate_keys -f <file>`. Without it (and without the "Kleoth Self-Signed"
-certificate) installed copies can't take updates and need one manual reinstall.
+the file; on another Mac `generate_keys -f <file>`. Without it installed copies can't take updates
+(the EdDSA signature is mandatory, `SUVerifyUpdateBeforeExtraction`) and need one manual reinstall.
+Back up the "Kleoth Self-Signed" certificate too (`~/Library/Keychains/kleoth-codesign.keychain-db`):
+the script refuses a DMG signed with anything else, since a new certificate resets every Mac's
+permission grants.
 
 ## 10. Commercial info (positioning)
 
