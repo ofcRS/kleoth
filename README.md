@@ -131,8 +131,8 @@ with their own login; the local server and Apple's model never leave the machine
 ## Install
 
 <!-- release:start — generated from app/bundle/Info.plist + app/dist by `bun marketing/sync.ts apply` -->
-**[⬇ Download Kleoth-0.5.3.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.5.3/Kleoth-0.5.3.dmg)**
-(8.3 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.5.3/Kleoth-0.5.3.dmg.sha256))
+**[⬇ Download Kleoth-0.5.4.dmg](https://github.com/ofcRS/kleoth/releases/download/v0.5.4/Kleoth-0.5.4.dmg)**
+(8.4 MB · [SHA-256](https://github.com/ofcRS/kleoth/releases/download/v0.5.4/Kleoth-0.5.4.dmg.sha256))
 — or browse all [Releases](../../releases).
 <!-- release:end -->
 
