@@ -10,11 +10,13 @@
 //       and, unless --no-remote, the GitHub About/homepage/topics.
 //   bun marketing/sync.ts hook
 //       Claude Code PreToolUse gate (.claude/settings.json): reads the hook JSON on stdin
-//       and blocks `git tag vX.Y.Z` / `gh release create` (exit 2) while `check` fails.
+//       and blocks `git tag vX.Y.Z` / `gh release create` (exit 2) while `check` fails,
+//       and a `gh release create` that leaves out app/dist/appcast.xml (the in-app update feed).
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { newestItem, verifyEd25519 } from "../app/make-appcast.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const P = (rel: string) => join(ROOT, rel);
@@ -64,6 +66,34 @@ function dmgFor(version: string): Dmg | null {
   const sum = `${dmg}.sha256`;
   if (!existsSync(dmg) || !existsSync(sum)) return null;
   return { bytes: statSync(dmg).size, sha256: readFileSync(sum, "utf8").trim().split(/\s+/)[0] };
+}
+
+const APPCAST = "app/dist/appcast.xml";
+
+/**
+ * The in-app update feed a release carries (app/make-appcast.ts, docs/plans/2026-11-16-updater.md):
+ * its newest item is this version's DMG, at its release URL, with that DMG's length and an EdDSA
+ * signature that verifies against Info.plist's SUPublicEDKey. A DMG rebuilt after the feed fails here.
+ */
+function appcastResult(version: string): Result {
+  const name = "in-app update feed (app/dist/appcast.xml)";
+  const fix = "run `bun app/make-appcast.ts` after the last `bash app/make-dmg.sh`";
+  if (!existsSync(P(APPCAST))) return { name, ok: false, detail: `missing — ${fix}` };
+  const item = newestItem(read(APPCAST));
+  if (item?.shortVersion !== version) {
+    return { name, ok: false, detail: `its newest item is ${item?.shortVersion ?? "none"}, not ${version} — ${fix}` };
+  }
+  if (!item.url?.endsWith(`/releases/download/v${version}/Kleoth-${version}.dmg`)) {
+    return { name, ok: false, detail: `its enclosure is ${item.url ?? "missing"}, not the v${version} release DMG — ${fix}` };
+  }
+  const dmg = P(`app/dist/Kleoth-${version}.dmg`);
+  if (!existsSync(dmg)) return { name, ok: false, detail: `app/dist/Kleoth-${version}.dmg is missing, nothing to check it against` };
+  const key = read(INFO_PLIST).match(/<key>SUPublicEDKey<\/key>\s*<string>([^<]+)<\/string>/)?.[1]?.trim();
+  const bytes = readFileSync(dmg);
+  if (!key || !item.signature || item.length !== bytes.length || !verifyEd25519(bytes, item.signature, key)) {
+    return { name, ok: false, detail: `its signature or length does not match app/dist/Kleoth-${version}.dmg (rebuilt since?) — ${fix}` };
+  }
+  return { name, ok: true };
 }
 
 function imagesFingerprint(): string {
@@ -283,6 +313,7 @@ function check(o: Opts): Result[] {
   if (o.release && !dmg) {
     results.push({ name: "release DMG", ok: false, detail: `app/dist/Kleoth-${version}.dmg(.sha256) missing — run bash app/make-dmg.sh first` });
   }
+  if (o.release) results.push(appcastResult(version));
 
   for (const t of targets(version, dmg)) results.push(evaluate(t).result);
 
@@ -410,6 +441,27 @@ export function releaseCommand(command: string): { version: string | null } | nu
   return null;
 }
 
+/**
+ * Whether a command publishes a release without the in-app update feed: a `gh release create` (not
+ * `--draft`) whose files leave out appcast.xml. Every installed Kleoth reads
+ * releases/latest/download/appcast.xml, so such a release would hide every update from then on.
+ */
+export function publishesWithoutAppcast(command: string): boolean {
+  // gh release create's options that take a value: their value is never a file to upload.
+  const valued = new Set(["-n", "--notes", "-F", "--notes-file", "-t", "--title", "--target", "-R", "--repo",
+    "--discussion-category", "--notes-start-tag"]);
+  for (const raw of command.split(/&&|\|\||;|\||\n/)) {
+    const bare = raw.replace(/"[^"]*"|'[^']*'/g, " ");
+    if (!/(?:^|[\s({!])gh(?:\s+(?:-R\s+\S+|--repo(?:=|\s+)\S+))*\s+release\s+create\b/.test(bare)) continue;
+    if (/(?:^|\s)--draft(?=\s|=|$)/.test(bare)) continue;
+    const tokens = [...raw.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+    const files = tokens.filter((t, i) => !t.startsWith("-") && !valued.has(tokens[i - 1]));
+    // `file#label` is gh's display-label form.
+    if (!files.some((f) => /(^|\/)appcast\.xml$/.test(f.replace(/#.*$/, "")))) return true;
+  }
+  return false;
+}
+
 function uncommitted(): Result[] {
   const r = Bun.spawnSync(["git", "status", "--porcelain", "--", ...RELEASE_FILES], { cwd: ROOT });
   if (r.exitCode !== 0) return [{ name: "committed positioning", ok: false, detail: "git status failed" }];
@@ -433,8 +485,15 @@ async function hook(): Promise<number> {
     const version = release.version ?? plistVersion();
     const failed = [...uncommitted(), ...check({ offline: false, release: true, version, remote: false })]
       .filter((r) => !r.ok && !r.skipped);
+    if (publishesWithoutAppcast(command)) {
+      failed.push({
+        name: "gh release create without app/dist/appcast.xml",
+        ok: false,
+        detail: "every installed Kleoth reads releases/latest/download/appcast.xml: upload it with the DMG (docs/RELEASING.md)",
+      });
+    }
     if (failed.length === 0) return 0;
-    console.error(`Release v${version} blocked: Kleoth's public positioning is stale.`);
+    console.error(`Release v${version} blocked: Kleoth's public positioning or its update feed is not ready.`);
     for (const r of failed) console.error(`  ✗ ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
     console.error(
       `Fix: review marketing/positioning.json against CHANGELOG [${version}] (marketing/README.md → "Every release"), ` +
