@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-11-16
+
 ### Added
 
 - **Kleoth updates itself.** Once a day it checks for a new version. When there is one, the
