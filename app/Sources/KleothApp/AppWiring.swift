@@ -89,6 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { MeetingDetectionController.sharedInstance().start() }
         // Meeting covers: sweep temp files a kill left in meeting folders.
         MainActor.assumeIsolated { CoverController.shared?.sweepTemporaryFilesAtLaunch() }
+        // In-app updates: Sparkle's daily check from here on (never on a demo launch, which has
+        // no delegate; the controller refuses in demo mode too). Created here if `KleothApp`
+        // has not made it yet.
+        MainActor.assumeIsolated { UpdaterController.sharedInstance().start() }
 
         // Neither Accessibility trust nor Screen Recording has a change
         // notification: re-check whenever the user comes back from System

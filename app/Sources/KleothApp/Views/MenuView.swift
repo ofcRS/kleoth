@@ -15,6 +15,7 @@ struct MenuView: View {
     @EnvironmentObject private var controller: RecordingController
     @EnvironmentObject private var dictation: DictationController
     @EnvironmentObject private var screenRecording: ScreenRecordingController
+    @EnvironmentObject private var updates: UpdaterController
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
@@ -42,6 +43,12 @@ struct MenuView: View {
 
             screenRecordingSection
 
+            if let waiting = updates.waitingToInstall {
+                updateWaitingNotice(waiting)
+            } else if let update = updates.available {
+                updateAvailableNotice(update)
+            }
+
             if dictation.isEnabled && !dictation.isTrusted {
                 dictationAccessNotice
             }
@@ -51,6 +58,8 @@ struct MenuView: View {
             }
 
             recentSection
+
+            versionRow
 
             footer
         }
@@ -378,6 +387,65 @@ struct MenuView: View {
         .buttonStyle(.kleothRow)
         .foregroundStyle(.secondary)
         .help("Dictation still works while the pill is hidden. Click to show the pill again now.")
+    }
+
+    // MARK: - Updates
+
+    /// A scheduled check found a newer Kleoth and the popover shows it (Sparkle's gentle reminder
+    /// for a menu-bar app). Update brings Sparkle's alert forward: release notes, then Install.
+    private func updateAvailableNotice(_ update: UpdaterController.PendingUpdate) -> some View {
+        HStack(spacing: KleothMetrics.spacingM) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("New version of Kleoth is available")
+                    .font(.callout.weight(.medium))
+                Text("Kleoth \(update.version) · you have \(updates.currentVersion)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: KleothMetrics.spacingS)
+            Button("Update") { updates.checkForUpdates() }
+                .controlSize(.small)
+                .disabled(!updates.canCheckForUpdates)
+                .help("See what's new in Kleoth \(update.version) and install it")
+        }
+        .kleothCard(padding: KleothMetrics.spacingM)
+    }
+
+    /// The user chose Install and Relaunch while something was in flight: it waits.
+    private func updateWaitingNotice(_ update: UpdaterController.PendingUpdate) -> some View {
+        Label {
+            Text("Kleoth \(update.version) installs after \(update.waitingFor ?? "the current job"), then reopens.")
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "clock.arrow.circlepath")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help("Installing quits and reopens Kleoth, so it waits until nothing is recording, transcribing or dictating.")
+    }
+
+    /// The running version and the way to ask for a newer one, quiet above the footer.
+    private var versionRow: some View {
+        HStack(spacing: KleothMetrics.spacingS) {
+            Text("Kleoth \(updates.currentVersion)")
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Spacer(minLength: KleothMetrics.spacingS)
+            if updates.isEnabled {
+                Button("Check for Updates…") { updates.checkForUpdates() }
+                    .buttonStyle(.link)
+                    .disabled(!updates.canCheckForUpdates)
+                    .help("Ask whether a newer Kleoth is out")
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, KleothMetrics.spacingXS)
     }
 
     // MARK: - Recent meetings (quick links into the History window)

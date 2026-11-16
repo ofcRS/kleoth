@@ -211,6 +211,9 @@ final class DemoDirector {
             .environmentObject(covers ?? CoverController())
             // Its `start()` is a no-op in demo mode: nothing listens to the mic.
             .environmentObject(MeetingDetectionController.sharedInstance())
+            // Inert in demo mode: never creates Sparkle's updater, so General's Updates row
+            // draws without a check or any network.
+            .environmentObject(UpdaterController.sharedInstance())
         return present(root, size: CGSize(width: 780, height: 560), title: "Settings")
     }
 
