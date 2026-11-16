@@ -405,7 +405,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   updated by hand over SSH) lost a meeting's microphone to a 3-channel input. Verified: capture tests red without
   the fix and green with it, core tests, both builds. Not yet: a real recording on that Mac. Wanted next: a microphone
   option that follows the call app's input (`kAudioProcessPropertyDevices`, unprobed).
-- In-app updater (branch `feature/updater`, for 0.5.5; not bumped/tagged): Sparkle 2.10.1, key generated
+- v0.5.5 (2026-11-16): the in-app updater (PR #28). Sparkle 2.10.1, key generated
   2026-11-16 (login Keychain, back it up: RELEASING.md §9). Verified: core tests, both builds, capture tests,
   the release build + smoke test, `updater-e2e.sh` (refuses a tampered signature and a same-certificate
   rotated key before extraction, installs 9 → 10 over a copy). Review fixes (PR #28) in.
