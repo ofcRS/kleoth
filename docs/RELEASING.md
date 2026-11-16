@@ -18,7 +18,9 @@ The single source of truth for the version is `CFBundleShortVersionString` in
 Edit `app/bundle/Info.plist`:
 
 - [ ] `CFBundleShortVersionString` → the marketing version (e.g. `0.2.0`).
-- [ ] `CFBundleVersion` → bump the build number (a monotonically increasing integer).
+- [ ] `CFBundleVersion` → bump the build number (a monotonically increasing integer). The in-app
+      updater offers a release only when this number is above the installed one, and step 9 refuses
+      a build that isn't above every published one.
 
 ## 3. Build & test both packages
 
@@ -47,10 +49,14 @@ pkill -x Kleoth 2>/dev/null; open -a Kleoth
 - [ ] App launches into the menu bar.
 - [ ] Quick record → stop → a transcript appears in `~/Kleoth`.
 - [ ] Settings opens; Usage / keys behave.
+- [ ] After a Sparkle version bump or a change to signing: `bash app/updater-e2e.sh` ends
+      `e2e: PASSED` (the updater end to end on copies, with a throwaway key; ~1 min).
 
 `make-app.sh` signs with the local **"Kleoth Self-Signed"** keychain identity if present (so TCC
-permission grants persist across rebuilds), else ad-hoc. It bundles `Kleoth.icns` and every SwiftPM
-resource bundle, runs `app/smoke-test.sh` on a release build, then copies the app to `/Applications`
+permission grants persist across rebuilds, and an update satisfies the installed app's signature),
+else ad-hoc: Sparkle's helpers first, then Sparkle.framework, then the app (`app/codesign-app.sh`).
+It bundles `Kleoth.icns`, every SwiftPM resource bundle and Sparkle.framework, runs
+`app/smoke-test.sh` on a release build, then copies the app to `/Applications`
 (`KLEOTH_NO_INSTALL=1` stops before that).
 
 ## 5. Build the DMG — self-signed tier (ships today)
@@ -122,7 +128,33 @@ shasum -a 256 app/dist/Kleoth-<version>.dmg
 - [ ] Move the `[Unreleased]` notes (if any) into a dated `[<version>]` section in
       `CHANGELOG.md` (Keep a Changelog format).
 
-## 9. Commercial info (positioning)
+## 9. The in-app update feed
+
+Every installed Kleoth (0.5.5 and later) reads
+`https://github.com/ofcRS/kleoth/releases/latest/download/appcast.xml` once a day: the
+`appcast.xml` attached to the newest release. Design: `docs/plans/2026-11-16-updater.md`.
+
+```sh
+bun app/make-appcast.ts            # → app/dist/appcast.xml, for app/dist/Kleoth-<version>.dmg
+```
+
+Run it after the **last** `make-dmg.sh`: the EdDSA signature covers the DMG's exact bytes, so a
+rebuilt DMG needs a new feed (the release gate checks this). It signs with the Sparkle key in this
+Mac's login Keychain; the first run shows a Keychain prompt for `sign_update`: **Always Allow**.
+
+- [ ] It ends `==> wrote …/app/dist/appcast.xml` with the new version, and `EdDSA signature
+      verifies against the app's SUPublicEDKey`. Any `REFUSED —` line names what to fix; nothing is
+      written then (wrong or stale DMG, build number not above the published ones, no CHANGELOG
+      section, a key that isn't the app's, a missing signature).
+- [ ] The feed keeps the published items (read from the live URL), newest first.
+
+**The signing key** lives only in this Mac's login Keychain (service `https://sparkle-project.org`,
+account `ed25519`). Back it up once, never into the repo:
+`app/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x <file>` → a password manager, then delete
+the file; on another Mac `generate_keys -f <file>`. Without it (and without the "Kleoth Self-Signed"
+certificate) installed copies can't take updates and need one manual reinstall.
+
+## 10. Commercial info (positioning)
 
 Every public copy of Kleoth's pitch comes from `marketing/positioning.json`
 (see [`marketing/README.md`](../marketing/README.md)). A release is where it drifts, so:
@@ -140,30 +172,37 @@ Every public copy of Kleoth's pitch comes from `marketing/positioning.json`
 - [ ] `bun marketing/sync.ts check` passes; commit.
 
 In a Claude Code session the `.claude/settings.json` hook runs this check before `git tag v…`
-and `gh release create`, and blocks them until it passes.
+and `gh release create`, and blocks them until it passes. With `--release` (what the hook runs) it
+also checks step 9's feed against the DMG, and it blocks a `gh release create` without
+`app/dist/appcast.xml`.
 
-## 10. Tag and publish the GitHub release
+## 11. Tag and publish the GitHub release
 
 ```sh
 git tag v<version>            # e.g. v0.2.0
 git push origin v<version>
 
+(cd app/dist && shasum -a 256 Kleoth-<version>.dmg > Kleoth-<version>.dmg.sha256)
 gh release create v<version> \
-  app/dist/Kleoth-<version>.dmg \
+  app/dist/Kleoth-<version>.dmg app/dist/Kleoth-<version>.dmg.sha256 app/dist/appcast.xml \
   --title "Kleoth <version>" \
   --notes-file <(sed -n '/## \[<version>\]/,/## \[/p' CHANGELOG.md)
 ```
 
 - [ ] Release notes include the **SHA-256** from step 5/7.
-- [ ] The DMG is attached.
+- [ ] The DMG, its `.sha256` and `appcast.xml` are attached. Without `appcast.xml` the latest
+      release has no feed and **no installed Kleoth sees this or any later update**.
+- [ ] The live feed names the new version:
+      `curl -sL https://github.com/ofcRS/kleoth/releases/latest/download/appcast.xml | grep shortVersionString | head -1`.
+- [ ] Installs older than 0.5.5 have no updater: update those Macs by hand once.
 
-## 11. Update the Homebrew cask
+## 12. Update the Homebrew cask
 
-- [ ] `packaging/homebrew/kleoth.rb` already has the new `version` and `sha256` (step 9's `apply`).
+- [ ] `packaging/homebrew/kleoth.rb` already has the new `version` and `sha256` (step 10's `apply`).
 - [ ] Push to the tap repo (e.g. `homebrew-kleoth`). The `livecheck` block tracks GitHub Releases.
 - [ ] **[Developer Program]** Once notarized, remove the self-signed `caveats` note from the cask.
 
-## 12. Announce
+## 13. Announce
 
 - [ ] Link the release; note the first-launch step (Open Anyway) until notarized builds land.
 
@@ -174,6 +213,7 @@ gh release create v<version> \
 | Capability | Status today | Unblocked by |
 | --- | --- | --- |
 | Self-signed DMG, installable on this Mac / Open Anyway elsewhere | ✅ Ships now | — |
+| In-app updates (Sparkle, EdDSA-signed, asks first) | ✅ From 0.5.5 | — |
 | Developer ID signature (hardened runtime + timestamp) | ⛔️ | `KLEOTH_SIGN_IDENTITY` cert |
 | Notarization + stapling (Gatekeeper-clean everywhere) | ⛔️ | `KLEOTH_NOTARY_PROFILE` + above |
 | Drop the first-launch caveat from README, cask and DMG Read Me | ⛔️ | Notarized build |

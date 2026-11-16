@@ -150,6 +150,15 @@ Kleoth isn't notarized yet, so macOS blocks the first launch with a warning. All
 
 macOS remembers the choice.
 
+### Updates
+
+From 0.5.5, Kleoth checks once a day for a new version. When there is one, the menu-bar popover
+says **New version of Kleoth is available**: click **Update**, read what's new, and install. Kleoth
+reopens as the new version, with no first-launch warning this time. It never installs during a
+meeting, its transcription, a screen recording or a dictation, and installs only updates signed
+with its own key. Turn the daily check off in Settings → General. Versions before 0.5.5 update by
+downloading the DMG once more.
+
 ## Permissions Kleoth requests, and why
 
 | Permission | Why | When |
@@ -208,8 +217,8 @@ Open **Settings** from the menu bar. Everything in it is optional:
 - **Accounts** — which AI provider runs summaries and clean-up (Automatic, or one you pick), a local
   server's URL, your ElevenLabs and OpenRouter keys, and usage. The ElevenLabs key needs the
   `speech_to_text` permission.
-- **General** — the output folder (`~/Kleoth`), the start/stop recording hotkey, and the welcome
-  window.
+- **General** — the output folder (`~/Kleoth`), the start/stop recording hotkey, updates (the
+  version, the daily check on or off, Check for Updates…), and the welcome window.
 
 Keys are stored in the macOS Keychain.
 
@@ -278,6 +287,9 @@ server — there isn't one. What does leave, and when:
 - **Meeting covers** (off by default): a one-sentence scene written from the summary goes to the image
   engine you pick — to OpenAI through Codex, or to OpenRouter; a local server keeps it on your Mac. See
   [Meeting covers](#meeting-covers).
+- **Update checks** (on by default, Settings → General): once a day Kleoth reads its update feed from
+  this repository's GitHub releases. Nothing about you or your data is sent, beyond what any download
+  carries (your IP address, and Kleoth's and Sparkle's versions in the User-Agent).
 - **Call detection** (off by default) sends nothing anywhere. Kleoth notices which apps are using
   the microphone (Core Audio reports that; no audio is read) and, with Accessibility or Screen
   Recording already allowed, reads the titles of those apps' windows to tell a meeting tab from
@@ -373,14 +385,13 @@ pipeline — plus the `kleoth` CLI. **Package 2** (`app/`, macOS 14.4) is the `K
 menu-bar agent, the pill (`KleothPillUI`), and `KleothCapture` (Core Audio process tap for system
 audio, AVAudioEngine for the mic, ScreenCaptureKit for screen recording, and the
 `LocalTranscriber` built on WhisperKit). Apple's on-device model is an app-only provider. The only
-non-Apple core dependency is `swift-argument-parser`; the app adds WhisperKit and
-KeyboardShortcuts.
+non-Apple core dependency is `swift-argument-parser`; the app adds WhisperKit, KeyboardShortcuts
+and Sparkle (in-app updates).
 
 ## Roadmap
 
 - **Notarized builds** — a Gatekeeper-clean install, with no first-launch warning.
 - **Homebrew cask** — `brew install --cask kleoth` once releases are notarized.
-- **Sparkle auto-update.**
 - **Whisper model-size picker** — trade accuracy for speed/size.
 - A default-engine toggle (on-device vs. cloud) and live captions are under consideration.
 

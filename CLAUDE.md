@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (778 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
+swift build && swift test                        # core + CLI (785 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -22,6 +22,10 @@ bash app/smoke-test.sh [Kleoth.app]              # the shipped app, build folder
 pkill -x Kleoth; open -a Kleoth                  # relaunch (make-app does NOT kill the running instance)
 pkill -x Kleoth; open -a Kleoth --args -KleothSimulateFirstRun YES   # first-run flows again, this launch only
 bash app/make-dmg.sh                             # app/dist/Kleoth-<version>.dmg (version = app/bundle/Info.plist)
+bun app/make-appcast.ts                          # the update feed for that DMG → app/dist/appcast.xml (Keychain EdDSA key; refuses loudly)
+bash app/updater-e2e.sh [Kleoth.app]             # Sparkle end to end on copies (dev.kleoth.updateprobe), throwaway key, local feed: refuse tampered, install
+app/.build/debug/updatecheck <copy.app> --feed <url> | --compare <a> <b>   # Sparkle's updater on a COPY, printing driver (refuses /Applications, dev.kleoth.app)
+bun test ./app/make-appcast.test.ts ./marketing/sync.test.ts   # feed parts + release-gate parser
 swift run kleoth summarize <dir> --model <slug> --provider claude-code|codex|local|openrouter  # re-summarize in place
 swift run kleoth illustrate <dir>... [--engine codex|openrouter|local] [--style …] [--dry-run] [--force]   # meeting covers
 
@@ -57,11 +61,12 @@ Crash reports: `~/Library/Logs/DiagnosticReports/Kleoth-*.ips`. Reset TCC: `tccu
   (defaults, geometry, session machine, audio math, `Record`/`Store` transcript sidecar), `Usage/`,
   `Covers/` (drawing, store, engines), `Meetings/` (call detection: `MeetingAppCatalog`, `MeetingServiceMatcher`,
   `MeetingSource`, `MeetingDetector` = the pure offer machine, `MeetingContext`, `MeetingNaming`,
-  `CalendarEventMatcher`), `Concurrency/` (`withTimeout`, `withDeadline`).
+  `CalendarEventMatcher`), `Concurrency/` (`withTimeout`, `withDeadline`), `Updates/` (`UpdatePolicy`: when
+  Sparkle may relaunch, who shows a scheduled find).
 - `kleoth` CLI: `transcribe`, `summarize`, `rename`, `render`, `illustrate`. `KleothCoreTests`.
 
 **`app/` package** (macOS 14.4; deps: `..` as `.package(name: "kleoth-app", path: "..")`,
-KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, WhisperKit 0.18)
+KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, WhisperKit 0.18, Sparkle 2.10.1 binary XCFramework)
 - `KleothCapture`: `Recorder` (mic.m4a + system.m4a → 2-channel meeting.m4a), `MicCapture`,
   `SystemAudioTap` (Core Audio process tap), `LocalTranscriber` (WhisperKit), `DictationCapture`,
   `InputDevices`, `AudioFormat` (AAC bit-rate clamp, `TapWriter`), `ObjCExceptions`,
@@ -75,18 +80,19 @@ KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, Whisper
   `WindowTitleReader` reads window titles only), `ScreenRecordingController`, `PillCoordinator` (single face
   in front of the pill: dictation, screen recording, meetings), `Meetings/` (`MeetingCaptureTypes`,
   `MeetingPillBridge` = the meeting side's face in front of the pill, `MeetingDetectionController`,
-  `CalendarLookup`), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
+  `CalendarLookup`), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Updates/UpdaterController`
+  (the only Sparkle code), `Views/` (MenuView, HistoryView with
   Meetings | Dictations | Recordings scopes, `MeetingCoverTile`/`MeetingCoverBand`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
   No test target (`KleothCaptureTests` covers `KleothCapture` only).
-- Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`.
+- Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`, `updatecheck`.
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
 `docs/plans/2026-09-23-dictation-retry.md`, `docs/plans/2026-09-24-summary-truncation-and-onboarding-skip.md`,
 `docs/plans/2026-09-24-positioning.md`, `docs/plans/2026-09-24-demo-mode.md` (`-KleothDemo`: what a demo launch must never do),
 `docs/plans/2026-09-24-meeting-illustrations.md`, `docs/plans/2026-09-24-dictation-context.md`,
-`docs/plans/2026-09-24-meetings-in-the-pill.md`.
+`docs/plans/2026-09-24-meetings-in-the-pill.md`, `docs/plans/2026-11-16-updater.md`.
 
 ## Data on disk
 - Meeting = `~/Kleoth/meeting-yyyy-MM-dd-HHmmss/`: `mic.m4a`, `system.m4a`, `meeting.m4a`,
@@ -108,7 +114,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Config: `~/.config/kleoth/config.json` (CLI) and ONE consolidated Keychain item (service `dev.kleoth`,
   account `settings`, JSON) read once per launch — click **Always Allow** on the prompt.
   UserDefaults: `dev.kleoth.dictation.pillPlacement`, `dev.kleoth.settings.page`,
-  `dev.kleoth.screenRecording.permissionRequestedAt`.
+  `dev.kleoth.screenRecording.permissionRequestedAt`; Sparkle's own `SU*` keys (`SULastCheckTime`,
+  `SUEnableAutomaticChecks` once toggled, `SUSkippedVersion`), downloads in `~/Library/Caches/dev.kleoth.app/org.sparkle-project.Sparkle`.
+- Sparkle EdDSA private key: this Mac's login Keychain only (service `https://sparkle-project.org`, account
+  `ed25519`); public half = `SUPublicEDKey` in Info.plist. Never print/export it into the repo.
 - Stored keys are snake_case via `convert{To,From}SnakeCase` — **no acronyms in stored property
   names** (`transcriptionUSD` does not round-trip; `CostBreakdown` uses explicit CodingKeys).
 
@@ -226,6 +235,16 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   every later writer carries it whole (`runPipeline` reads the existing `meta.json` first). A `PillPrompt` prints
   as its id only: the opt-in pill trace must never log an offer's text.
 
+- **In-app updates (2026-11-16, ships 0.5.5):** Sparkle 2, EdDSA-signed DMG from GitHub Releases; feed =
+  the `appcast.xml` ASSET of the latest release (`releases/latest/download/appcast.xml`), never a file on
+  `main` (one `gh release create` publishes DMG + feed together). Sparkle accepts an update if EdDSA OR the
+  code signature (installed app's DR: "Kleoth Self-Signed") passes; every nested Sparkle piece is signed
+  inside-out with the app's identity (`app/codesign-app.sh`, never `--deep`). Daily check on, no silent
+  installs (`SUAllowsAutomaticUpdates` NO). Gentle reminders: Sparkle's alert only near launch with nothing
+  in flight and no first run (`UpdatePolicy`); else the popover's "New version of Kleoth is available" +
+  Update. Relaunch held (`shouldPostponeRelaunch`) while a meeting records/processes, a screen recording or a
+  dictation runs. Demo mode never creates the updater. No feed override in the app (e2e uses `updatecheck`).
+  Design: `docs/plans/2026-11-16-updater.md`.
 - **Releases need no asking (the user, 2026-11-16):** once a fix or feature is merged with CI green, cut the
   release (`docs/RELEASING.md`) and install it, the second Mac included, without stopping to ask.
 
@@ -322,6 +341,14 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   stacked per start): use `AudioObjectAdd/RemovePropertyListener` with one `@convention(c)` proc.
 - `micwatch --titles` from a shell reads titles with the TERMINAL's grants, and `micopen` holds the mic under
   them. An unattended probe without `caffeinate -s -i` can hit Maintenance Sleep mid-run (timers 15 min late).
+- Sparkle: `shouldPostponeRelaunchForUpdate` is asked ONCE per session, and `updaterShouldRelaunchApplication`
+  is asked first on every install (NO = the install is called off, not postponed). With the target app not
+  running, the installer installs right after validating: there is no "ready to install" step (`updatecheck`).
+  `sign_update` reading the Keychain key shows a macOS prompt (Always Allow); its tools are ad hoc, so each new
+  Sparkle version asks again. SwiftPM copies Sparkle.framework next to an executable but gave `updatecheck` no
+  rpath to it (`-rpath @executable_path` in Package.swift); the app uses `@executable_path/../Frameworks`.
+- The release hook (`.claude/settings.json`) reads the WHOLE Bash command text: a `gh release create` or
+  `git tag v…` inside a quoted test string or `bun -e` gets the command blocked. Write such text with Edit.
 
 ## Security (hard rules)
 - API keys are never printed or committed. `.env` and `config.json` are gitignored; inspect `.env`
@@ -371,7 +398,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height.
 - v0.5.4 (2026-11-16): the wide microphone fix + landscape covers. The second Mac (macOS 27.2, `shck@192.168.0.81`,
   updated by hand over SSH) lost a meeting's microphone to a 3-channel input. Verified: capture tests red without
-  the fix and green with it, core tests, both builds. Not yet: a real recording on that Mac. Wanted next: an updater (Sparkle; that Mac updates by hand), and a microphone
+  the fix and green with it, core tests, both builds. Not yet: a real recording on that Mac. Wanted next: a microphone
   option that follows the call app's input (`kAudioProcessPropertyDevices`, unprobed).
+- In-app updater (branch `feature/updater`, for 0.5.5; not bumped/tagged): Sparkle 2.10.1, key generated
+  2026-11-16 (login Keychain, back it up: RELEASING.md §9). Verified: core tests, both builds, capture tests,
+  the release build + smoke test, `updater-e2e.sh` (refuses a tampered signature, installs 9 → 10 over a copy).
+  Not yet: a real install updating itself (design §6 checklist), the popover notice by eye. 0.5.4 → 0.5.5 is
+  the last manual install (both Macs).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
