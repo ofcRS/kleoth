@@ -57,5 +57,7 @@
 	<string>yTDbk+ou+S2tX0bHQon6IL6hEZxmjH3eKtPZJAViTjA=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

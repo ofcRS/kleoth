@@ -42,12 +42,19 @@ final class Probe: NSObject {
         updater.checkForUpdates()
     }
 
+    private var concluded = false
+
+    /// The run's outcome. Leaves 2 s later, not at once: an installer that refused an update before
+    /// extracting stays up for another try until the updater, once the error is acknowledged, tells
+    /// it to stop. Exiting first leaves it running, and the next check "resumes" it and fails.
     func finish(_ code: Int32, _ message: String) {
+        guard !concluded else { return }
+        concluded = true
         say(message)
-        // Let Sparkle's last callbacks and the installer's own exit settle before leaving.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(code) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { exit(code) }
     }
 
+    /// For a failure before the updater runs: nothing to wind down.
     func fail(_ message: String) -> Never {
         say("FAILED: \(message)")
         exit(1)
@@ -64,7 +71,7 @@ extension Probe: SPUUpdaterDelegate {
     func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {
         let code = (error as NSError).code
         if code == 1001 { return } // SUNoUpdateError: reported by the driver
-        fail("aborted: \(describe(error))")
+        finish(1, "FAILED: aborted: \(describe(error))")
     }
 }
 
@@ -106,7 +113,7 @@ final class PrintingDriver: NSObject, SPUUserDriver {
 
     func showUpdaterError(_ error: any Error, acknowledgement: @escaping () -> Void) {
         acknowledgement()
-        probe?.fail("updater error: \(describe(error))")
+        probe?.finish(1, "FAILED: updater error: \(describe(error))")
     }
 
     func showDownloadInitiated(cancellation: @escaping () -> Void) {
