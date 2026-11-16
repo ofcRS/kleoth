@@ -15,6 +15,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 ```bash
 swift build && swift test                        # core + CLI (778 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
 swift build --package-path app                   # app package
+swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
 bash app/make-app.sh release                     # bundle + sign + smoke test + install /Applications/Kleoth.app (KLEOTH_NO_INSTALL=1: dist only)
 bash app/smoke-test.sh [Kleoth.app]              # the shipped app, build folders hidden: History + all Settings pages (KLEOTH_SMOKE_FRAMES=<dir>)
@@ -77,7 +78,7 @@ KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, Whisper
   `CalendarLookup`), `AppConfig` (Settings + Keychain overlay), `Covers/CoverController`, `Views/` (MenuView, HistoryView with
   Meetings | Dictations | Recordings scopes, `MeetingCoverTile`/`MeetingCoverBand`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
-  No test target.
+  No test target (`KleothCaptureTests` covers `KleothCapture` only).
 - Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`.
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
@@ -235,6 +236,12 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   headset stays stuck in HFP (16 kHz) until the engine object is freed.
 - AAC bit rate must be clamped per sample rate/channels (`AudioFormat.aacSettings`); a 16 kHz headset
   mic rejects 64 kbps with `'!dat'`.
+- A microphone can report MORE than two channels (a MacBook's array: 3 ch / 44.1 kHz on macOS 27 with a Bluetooth
+  headset as the output). An AAC file opens with three channels and then refuses every write ('!dat', a 28-byte
+  `mic.m4a`), and `AVAudioConverter` turns a 3-channel discrete layout into mono or stereo as SILENCE with a
+  success status. So `AudioFormat.fileChannels` writes a wide source mono and `MonoDownmix` averages it before any
+  converter (`TapWriter`, the screen recorder's `MicrophoneSource`). A lane's write failure is reported at stop
+  ("Your microphone was not recorded…"), and `Recorder.combine` treats an unreadable channel as absent.
 - Off-main audio work: `Recorder.combine`, `ChannelAudio.mixToMono` take seconds — `Task.detached`.
 - `CoverDrawing.draw` runs off the main actor as a nonisolated async call — never wrap it in `Task.detached`
   (cancellation would not propagate). Holds while `NonisolatedNonsendingByDefault` stays off.
@@ -359,5 +366,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Demo films (2026-09-25, merged PR #7; no captions under the GIFs by choice): pill GIFs + meeting/viewer GIFs + screenshot, the last three from a
   `-KleothDemo` copy of the app (isolation verified: real data/defaults/Keychain/saved state unchanged). Found, not fixed
   (design `docs/plans/2026-09-24-demo-mode.md` §6): the Recordings empty state forces a ~900 pt History minimum height.
+- Wide microphone fix (2026-11-16, for 0.5.4): the second Mac (macOS 27.2) lost a meeting's microphone to a
+  3-channel input. Verified: capture tests red without the fix and green with it, core tests, both builds. Not yet:
+  a real recording on that Mac. Wanted next: an updater (Sparkle; that Mac updates by hand), and a microphone
+  option that follows the call app's input (`kAudioProcessPropertyDevices`, unprobed).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

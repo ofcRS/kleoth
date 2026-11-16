@@ -189,5 +189,14 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // The capture lanes' file and format logic, on synthetic buffers: no
+        // microphone, no TCC grant.   swift test --package-path app
+        .testTarget(
+            name: "KleothCaptureTests",
+            dependencies: ["KleothCapture"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
     ]
 )

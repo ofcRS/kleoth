@@ -938,16 +938,21 @@ public final class RecordingController: ObservableObject {
         // reference is moved into the task, so the `nonisolated(unsafe)` capture
         // is race-free.
         let audioFileURL: URL
+        let microphoneLost: Bool
         do {
             let twoChannel = dir.appendingPathComponent("meeting.m4a")
             let mic = dir.appendingPathComponent(Recorder.micFileName)
             let system = dir.appendingPathComponent(Recorder.systemFileName)
             nonisolated(unsafe) let capture = recorder
-            audioFileURL = try await Task.detached(priority: .userInitiated) {
+            (audioFileURL, microphoneLost) = try await Task.detached(priority: .userInitiated) {
                 try capture.stop()
-                return (try? Recorder.combineChannels(
+                // The combine takes whichever channel holds audio, so a dead
+                // microphone lane still leaves a playable, transcribable file.
+                let combined = try? Recorder.combineChannels(
                     micURL: mic, systemURL: system, outputURL: twoChannel
-                )) ?? mic
+                )
+                let lost = capture.micWriteFailed || !Recorder.holdsAudio(mic)
+                return (combined ?? (lost ? system : mic), lost)
             }.value
         } catch {
             reportMeetingError("Recording stopped with errors: \(error.localizedDescription)", in: dir)
@@ -955,6 +960,18 @@ public final class RecordingController: ObservableObject {
             unmarkProcessing(dir)
             notifyCapture(.stopFailed(message: error.localizedDescription, directory: dir))
             return statusMessage
+        }
+
+        // A meeting with no microphone track must say so: the capture used to
+        // fail in silence (a three-channel microphone array, 2026-11-16) and
+        // the first sign was a transcription that never worked. The card
+        // stays on the meeting; the other side is saved and transcribes.
+        if microphoneLost {
+            log.error("microphone lane lost: write failed or empty mic.m4a")
+            reportMeetingError(
+                "Your microphone was not recorded in this meeting. The other side was saved and can be transcribed.",
+                in: dir
+            )
         }
 
         // Every meeting gets its meta.json now — title, date, participants,
@@ -1497,6 +1514,7 @@ public final class RecordingController: ObservableObject {
     /// The queued worker behind `fullyTranscribe` — does the actual Scribe pass.
     private func runFullTranscription(of meeting: RecentMeeting, elevenKey: String) async {
         let dir = meeting.directory
+        await Self.rebuildCombinedAudioIfMissing(in: dir)
         guard let audio = Self.meetingAudioURL(in: dir) else {
             unmarkProcessing(dir)
             statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
@@ -1703,6 +1721,7 @@ public final class RecordingController: ObservableObject {
     /// keeps the stored record whole.
     private func runOnDeviceTranscription(of meeting: RecentMeeting) async {
         let dir = meeting.directory
+        await Self.rebuildCombinedAudioIfMissing(in: dir)
         guard let audio = Self.meetingAudioURL(in: dir) else {
             unmarkProcessing(dir)
             statusMessage = "No audio found for \"\(meeting.title)\" to transcribe."
@@ -1890,8 +1909,9 @@ public final class RecordingController: ObservableObject {
 
         markProcessing(dir)
         enqueuePipelineJob { [weak self] in
+            await Self.rebuildCombinedAudioIfMissing(in: dir)
             await self?.runPipeline(
-                audioFile: audio,
+                audioFile: Self.meetingAudioURL(in: dir) ?? audio,
                 title: naming.title,
                 meetingDir: dir,
                 startedAt: started,
@@ -2191,13 +2211,43 @@ public final class RecordingController: ObservableObject {
 
     /// The best available audio file co-located with a meeting (prefers the
     /// combined 2-channel capture for multi-channel STT), if any.
+    ///
+    /// A header-only file is skipped: a capture lane whose every write failed
+    /// leaves a 28-byte `mic.m4a` that exists and holds nothing, and handing
+    /// that to a transcriber is how a whole meeting became untranscribable
+    /// (2026-11-16). Size, not a decode: this runs for every row of the list.
     static func meetingAudioURL(in dir: URL) -> URL? {
         let fm = FileManager.default
         for name in ["meeting.m4a", "combined.m4a", "mic.m4a", "system.m4a"] {
             let url = dir.appendingPathComponent(name)
-            if fm.fileExists(atPath: url.path) { return url }
+            guard fm.fileExists(atPath: url.path) else { continue }
+            let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            if size > Self.headerOnlyAudioBytes { return url }
         }
         return nil
+    }
+
+    /// An `.m4a` no larger than this holds no audio: the bare `ftyp` header is
+    /// 28 bytes, and a finalized file with any sound in it is kilobytes.
+    static let headerOnlyAudioBytes = 512
+
+    /// Rebuilds a missing `meeting.m4a` from the per-channel files before a
+    /// transcription. Meetings recorded while the combine still gave up on an
+    /// empty microphone file (before 0.5.4) have an intact `system.m4a` and no
+    /// combined file; this gives them one — a silent "You" channel beside the
+    /// other side — so they play and transcribe like any other. Off the main
+    /// actor: the combine is seconds of work.
+    static func rebuildCombinedAudioIfMissing(in dir: URL) async {
+        guard !isTwoChannelCapture(in: dir) else { return }
+        let mic = dir.appendingPathComponent(Recorder.micFileName)
+        let system = dir.appendingPathComponent(Recorder.systemFileName)
+        let twoChannel = dir.appendingPathComponent("meeting.m4a")
+        await Task.detached(priority: .userInitiated) {
+            guard Recorder.holdsAudio(system) else { return }
+            if (try? Recorder.combineChannels(micURL: mic, systemURL: system, outputURL: twoChannel)) == nil {
+                try? FileManager.default.removeItem(at: twoChannel)   // never leave a half-written file to be picked first
+            }
+        }.value
     }
 
     /// Whether a meeting folder holds a combined 2-channel capture (so Scribe can

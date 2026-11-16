@@ -30,6 +30,8 @@ jobs:
       - run: swift --version
       - run: swift build
       - run: swift test
+      - name: Capture tests (app package)
+        run: swift test --package-path app
 
   app:
     name: Release app + smoke test
