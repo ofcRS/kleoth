@@ -785,7 +785,7 @@ struct SettingsView: View {
             .disabled(!updates.isEnabled)
             LabeledContent("Check now") {
                 Button("Check for Updates…") { updates.checkForUpdates() }
-                    .disabled(!updates.isEnabled || !updates.canCheckForUpdates)
+                    .disabled(!updates.canCheckNow)
             }
         } header: {
             Text("Updates")

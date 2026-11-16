@@ -5,8 +5,8 @@ import Foundation
 ///
 /// 1. **Never relaunch over work in flight.** Installing an update quits and relaunches Kleoth, which
 ///    would cut off a meeting (its recording, or the transcription that follows it), a screen
-///    recording or a dictation. Sparkle asks before it relaunches; the answer is "not yet" until
-///    `Activity.isIdle`.
+///    recording (or its transcription), a dictation, or a queued background job. Sparkle asks before
+///    it relaunches; the answer is "not yet" until `Activity.isIdle`.
 /// 2. **Who shows a scheduled update.** Sparkle's own alert comes forward only when it would take
 ///    focus anyway (near launch: `immediateFocus`) and nothing is in flight and no first-run flow is
 ///    on screen. Every other find is shown gently: the popover's "New version of Kleoth is
@@ -22,25 +22,36 @@ public enum UpdatePolicy {
         public var meetingProcessing: Bool
         /// A screen recording is starting, recording or saving.
         public var screenRecording: Bool
+        /// A screen recording's transcription is queued or running (it starts in the same main-actor
+        /// turn the recording is saved, when the capture itself is no longer active).
+        public var recordingTranscription: Bool
         /// A dictation is listening or in its pipeline, or a saved one is being retried (the retry pastes).
         public var dictation: Bool
+        /// Anything else on the serial pipeline queue, or a cover being drawn: work a relaunch would
+        /// drop without a word.
+        public var backgroundJobs: Bool
 
         public init(
             meetingRecording: Bool = false,
             meetingProcessing: Bool = false,
             screenRecording: Bool = false,
-            dictation: Bool = false
+            recordingTranscription: Bool = false,
+            dictation: Bool = false,
+            backgroundJobs: Bool = false
         ) {
             self.meetingRecording = meetingRecording
             self.meetingProcessing = meetingProcessing
             self.screenRecording = screenRecording
+            self.recordingTranscription = recordingTranscription
             self.dictation = dictation
+            self.backgroundJobs = backgroundJobs
         }
 
         public static let idle = Activity()
 
         public var isIdle: Bool {
-            !meetingRecording && !meetingProcessing && !screenRecording && !dictation
+            !meetingRecording && !meetingProcessing && !screenRecording && !recordingTranscription
+                && !dictation && !backgroundJobs
         }
 
         /// What an update waits for, for "installs after …": the capture the user is in first, the
@@ -49,7 +60,8 @@ public enum UpdatePolicy {
             if meetingRecording { return "the meeting recording" }
             if screenRecording { return "the screen recording" }
             if dictation { return "the dictation" }
-            if meetingProcessing { return "the transcription" }
+            if meetingProcessing || recordingTranscription { return "the transcription" }
+            if backgroundJobs { return "the background jobs" }
             return nil
         }
     }

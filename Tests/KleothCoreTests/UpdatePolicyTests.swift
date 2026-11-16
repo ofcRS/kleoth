@@ -9,7 +9,10 @@ import Testing
         #expect(!UpdatePolicy.mayRelaunch(Activity(meetingRecording: true)))
         #expect(!UpdatePolicy.mayRelaunch(Activity(meetingProcessing: true)))
         #expect(!UpdatePolicy.mayRelaunch(Activity(screenRecording: true)))
+        // A saved screen recording is no longer "active", but its transcription has started.
+        #expect(!UpdatePolicy.mayRelaunch(Activity(recordingTranscription: true)))
         #expect(!UpdatePolicy.mayRelaunch(Activity(dictation: true)))
+        #expect(!UpdatePolicy.mayRelaunch(Activity(backgroundJobs: true)))
     }
 
     @Test func waitsForTheCaptureBeforeTheBackgroundWork() {
@@ -18,6 +21,8 @@ import Testing
         #expect(Activity(meetingProcessing: true, screenRecording: true).waitingFor == "the screen recording")
         #expect(Activity(meetingProcessing: true, dictation: true).waitingFor == "the dictation")
         #expect(Activity(meetingProcessing: true).waitingFor == "the transcription")
+        #expect(Activity(recordingTranscription: true, backgroundJobs: true).waitingFor == "the transcription")
+        #expect(Activity(backgroundJobs: true).waitingFor == "the background jobs")
     }
 
     @Test func sparkleShowsAScheduledUpdateOnlyInFocusAndIdle() {

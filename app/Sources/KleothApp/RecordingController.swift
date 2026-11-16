@@ -1260,11 +1260,17 @@ public final class RecordingController: ObservableObject {
     /// WhisperKit, so two engines must never run at once.
     func enqueuePipelineJob(_ job: @escaping @MainActor @Sendable () async -> Void) {
         let previous = pipelineQueueTail
-        pipelineQueueTail = Task { @MainActor in
+        pipelineJobsPending += 1
+        pipelineQueueTail = Task { @MainActor [weak self] in
             await previous?.value
             await job()
+            self?.pipelineJobsPending -= 1
         }
     }
+
+    /// Jobs queued or running on the pipeline queue, whoever queued them (meetings, screen-recording
+    /// and dictation transcriptions, local covers). The updater holds a relaunch while it is above 0.
+    private(set) var pipelineJobsPending = 0
 
     /// Whether this meeting folder is queued for or undergoing background
     /// processing — gates per-meeting actions (re-transcribe etc.) and drives

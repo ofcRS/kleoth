@@ -117,7 +117,7 @@ private struct CheckForUpdatesCommand: View {
 
     var body: some View {
         Button("Check for Updates…") { updates.checkForUpdates() }
-            .disabled(!updates.canCheckForUpdates)
+            .disabled(!updates.canCheckNow)
     }
 }
 

@@ -410,7 +410,7 @@ struct MenuView: View {
             Spacer(minLength: KleothMetrics.spacingS)
             Button("Update") { updates.checkForUpdates() }
                 .controlSize(.small)
-                .disabled(!updates.canCheckForUpdates)
+                .disabled(!updates.canCheckNow)
                 .help("See what's new in Kleoth \(update.version) and install it")
         }
         .kleothCard(padding: KleothMetrics.spacingM)
@@ -440,7 +440,7 @@ struct MenuView: View {
             if updates.isEnabled {
                 Button("Check for Updates…") { updates.checkForUpdates() }
                     .buttonStyle(.link)
-                    .disabled(!updates.canCheckForUpdates)
+                    .disabled(!updates.canCheckNow)
                     .help("Ask whether a newer Kleoth is out")
             }
         }

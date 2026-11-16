@@ -20,8 +20,13 @@ import Sparkle
 /// behind other apps' windows. Update brings Sparkle's alert (release notes, Install Update).
 ///
 /// Installing quits and relaunches Kleoth, so it waits (`shouldPostponeRelaunch`) while a meeting
-/// records or transcribes, a screen recording runs or a dictation is in flight, and goes ahead by
-/// itself once they end. The popover says so meanwhile.
+/// records or transcribes, a screen recording runs or transcribes, a dictation is in flight, or a
+/// background job (the pipeline queue, a cover) runs, and goes ahead by itself once they end. The
+/// popover says so meanwhile, and every "Check for Updates…" is off until then.
+///
+/// The feed is ALWAYS Info.plist's `SUFeedURL` (`feedURLString(for:)`): Sparkle would otherwise let
+/// a `SUFeedURL` in Kleoth's defaults, launch arguments included, win on every check. There is no
+/// override of any kind in the app; app/updater-e2e.sh points Sparkle elsewhere from its own probe.
 ///
 /// A `-KleothDemo` launch (the smoke test, the demo films) never creates Sparkle's updater: no
 /// check, no network, nothing written to defaults. Settings still shows the row, inert.
@@ -64,6 +69,15 @@ final class UpdaterController: NSObject, ObservableObject {
     let currentVersionLabel: String
     /// "0.5.5".
     let currentVersion: String
+    /// The feed this build ships with (Info.plist), the only one it ever reads.
+    private let shippedFeedURL: String?
+
+    /// What "Check for Updates…" (popover, Settings, the app menu) and the popover's Update need.
+    /// Off while an install is held: Sparkle would bring back its "Ready to Install" window, whose
+    /// button no longer does anything and which can't be closed.
+    var canCheckNow: Bool {
+        isEnabled && canCheckForUpdates && waitingToInstall == nil
+    }
 
     private let log = Logger(subsystem: "dev.kleoth", category: "Updates")
     private var standard: SPUStandardUpdaterController?
@@ -83,8 +97,9 @@ final class UpdaterController: NSObject, ObservableObject {
         let short = info["CFBundleShortVersionString"] as? String
         currentVersion = short ?? "?"
         currentVersionLabel = UpdatePolicy.versionLabel(shortVersion: short, build: info["CFBundleVersion"] as? String)
-        let configured = (info["SUFeedURL"] as? String)?.isEmpty == false
-            && (info["SUPublicEDKey"] as? String)?.isEmpty == false
+        let feed = (info["SUFeedURL"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        shippedFeedURL = feed
+        let configured = feed != nil && (info["SUPublicEDKey"] as? String)?.isEmpty == false
         isEnabled = !DemoMode.isOn && configured
         super.init()
     }
@@ -102,18 +117,13 @@ final class UpdaterController: NSObject, ObservableObject {
             .sink { [weak self] value in MainActor.assumeIsolated { self?.canCheckForUpdates = value } }
             .store(in: &cancellables)
         controller.startUpdater()
-        // A feed URL left in Kleoth's defaults (Sparkle's deprecated `setFeedURL`) would win over
-        // Info.plist's. Kleoth never sets one; clear any, so the feed is always the one shipped.
-        if let stray = updater.clearFeedURLFromUserDefaults() {
-            log.notice("cleared a feed URL override from defaults: \(stray.absoluteString, privacy: .public)")
-        }
         automaticallyChecks = updater.automaticallyChecksForUpdates
     }
 
     /// "Check for Updates…" (popover, Settings, the app menu) and the popover's Update: Sparkle's
     /// window, in front. With a found update pending it brings that update's alert back.
     func checkForUpdates() {
-        guard let standard, standard.updater.canCheckForUpdates else { return }
+        guard let standard, canCheckNow, standard.updater.canCheckForUpdates else { return }
         // A menu-bar app's windows open behind the frontmost app's: become a regular app first
         // (Dock icon, ⌘-Tab), as History and Settings do. Undone when the session finishes.
         AppActivation.shared.windowOpened()
@@ -133,11 +143,15 @@ final class UpdaterController: NSObject, ObservableObject {
     private func currentActivity() -> UpdatePolicy.Activity {
         let meetings = RecordingController.shared
         let dictation = DictationController.shared
+        let screen = ScreenRecordingController.shared
         return UpdatePolicy.Activity(
             meetingRecording: meetings?.isRecording ?? false,
             meetingProcessing: meetings?.isProcessing ?? false,
-            screenRecording: ScreenRecordingController.shared?.isActive ?? false,
-            dictation: (dictation?.isSessionActive ?? false) || !(dictation?.busyPendingIds.isEmpty ?? true)
+            screenRecording: screen?.isActive ?? false,
+            // Starts in the turn the recording is saved, when `isActive` is already false.
+            recordingTranscription: !(screen?.transcribingPaths.isEmpty ?? true),
+            dictation: (dictation?.isSessionActive ?? false) || !(dictation?.busyPendingIds.isEmpty ?? true),
+            backgroundJobs: (meetings?.pipelineJobsPending ?? 0) > 0 || !(CoverController.shared?.busyPaths.isEmpty ?? true)
         )
     }
 
@@ -204,6 +218,12 @@ final class UpdaterController: NSObject, ObservableObject {
 // MARK: - SPUUpdaterDelegate
 
 extension UpdaterController: SPUUpdaterDelegate {
+    /// Asked by Sparkle on every check, before it looks at defaults: the shipped feed, always.
+    /// Without this a `SUFeedURL` default (or `-SUFeedURL` launch argument) would replace it.
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        shippedFeedURL
+    }
+
     /// Asked before Sparkle quits Kleoth to install: "not yet" while anything is in flight; the
     /// held continuation runs once it ends (`tickHeldRelaunch`).
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
