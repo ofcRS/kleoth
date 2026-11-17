@@ -170,5 +170,13 @@ import Testing
         var peak: Float = 0
         for index in 0..<Int(buffer.frameLength) { peak = max(peak, abs(other[index])) }
         #expect(peak > 0.05, "peak \(peak)")   // channel 1 carries the other side (loudness-normalized)
+
+        // The cloud path mixes the two channel files itself and measures each one:
+        // the dead microphone must read as absent there too, not as an error.
+        let mono = dir.appendingPathComponent("mono.m4a")
+        try ChannelAudio.mixToMono(channel0: mic, channel1: system, outputURL: mono)
+        #expect(Recorder.holdsAudio(mono))
+        #expect(try ChannelAudio.envelope(of: mic, hopSeconds: 0.05).isEmpty)
+        #expect(try !ChannelAudio.envelope(of: system, hopSeconds: 0.05).isEmpty)
     }
 }

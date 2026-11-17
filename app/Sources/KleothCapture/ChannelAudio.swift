@@ -285,7 +285,9 @@ public enum ChannelAudio {
     /// step used when combining channels.
     private static func decodeToMono(_ url: URL) throws -> AVAudioPCMBuffer? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let file = try AVAudioFile(forReading: url)
+        // A capture whose every write failed leaves a header-only file that exists and
+        // cannot be opened: the same as a channel that is not there.
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
         let sourceFormat = file.processingFormat
         let frameCount = AVAudioFrameCount(file.length)
         if frameCount == 0 { return nil }
