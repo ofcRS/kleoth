@@ -6,6 +6,15 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-11-17
+
+### Fixed
+
+- **A meeting recorded without its microphone still refused to transcribe.** 0.5.4 rebuilt such a
+  meeting's audio, but both transcription paths went on to open the empty microphone file and
+  stopped there. An empty channel is now treated as silent: the other side is transcribed and
+  summarized, on device and in the cloud.
+
 ## [0.5.5] — 2026-11-16
 
 ### Added

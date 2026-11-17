@@ -136,6 +136,12 @@ public struct LocalTranscriber: Transcriber {
         var maxDuration = 0.0
         var detectedLanguage: String?
         for (index, url) in sources.enumerated() {
+            // A channel that holds no audio (a header-only `mic.m4a`) keeps its index,
+            // so the other channel is still "Them", and contributes no words.
+            guard Recorder.holdsAudio(url) else {
+                transcripts.append(ScribeChannelTranscript(text: "", words: [], channelIndex: index))
+                continue
+            }
             let channel = try await Self.transcribeFile(url, pipe: pipe, options: decodeOptions, timing: timing)
             transcripts.append(ScribeChannelTranscript(
                 text: channel.text,

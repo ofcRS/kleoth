@@ -411,5 +411,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   rotated key before extraction, installs 9 → 10 over a copy). Review fixes (PR #28) in.
   Not yet: a real install updating itself (design §6 checklist), the popover notice by eye. 0.5.4 → 0.5.5 is
   the last manual install (both Macs).
+- v0.5.6 (2026-11-17): transcription of a meeting with a header-only `mic.m4a` (0.5.4 fixed only the combine):
+  `ChannelAudio.decodeToMono` and `LocalTranscriber` now treat an unreadable channel as silent. Verified on the
+  real 2026-11-16 17:04 meeting with `localtranscribe`. The second Mac records its microphone again (two real
+  meetings on 0.5.5). First release delivered through the updater.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
