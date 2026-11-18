@@ -296,8 +296,10 @@ public enum ChannelAudio {
     }
 
     /// Reads the whole file and converts it to a single mono float32 buffer, or
-    /// returns `nil` if the file does not exist. Mirrors the shared decode-to-mono
-    /// step used when combining channels.
+    /// returns `nil` if the file does not exist. A stereo file keeps its LEFT
+    /// channel only (`AVAudioConverter`'s default, `downmix` off; probed), where
+    /// `Recorder.combine` averages both: the Scribe mix and the envelopes of a
+    /// stereo `system.m4a` hear its left channel.
     private static func decodeToMono(_ url: URL) throws -> AVAudioPCMBuffer? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         // A capture whose every write failed leaves a header-only file that exists and

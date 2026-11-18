@@ -218,11 +218,26 @@ public final class Recorder {
     ///
     /// Streamed: each lane is read twice in chunks (once for its loudness,
     /// once to convert), so memory stays a few chunks whatever the meeting's
-    /// length. The loudness balance is the one `ChannelAudio.normalizeLoudness`
-    /// applies — one gain per lane from its whole-file RMS, then a ±0.97
-    /// ceiling — so in-app playback isn't lopsided when the mic is much
-    /// quieter than the other side.
+    /// length. The loudness balance uses `ChannelAudio.normalizeLoudness`'s
+    /// numbers — one gain per lane from its whole-file RMS, then a ±0.97
+    /// ceiling, now applied AFTER the rate conversion (a ceiling before it
+    /// overshoots past full scale once resampled) — so in-app playback isn't
+    /// lopsided when the mic is much quieter than the other side. Two things
+    /// differ from the combine up to 0.5.7 besides the rate: a stereo lane is
+    /// the AVERAGE of its channels (it was the left channel only, the
+    /// converter's default, not a choice anyone made), so its RMS and gain
+    /// can differ a little.
+    ///
+    /// The finished file carries `MeetingAudioRepair`'s mark. A cancelled task
+    /// stops the combine between chunks with `CancellationError`.
     static func combine(channel0: URL, channel1: URL, outputURL: URL) throws -> URL {
+        try writeCombined(channel0: channel0, channel1: channel1, outputURL: outputURL)
+        // After the file is closed (the writer is released on return).
+        MeetingAudioRepair.markResampled(outputURL)
+        return outputURL
+    }
+
+    private static func writeCombined(channel0: URL, channel1: URL, outputURL: URL) throws {
         let file0 = openLane(channel0)
         let file1 = openLane(channel1)
         guard file0 != nil || file1 != nil else {
@@ -252,6 +267,7 @@ public final class Recorder {
             throw RecorderError.bufferAllocationFailed
         }
         while true {
+            if Task.isCancelled { throw CancellationError() }
             let count0 = try lane0?.read(into: block0) ?? 0
             let count1 = try lane1?.read(into: block1) ?? 0
             let count = max(count0, count1)
@@ -265,8 +281,6 @@ public final class Recorder {
             if count1 > 0, let src = block1.floatChannelData { out[1].update(from: src[0], count: Int(count1)) }
             try outFile.write(from: outBuffer)
         }
-
-        return outputURL
     }
 
     /// The lane file opened for reading, or `nil` if it does not exist or
@@ -287,6 +301,8 @@ public final class Recorder {
 
 /// One capture lane read back as loudness-balanced mono Float32 at the
 /// combine's rate, a chunk at a time (``Recorder/combine(channel0:channel1:outputURL:)``).
+/// The gain and its ±0.97 ceiling are applied at the OUTPUT rate: clipped
+/// first and resampled after, a boosted lane overshot to 1.09 (probed).
 ///
 /// Mono comes first, at the file's own rate: the channels are AVERAGED here
 /// (as ``MonoDownmix`` does on the capture side) rather than handed to
@@ -341,6 +357,7 @@ final class MonoLaneReader: @unchecked Sendable {
         var sumOfSquares = 0.0
         var frames = 0
         while let block = try Self.readMono(file, into: readBuffer, as: sourceMono, upTo: Self.readChunk) {
+            if Task.isCancelled { throw CancellationError() }
             var chunkSum: Float = 0
             vDSP_svesq(block.floatChannelData![0], 1, &chunkSum, vDSP_Length(block.frameLength))
             sumOfSquares += Double(chunkSum)
@@ -351,9 +368,19 @@ final class MonoLaneReader: @unchecked Sendable {
         file.framePosition = 0
     }
 
-    /// Fills `buffer` (mono, at the output rate) with up to its capacity and
-    /// returns the frames written: fewer only at the end of the lane, 0 past it.
+    /// Fills `buffer` (mono, at the output rate, gain and ceiling applied)
+    /// with up to its capacity and returns the frames written: fewer only at
+    /// the end of the lane, 0 past it.
     func read(into buffer: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+        let count = try convert(into: buffer)
+        if count > 0, let gain {
+            ChannelAudio.apply(gain: gain, to: buffer.floatChannelData![0], count: Int(count))
+        }
+        return count
+    }
+
+    /// The lane at the output rate, as it is.
+    private func convert(into buffer: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
         buffer.frameLength = 0
         guard !finished else { return 0 }
         guard let converter else {
@@ -395,17 +422,13 @@ final class MonoLaneReader: @unchecked Sendable {
         return buffer.frameLength
     }
 
-    /// The next block of the lane at its own rate, mono, with the lane's gain
-    /// and ceiling applied, in a buffer of its own (the converter may hold on
-    /// to it); nil at the end of the file.
+    /// The next block of the lane at its own rate, mono, in a buffer of its own
+    /// (the converter may hold on to it); nil at the end of the file.
     private func nextBlock(upTo frames: AVAudioFrameCount) throws -> AVAudioPCMBuffer? {
         guard !sourceExhausted else { return nil }
         guard let block = try Self.readMono(file, into: readBuffer, as: sourceMono, upTo: min(frames, Self.readChunk)) else {
             sourceExhausted = true
             return nil
-        }
-        if let gain {
-            ChannelAudio.apply(gain: gain, to: block.floatChannelData![0], count: Int(block.frameLength))
         }
         return block
     }

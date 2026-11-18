@@ -8,8 +8,8 @@ import Testing
 /// Bluetooth headset in HFP, 44.1 kHz for a MacBook's array). The combine used
 /// to copy both lanes frame for frame at the MICROPHONE's rate, so the other
 /// side's channel played three times too slow and `meeting.m4a` lasted three
-/// times the meeting (2026-11-18: "104m 24s" for a 34m 48s call). These build
-/// both lanes on synthetic tones and read the combined file back.
+/// times the meeting. These build both lanes on synthetic tones and read the
+/// combined file back.
 @Suite struct CombineSampleRateTests {
     /// The microphone's tone and the other side's: different, so a check can
     /// tell the channels apart.
@@ -128,8 +128,8 @@ import Testing
         #expect(tailPeak < 0.001, "the shorter lane is silent past its end (peak \(tailPeak))")
     }
 
-    /// Both lanes at the same rate: unchanged by the fix (the common 48 kHz case).
-    @Test func sameRateLanesCombineAsBefore() throws {
+    /// Both lanes at the same rate (the common 48 kHz case): the file keeps it.
+    @Test func sameRateLanesKeepTheirRate() throws {
         let dir = scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let mic = dir.appendingPathComponent("mic.m4a")
@@ -147,5 +147,88 @@ import Testing
         let other = try channel(1, of: combined)
         let heard = frequency(other.samples, sampleRate: other.sampleRate, from: 0.5, to: 2.5)
         #expect(abs(heard - Self.systemTone) < Self.systemTone * 0.001, "channel 1 at \(heard) Hz")
+        // Every combined file says it was resampled (`MeetingAudioRepair`).
+        #expect(MeetingAudioRepair.isMarkedResampled(combined))
+    }
+
+    /// A lane of silence with one burst at `at` seconds.
+    private func writeBurst(_ url: URL, sampleRate: Double, channels: Int, seconds: Double, at onset: Double) throws {
+        let format = try #require(AudioFormat.pcmFloat32(sampleRate: sampleRate, channels: channels))
+        let total = Int(seconds * sampleRate)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(total)))
+        buffer.frameLength = AVAudioFrameCount(total)
+        let planes = try #require(buffer.floatChannelData)
+        let start = Int(onset * sampleRate), length = Int(0.2 * sampleRate)
+        for frame in 0..<total {
+            let inBurst = frame >= start && frame < start + length
+            let sample = inBurst ? Float(0.5 * sin(2 * .pi * 1000 * Double(frame - start) / sampleRate)) : 0
+            for channel in 0..<channels { planes[channel][frame] = sample }
+        }
+        do {
+            let file = try AudioFormat.openAACFile(at: url, sampleRate: sampleRate, channels: channels)
+            try file.write(from: buffer)
+        }
+    }
+
+    /// When a channel first reaches half its loudest sample, in seconds.
+    private func onset(_ samples: [Float], sampleRate: Double) -> Double {
+        let peak = samples.map(abs).max() ?? 0
+        let index = samples.firstIndex { abs($0) >= peak / 2 } ?? 0
+        return Double(index) / sampleRate
+    }
+
+    /// The two lanes start together, so a constant offset between what they
+    /// carry (the other side speaks half a second after the microphone) stays
+    /// exactly that: the resampler adds no delay of its own.
+    @Test func aConstantOffsetBetweenTheLanesIsKept() throws {
+        let dir = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let mic = dir.appendingPathComponent("mic.m4a")
+        let system = dir.appendingPathComponent("system.m4a")
+        let combined = dir.appendingPathComponent("meeting.m4a")
+        try writeBurst(mic, sampleRate: 16_000, channels: 1, seconds: 3, at: 1.0)
+        try writeBurst(system, sampleRate: 48_000, channels: 2, seconds: 3, at: 1.5)
+
+        try Recorder.combineChannels(micURL: mic, systemURL: system, outputURL: combined)
+
+        let micLane = try channel(0, of: mic), systemLane = try channel(0, of: system)
+        let you = try channel(0, of: combined), other = try channel(1, of: combined)
+        let micOnset = onset(micLane.samples, sampleRate: micLane.sampleRate)
+        let systemOnset = onset(systemLane.samples, sampleRate: systemLane.sampleRate)
+        // Within 1 ms of where each lane has it.
+        #expect(abs(onset(you.samples, sampleRate: you.sampleRate) - micOnset) < 0.001)
+        #expect(abs(onset(other.samples, sampleRate: other.sampleRate) - systemOnset) < 0.001)
+        #expect(abs((systemOnset - micOnset) - 0.5) < 0.002)
+    }
+
+    /// A quiet lane with loud bursts gets a big gain: its ±0.97 ceiling holds
+    /// at the OUTPUT rate. Clipped first and resampled after, it overshot.
+    @Test func theCeilingHoldsAfterResampling() throws {
+        let dir = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let mic = dir.appendingPathComponent("mic.m4a")
+        // 50 ms of tone in 4 s: an RMS of 0.04, a gain of about 3.
+        try writeBurst(mic, sampleRate: 16_000, channels: 1, seconds: 4, at: 1.0)
+        let short = dir.appendingPathComponent("short.m4a")
+        do {
+            let source = try AVAudioFile(forReading: mic)
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: source.processingFormat, frameCapacity: AVAudioFrameCount(source.length)))
+            try source.read(into: buffer)
+            let samples = try #require(buffer.floatChannelData)[0]
+            // Keep the first 50 ms of the 200 ms burst.
+            for frame in Int(1.05 * 16_000)..<Int(buffer.frameLength) { samples[frame] = 0 }
+            let file = try AudioFormat.openAACFile(at: short, sampleRate: 16_000, channels: 1)
+            try file.write(from: buffer)
+        }
+        let output = try #require(AudioFormat.pcmFloat32(sampleRate: 48_000, channels: 1))
+        let reader = try MonoLaneReader(file: try AVAudioFile(forReading: short), outputFormat: output)
+        let block = try #require(AVAudioPCMBuffer(pcmFormat: output, frameCapacity: 16_384))
+        var peak: Float = 0
+        while try reader.read(into: block) > 0 {
+            let samples = try #require(block.floatChannelData)[0]
+            for index in 0..<Int(block.frameLength) { peak = max(peak, abs(samples[index])) }
+        }
+        #expect(peak > 0.9, "the gain clipped the bursts (peak \(peak))")
+        #expect(peak <= 0.97, "peak \(peak)")
     }
 }
