@@ -427,5 +427,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   `ChannelAudio.decodeToMono` and `LocalTranscriber` now treat an unreadable channel as silent. Verified on the
   real 2026-11-16 17:04 meeting with `localtranscribe`. The second Mac records its microphone again (two real
   meetings on 0.5.5). First release delivered through the updater.
+- v0.5.7 (2026-11-18): the pill drags from anywhere and keeps its state while dragged; no empty active pill (PR #32,
+  review fixes in). Verified on films and tests only. Not yet by eye: a real drag, a lost mouse-up, a call offer's
+  and a fault's buttons, VoiceOver actions, Reduce Motion. The updater delivered 0.5.6 on the second Mac (the user).
+  Planned work lives in `docs/ROADMAP.md` (next: a finished meeting pushed to the T3 Code thread on the dev VMs).
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

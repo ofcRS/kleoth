@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.7] — 2026-11-18
+
 ### Fixed
 
 - **The pill could not be dragged from its dock.** The four fields (Dictate · Meeting · Screen ·
