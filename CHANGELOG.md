@@ -15,9 +15,10 @@ All notable changes to Kleoth are documented here. The format is based on
   shows an open hand where the pill only drags and a closed hand while you drag it.
 - **Dragging the pill collapsed it and threw it back.** When the pointer left the dock during a
   drag, the dock folded back into the edge at its old place halfway through the drag. A dragged
-  pill now keeps its shape until you let go, and a dictation that finishes, or a meeting or a
-  recording that starts, while you drag shows up where you drop it. The pill also no longer drops
-  a few points as the drag begins.
+  pill now keeps its shape until you let go. A dictation, a meeting or a screen recording that
+  starts while you drag shows its bar at once, right under the pointer; anything else that changes
+  (a dictation finishing, a recording saved) shows where you drop it. The pill also no longer drops
+  a few points as the drag begins, and a press on the dock while it is still opening is a click.
 - **The pill could go empty while it was busy.** A dictation, a meeting or a screen recording
   started from the pill showed a pill-shaped blank before its controls appeared, for as long as
   the start kept the Mac busy. And a pill that changed while you dragged it was drawn off its own
