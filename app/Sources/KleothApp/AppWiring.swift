@@ -89,6 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { MeetingDetectionController.sharedInstance().start() }
         // Meeting covers: sweep temp files a kill left in meeting folders.
         MainActor.assumeIsolated { CoverController.shared?.sweepTemporaryFilesAtLaunch() }
+        // Meetings combined by 0.5.7 or earlier with a microphone not at 48 kHz:
+        // rebuild their `meeting.m4a` from the intact lanes, in the background.
+        MainActor.assumeIsolated { RecordingController.shared?.repairCombinedAudioAtLaunch() }
         // In-app updates: Sparkle's daily check from here on (never on a demo launch, which has
         // no delegate; the controller refuses in demo mode too). Created here if `KleothApp`
         // has not made it yet.

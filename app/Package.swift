@@ -136,6 +136,19 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Headless repair of meetings combined by 0.5.7 or earlier at the wrong rate:
+        // the same `MeetingAudioRepair` the app runs at launch, on folders you
+        // name. `recombine [--dry-run] <meeting-dir | folder of meetings>...`
+        .executableTarget(
+            name: "recombine",
+            dependencies: [
+                "KleothCapture",
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         // Headless dictation pipeline probe: record N seconds from the mic →
         // prepare → Scribe → polish, print the result. No hotkey, no paste, no
         // Accessibility needed. `dictate [seconds] [--transcriber scribe] [--model <slug>]`
