@@ -384,6 +384,77 @@ public struct MeetingStore {
         try data.write(to: metaURL, options: .atomic)
     }
 
+    // MARK: - Stored audio durations
+
+    /// The files whose stored `cost` carries the length the combine up to 0.5.7
+    /// gave `meeting.m4a` (``MeetingAudioLanes/corrected(_:)``): `meta.json`
+    /// and any archived `variants/<tier>/variant.json`. Read-only.
+    public func storedAudioDurationsNeedingCorrection(in dir: URL, lanes: MeetingAudioLanes) -> [URL] {
+        costFiles(in: dir).filter { url in
+            guard let cost = Self.storedCost(at: url) else { return false }
+            return lanes.corrected(cost) != nil
+        }
+    }
+
+    /// Rewrites the stored `cost` of every file
+    /// ``storedAudioDurationsNeedingCorrection(in:lanes:)`` names with the
+    /// meeting's real duration (and the transcription cost scaled with it);
+    /// nothing else in them changes, and the folder keeps its modification
+    /// date (History orders a meeting with no start time by it; a background
+    /// correction must not move the row). Returns the files rewritten.
+    /// Idempotent: a corrected value no longer matches the old combine's length.
+    @discardableResult
+    public func correctStoredAudioDurations(in dir: URL, lanes: MeetingAudioLanes) throws -> [URL] {
+        let folderModified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        var rewritten: [URL] = []
+        defer {
+            if !rewritten.isEmpty, let folderModified {
+                try? FileManager.default.setAttributes([.modificationDate: folderModified], ofItemAtPath: dir.path)
+            }
+        }
+        for url in costFiles(in: dir) {
+            let data = try Data(contentsOf: url)
+            if url.lastPathComponent == "meta.json" {
+                var metadata = try Self.makeDecoder().decode(MeetingMetadata.self, from: data)
+                guard let cost = metadata.cost, let fixed = lanes.corrected(cost) else { continue }
+                metadata.cost = fixed
+                try Self.makeEncoder().encode(metadata).write(to: url, options: .atomic)
+            } else {
+                var info = try Self.makeDecoder().decode(TranscriptVariantInfo.self, from: data)
+                guard let cost = info.cost, let fixed = lanes.corrected(cost) else { continue }
+                info.cost = fixed
+                try Self.makeEncoder().encode(info).write(to: url, options: .atomic)
+            }
+            rewritten.append(url)
+        }
+        return rewritten
+    }
+
+    /// `meta.json` and every `variants/*/variant.json` present in `dir`.
+    private func costFiles(in dir: URL) -> [URL] {
+        let fm = FileManager.default
+        var files: [URL] = []
+        let meta = dir.appendingPathComponent("meta.json")
+        if fm.fileExists(atPath: meta.path) { files.append(meta) }
+        let variants = (try? fm.contentsOfDirectory(
+            at: variantsDir(in: dir), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+        for variant in variants.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let sidecar = variant.appendingPathComponent("variant.json")
+            if fm.fileExists(atPath: sidecar.path) { files.append(sidecar) }
+        }
+        return files
+    }
+
+    /// The `cost` stored in a `meta.json` or a `variant.json`, if it decodes.
+    private static func storedCost(at url: URL) -> CostBreakdown? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if url.lastPathComponent == "meta.json" {
+            return (try? makeDecoder().decode(MeetingMetadata.self, from: data))?.cost
+        }
+        return (try? makeDecoder().decode(TranscriptVariantInfo.self, from: data))?.cost
+    }
+
     // MARK: - Helpers
 
     /// A unique, sortable meeting directory under `baseDir`, named

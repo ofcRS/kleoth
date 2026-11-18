@@ -11,8 +11,8 @@ import KleothCore
 /// label each transcribed word You/Them — Scribe's own diarization is not used.
 ///
 /// All work is pure file IO over float32 PCM, so these helpers are safe to call
-/// off the main actor. They mirror the decode-to-mono / chunked-write approach
-/// in ``Recorder/combine(channel0:channel1:outputURL:)``.
+/// off the main actor. Unlike ``Recorder/combine(channel0:channel1:outputURL:)``,
+/// which streams, they decode each whole file into memory.
 public enum ChannelAudio {
     /// Errors thrown while mixing or probing channel audio.
     public enum AudioError: Error, Sendable {
@@ -164,12 +164,7 @@ public enum ChannelAudio {
     /// attribution is unaffected: it reads energy from the original per-channel
     /// files, never from a normalized buffer. (This is the native AVFoundation/
     /// Accelerate equivalent of an ffmpeg loudness pass — no external binary.)
-    static func normalizeLoudness(
-        _ buffer: AVAudioPCMBuffer?,
-        targetRMS: Float = 0.12,
-        maxGain: Float = 16,
-        noiseFloor: Float = 0.0008
-    ) {
+    static func normalizeLoudness(_ buffer: AVAudioPCMBuffer?) {
         guard let buffer, let data = buffer.floatChannelData else { return }
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
@@ -180,11 +175,31 @@ public enum ChannelAudio {
         var meanSquare: Float = 0
         vDSP_measqv(data[0], 1, &meanSquare, vDSP_Length(count))
         let rms = meanSquare > 0 ? sqrt(meanSquare) : 0
-        guard rms > noiseFloor else { return }
+        guard let gain = loudnessGain(rms: rms) else { return }
+        apply(gain: gain, to: data[0], count: count)
+    }
 
-        var gain = min(targetRMS / rms, maxGain)
-        guard gain.isFinite, gain > 0, gain != 1 else { return }
-        vDSP_vsmul(data[0], 1, &gain, data[0], 1, vDSP_Length(count))
+    /// The gain ``normalizeLoudness(_:)`` gives a channel of this RMS, or nil
+    /// to leave it untouched (near-silent, or already at the target). Shared
+    /// with the streamed combine (`MonoLaneReader`), which measures a whole
+    /// lane chunk by chunk before it applies one gain.
+    static func loudnessGain(
+        rms: Float,
+        targetRMS: Float = 0.12,
+        maxGain: Float = 16,
+        noiseFloor: Float = 0.0008
+    ) -> Float? {
+        guard rms > noiseFloor else { return nil }
+        let gain = min(targetRMS / rms, maxGain)
+        guard gain.isFinite, gain > 0, gain != 1 else { return nil }
+        return gain
+    }
+
+    /// Scales `count` samples by `gain`, then clamps them to ±0.97.
+    static func apply(gain: Float, to samples: UnsafeMutablePointer<Float>, count: Int) {
+        guard count > 0 else { return }
+        var gain = gain
+        vDSP_vsmul(samples, 1, &gain, samples, 1, vDSP_Length(count))
 
         // Hard ceiling after the gain stage: an RMS-derived gain says nothing
         // about peaks, and a quiet-but-spiky mic can be pushed well past full
@@ -193,7 +208,7 @@ public enum ChannelAudio {
         // thumps) — accepted; a real limiter is out of scope.
         var lo: Float = -0.97
         var hi: Float = 0.97
-        vDSP_vclip(data[0], 1, &lo, &hi, data[0], 1, vDSP_Length(count))
+        vDSP_vclip(samples, 1, &lo, &hi, samples, 1, vDSP_Length(count))
     }
 
     /// Adds `source`'s mono samples into `destination` (sized `frames`), updating
