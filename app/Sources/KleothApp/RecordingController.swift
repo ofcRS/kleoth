@@ -2246,83 +2246,170 @@ public final class RecordingController: ObservableObject {
     /// transcription. Meetings recorded while the combine still gave up on an
     /// empty microphone file (before 0.5.4) have an intact `system.m4a` and no
     /// combined file; this gives them one — a silent "You" channel beside the
-    /// other side — so they play and transcribe like any other. Off the main
-    /// actor: the combine is seconds of work.
+    /// other side — so they play and transcribe like any other. A `meeting.m4a`
+    /// that is there but does not open or holds no audio (a combine cut short)
+    /// counts as missing. Written beside it and renamed over it
+    /// (`MeetingAudioRepair.writeCombinedFile`), so a failure never leaves a
+    /// half-written file to be picked first. Off the main actor: the combine
+    /// is seconds of work.
     static func rebuildCombinedAudioIfMissing(in dir: URL) async {
-        guard !isTwoChannelCapture(in: dir) else { return }
+        let twoChannel = dir.appendingPathComponent("meeting.m4a")
+        let legacy = dir.appendingPathComponent("combined.m4a")
         let mic = dir.appendingPathComponent(Recorder.micFileName)
         let system = dir.appendingPathComponent(Recorder.systemFileName)
-        let twoChannel = dir.appendingPathComponent("meeting.m4a")
         await Task.detached(priority: .userInitiated) {
-            guard Recorder.holdsAudio(system) else { return }
-            if (try? Recorder.combineChannels(micURL: mic, systemURL: system, outputURL: twoChannel)) == nil {
-                try? FileManager.default.removeItem(at: twoChannel)   // never leave a half-written file to be picked first
-            }
+            if Recorder.holdsAudio(twoChannel) || Recorder.holdsAudio(legacy) { return }
+            guard Recorder.holdsAudio(system) || Recorder.holdsAudio(mic) else { return }
+            _ = try? MeetingAudioRepair.writeCombinedFile(in: dir)
         }.value
     }
 
     /// Launch: rebuilds every `meeting.m4a` the combine up to 0.5.7 wrote at
-    /// the microphone's rate — a 16 kHz headset made it three times the
-    /// meeting, the other side three times too slow — from the meeting's own
-    /// `mic.m4a` and `system.m4a`, and corrects the length stored with its
-    /// transcript (`MeetingAudioRepair`, `MeetingAudioLanes`).
+    /// the microphone's rate (the other side at the wrong speed, the file up
+    /// to three times the meeting) from the meeting's own `mic.m4a` and
+    /// `system.m4a`, and corrects the length stored with its transcript
+    /// (`MeetingAudioRepair`, `MeetingAudioLanes`).
+    ///
+    /// Scans each output folder ONCE: the first pass looks at every meeting
+    /// (a file the new combine marked costs one attribute read; an old one,
+    /// three file headers), later launches only at the meetings left pending
+    /// (busy, not downloaded, a stored length not yet corrected). A meeting
+    /// whose rebuild fails is remembered and not retried by the app;
+    /// `recombine` still repairs it. State: `MeetingAudioRepairState` under
+    /// `audioRepairStateKey`. A file that is not downloaded from a cloud
+    /// folder is never opened.
     ///
     /// One meeting at a time on a utility task of its own, not the pipeline
     /// queue: a transcription asked for meanwhile never waits behind dozens of
-    /// rebuilds. A meeting that is recording or processing is skipped; the
-    /// next launch finds it again. Crash-safe and idempotent: the new file is
-    /// built beside the old one and renamed over it, the lanes are only read,
-    /// and a repaired meeting no longer matches. Called from
-    /// `applicationDidFinishLaunching`, so never on a demo launch (no
-    /// `AppDelegate`); checked here too.
+    /// rebuilds. It waits while a meeting or a screen recording runs, and
+    /// stops a rebuild already under way when one starts (the rebuild starts
+    /// over afterwards): those captures write to the disk for as long as they
+    /// last and lose what they cannot write. A dictation does not hold it up:
+    /// seconds of one light input, while the rebuild runs at utility priority.
+    /// Crash-safe and idempotent: the new file is built beside the old one and
+    /// renamed over it, the lanes are only read, and a rebuilt file carries the
+    /// mark. Called from `applicationDidFinishLaunching`, so never on a demo
+    /// launch (no `AppDelegate`); checked here too.
     func repairCombinedAudioAtLaunch() {
         guard !DemoMode.isOn, combinedAudioRepair == nil else { return }
         let outputDir = settings.outputDir
+        let stateKey = outputDir.standardizedFileURL.path
+        let state = Self.audioRepairState(for: stateKey)
         combinedAudioRepair = Task { [weak self] in
-            let found = await Task.detached(priority: .utility) {
-                MeetingAudioRepair.meetingsNeedingRepair(in: outputDir)
+            let (work, unavailable) = await Task.detached(priority: .utility) { () -> ([URL], [String]) in
+                let folders = MeetingAudioRepair.meetingFolders(in: outputDir)
+                let wanted = Set(state.foldersToCheck(all: folders.map(\.lastPathComponent)))
+                let pending = Set(state.pending)
+                var work: [URL] = []
+                var unavailable: [String] = []
+                for dir in folders where wanted.contains(dir.lastPathComponent) {
+                    switch MeetingAudioRepair.triage(dir, deep: pending.contains(dir.lastPathComponent)) {
+                    case .needsRepair: work.append(dir)
+                    case .unavailable: unavailable.append(dir.lastPathComponent)
+                    case .fine: break
+                    }
+                }
+                return (work, unavailable)
             }.value
-            for dir in found {
-                guard let self else { return }
-                await self.repairCombinedAudio(in: dir)
+            guard let self else { return }
+            if !work.isEmpty || !unavailable.isEmpty {
+                self.log.notice("combined audio: \(work.count, privacy: .public) meeting(s) to repair, \(unavailable.count, privacy: .public) not downloaded")
             }
+            var pending = Set(unavailable)
+            var failed = Set(state.failed)
+            for dir in work {
+                switch await self.repairCombinedAudio(in: dir) {
+                case .done: break
+                case .deferred: pending.insert(dir.lastPathComponent)
+                case .failed: failed.insert(dir.lastPathComponent)
+                }
+                // Kept as it goes, so a quit mid-pass never forgets a failure.
+                Self.saveAudioRepairState(
+                    MeetingAudioRepairState(completedPass: state.completedPass, pending: state.pending, failed: failed.sorted()),
+                    for: stateKey
+                )
+            }
+            Self.saveAudioRepairState(
+                MeetingAudioRepairState(
+                    completedPass: MeetingAudioRepairState.currentPass, pending: pending.sorted(), failed: failed.sorted()
+                ),
+                for: stateKey
+            )
         }
+    }
+
+    private enum AudioRepairOutcome { case done, deferred, failed }
+
+    /// A meeting or a screen recording is capturing: the repair waits.
+    private var isCapturingForRepair: Bool {
+        isRecording || (ScreenRecordingController.shared?.isActive ?? false)
     }
 
     /// One meeting of the launch repair. The audio is rebuilt off the main
     /// actor; the stored lengths are rewritten back on it, where every other
     /// writer of `meta.json` runs, and only while no run owns the folder (a
     /// Summarize that started meanwhile would write its own `meta.json` over
-    /// ours; the next launch corrects it then).
-    private func repairCombinedAudio(in dir: URL) async {
-        guard !isProcessingMeeting(dir), activeRecordingDir?.standardizedFileURL != dir.standardizedFileURL else {
-            log.notice("combined audio: \(dir.lastPathComponent, privacy: .public) is busy; left for the next launch")
-            return
-        }
-        let (outcome, lanes) = await Task.detached(priority: .utility) {
-            let lanes = MeetingAudioRepair.lanes(in: dir)
-            return (Result { try MeetingAudioRepair.rebuildCombinedFile(in: dir) }, lanes)
-        }.value
-        switch outcome {
-        case .success(let rebuild?):
-            log.notice("combined audio: rebuilt \(dir.lastPathComponent, privacy: .public), \(rebuild.before, privacy: .public) s → \(rebuild.after, privacy: .public) s")
-        case .success(nil):
-            break
-        case .failure(let error):
-            log.error("combined audio: \(dir.lastPathComponent, privacy: .public) not rebuilt: \(error.localizedDescription, privacy: .public)")
-        }
-        if !isProcessingMeeting(dir) {
-            do {
-                let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
-                let rewritten = try store.correctStoredAudioDurations(in: dir, lanes: lanes)
-                if !rewritten.isEmpty {
-                    log.notice("combined audio: corrected the stored length in \(rewritten.count, privacy: .public) file(s) of \(dir.lastPathComponent, privacy: .public)")
-                }
-            } catch {
-                log.error("combined audio: \(dir.lastPathComponent, privacy: .public) stored length not corrected: \(error.localizedDescription, privacy: .public)")
+    /// ours; the folder stays pending for the next launch).
+    private func repairCombinedAudio(in dir: URL) async -> AudioRepairOutcome {
+        let name = dir.lastPathComponent
+        while true {
+            while isCapturingForRepair { try? await Task.sleep(for: .seconds(5)) }
+            guard !isProcessingMeeting(dir) else {
+                log.notice("combined audio: \(name, privacy: .public) is busy; left for the next launch")
+                return .deferred
             }
+            let work = Task.detached(priority: .utility) { () -> (Result<MeetingAudioRepair.Rebuild?, any Error>, MeetingAudioLanes) in
+                (Result { try MeetingAudioRepair.rebuildCombinedFile(in: dir) }, MeetingAudioRepair.lanes(in: dir))
+            }
+            // A capture that starts meanwhile stops the rebuild between chunks.
+            let watcher = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    if self?.isCapturingForRepair ?? true { work.cancel(); return }
+                }
+            }
+            let (outcome, lanes) = await work.value
+            watcher.cancel()
+
+            switch outcome {
+            case .success(let rebuild?):
+                log.notice("combined audio: rebuilt \(name, privacy: .public), \(rebuild.before ?? -1, privacy: .public) s → \(rebuild.after, privacy: .public) s")
+            case .success(nil):
+                break
+            case .failure(let error) where error is CancellationError:
+                log.notice("combined audio: \(name, privacy: .public) stopped for a capture; starts over after it")
+                continue
+            case .failure(let error) where error as? MeetingAudioRepair.RepairError == .notDownloaded:
+                return .deferred
+            case .failure(let error):
+                log.error("combined audio: \(name, privacy: .public) not rebuilt: \(error.localizedDescription, privacy: .public)")
+                refreshRepairedRow(dir)
+                return .failed
+            }
+
+            var result = AudioRepairOutcome.done
+            if isProcessingMeeting(dir) {
+                result = .deferred
+            } else {
+                do {
+                    let store = MeetingStore(baseDir: dir.deletingLastPathComponent())
+                    let rewritten = try store.correctStoredAudioDurations(in: dir, lanes: lanes)
+                    if !rewritten.isEmpty {
+                        log.notice("combined audio: corrected the stored length in \(rewritten.count, privacy: .public) file(s) of \(name, privacy: .public)")
+                    }
+                } catch {
+                    log.error("combined audio: \(name, privacy: .public) stored length not corrected: \(error.localizedDescription, privacy: .public)")
+                    result = .deferred
+                }
+            }
+            refreshRepairedRow(dir)
+            return result
         }
-        // The row shows the new length and size.
+    }
+
+    /// The row and an open meeting page show the rebuilt file: its length,
+    /// its size, and the player reloads it (`MeetingAudioPlayer`).
+    private func refreshRepairedRow(_ dir: URL) {
         let folder = dir.standardizedFileURL
         for key in durationCache.keys where URL(fileURLWithPath: key).deletingLastPathComponent().standardizedFileURL == folder {
             durationCache.removeValue(forKey: key)
@@ -2330,6 +2417,27 @@ public final class RecordingController: ObservableObject {
         invalidateFolderSize(dir)
         loadRecentMeetings()
         contentRevision &+= 1
+    }
+
+    /// UserDefaults key of the launch repair's state: a JSON object, output
+    /// folder path → `MeetingAudioRepairState`.
+    static let audioRepairStateKey = "dev.kleoth.meetingAudioRepair"
+
+    private static func audioRepairState(for folder: String) -> MeetingAudioRepairState {
+        guard let data = UserDefaults.standard.data(forKey: audioRepairStateKey),
+              let all = try? JSONDecoder().decode([String: MeetingAudioRepairState].self, from: data) else {
+            return MeetingAudioRepairState()
+        }
+        return all[folder] ?? MeetingAudioRepairState()
+    }
+
+    private static func saveAudioRepairState(_ state: MeetingAudioRepairState, for folder: String) {
+        var all = (UserDefaults.standard.data(forKey: audioRepairStateKey))
+            .flatMap { try? JSONDecoder().decode([String: MeetingAudioRepairState].self, from: $0) } ?? [:]
+        all[folder] = state
+        if let data = try? JSONEncoder().encode(all) {
+            UserDefaults.standard.set(data, forKey: audioRepairStateKey)
+        }
     }
 
     /// Whether a meeting folder holds a combined 2-channel capture (so Scribe can
