@@ -6,6 +6,18 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A meeting recorded with a Bluetooth headset or a MacBook's microphone played the other side
+  slowed down, and History showed it up to three times too long** ("104m 24s" for a 35-minute
+  call). Your microphone and the other side are recorded at different rates, and the file you play
+  back put them together as if they were the same. Now both are brought to one rate first, so the
+  meeting plays at its real speed and shows its real length. Meetings you already recorded are
+  repaired in the background the first time the new version opens: their playback file is rebuilt
+  from the two recordings it was made from, which were never affected, and the length saved with a
+  transcript (and the cloud transcription cost worked out from it) is corrected. Transcripts and
+  summaries were not affected.
+
 ## [0.5.7] — 2026-11-18
 
 ### Fixed

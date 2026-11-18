@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (798 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
+swift build && swift test                        # core + CLI (806 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -31,6 +31,7 @@ swift run kleoth illustrate <dir>... [--engine codex|openrouter|local] [--style 
 
 # Headless probes (use --product, not --target — --target links no binary)
 swift build --package-path app --product localtranscribe && app/.build/debug/localtranscribe <meeting-dir> [scribe]
+app/.build/debug/recombine [--dry-run] <meeting-dir | folder of meetings>   # the launch repair of ≤ 0.5.7 wrong-rate meeting.m4a (--dry-run only reads)
 swift build --package-path app --product dictate && app/.build/debug/dictate 4 [--no-polish] [--device <uid>] [--provider claude-code|codex|local|openrouter] [--text "<raw>" --runs N]
 app/.build/debug/dictate --file <audio> [--fail-first N] [--keep-on-failure]   # real clip through the Scribe retry policy; N injected transient failures; keep → a REAL pending History row
 app/.build/debug/dictate --text "<raw>" [--before s] [--after s] [--selection s | --reference s] [--single-line] [--no-polish]   # synthetic focused field → placement, gate, paste; `--focus-probe --help` = the AX probe (reads the app in front: only with the user)
@@ -86,7 +87,7 @@ KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, Whisper
   Meetings | Dictations | Recordings scopes, `MeetingCoverTile`/`MeetingCoverBand`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
   No test target (`KleothCaptureTests` covers `KleothCapture` only).
-- Executables: `taptest`, `localtranscribe`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`, `updatecheck`.
+- Executables: `taptest`, `localtranscribe`, `recombine`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`, `updatecheck`.
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
@@ -270,6 +271,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   success status. So `AudioFormat.fileChannels` writes a wide source mono and `MonoDownmix` averages it before any
   converter (`TapWriter`, the screen recorder's `MicrophoneSource`). A lane's write failure is reported at stop
   ("Your microphone was not recorded…"), and `Recorder.combine` treats an unreadable channel as absent.
+- One meeting, two rates: `system.m4a` is 48 kHz, `mic.m4a` the mic's (16 kHz headset, 44.1 kHz MacBook). Anything
+  that lines the lanes up by frame resamples first (`Recorder.combine` streams both to the higher rate). Up to 0.5.7
+  it didn't (`meeting.m4a` ×3, the other side slowed); `MeetingAudioRepair` rebuilds those at launch.
 - Off-main audio work: `Recorder.combine`, `ChannelAudio.mixToMono` take seconds — `Task.detached`.
 - `CoverDrawing.draw` runs off the main actor as a nonisolated async call — never wrap it in `Task.detached`
   (cancellation would not propagate). Holds while `NonisolatedNonsendingByDefault` stays off.
