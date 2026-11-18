@@ -25,5 +25,7 @@ in `CHANGELOG.md`; the state of work in flight is in `CLAUDE.md` → State.
   unprobed), for a headset that connects badly.
 - **A Notification Center notice for an update.** Today the notice is in the app only; this needs a
   new permission prompt.
+- **A 96 kHz / 88.2 kHz USB microphone leaves an empty `mic.m4a`:** the AAC encoder opens a file above
+  48 kHz and then refuses every write (-66567, probed). Resample the microphone lane to 48 kHz first.
 - Back up the "Kleoth Self-Signed" certificate (the update key is in 1Password since 2026-11-17).
 - Push the Homebrew tap.

@@ -148,7 +148,7 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private var pageChrome: some View {
         if let audio = audioURL {
-            MeetingAudioPlayer(url: audio)
+            MeetingAudioPlayer(url: audio, revision: controller.contentRevision)
         }
         // Live progress while THIS (already-transcribed) meeting is being
         // upgraded with ElevenLabs Scribe or summarized: a determinate bar

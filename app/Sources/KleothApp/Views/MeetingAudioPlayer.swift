@@ -9,6 +9,12 @@ import AVFoundation
 /// "open in QuickTime" toolbar action so a recording can be auditioned inline.
 struct MeetingAudioPlayer: View {
     let url: URL
+    /// `RecordingController.contentRevision`: on a bump the player reloads its
+    /// file IF the one on disk was replaced (the launch repair renames a
+    /// rebuilt `meeting.m4a` over it); otherwise nothing, so playback of any
+    /// other meeting goes on. A page that mounts later loads the new file in
+    /// `onAppear` — `onChange` never fires for the value a view mounts with.
+    var revision: Int = 0
 
     @StateObject private var model = AudioPlayerModel()
     /// Pumps `currentTime` while playing. Fires on the main run loop; cheap.
@@ -50,6 +56,7 @@ struct MeetingAudioPlayer: View {
         .onAppear { model.load(url) }
         .onDisappear { model.stop() }
         .onChange(of: url) { _, newURL in model.load(newURL) }
+        .onChange(of: revision) { _, _ in model.reloadIfReplaced() }
         .onReceive(ticker) { _ in model.tick() }
     }
 
@@ -95,6 +102,9 @@ final class AudioPlayerModel: ObservableObject {
     private var monoMixer: AVAudioMixerNode?
     private var file: AVAudioFile?
     private var loadedURL: URL?
+    /// Which file on disk `file` is: a rebuilt `meeting.m4a` renamed over the
+    /// old one is a new inode at the same URL.
+    private var loadedIdentity: FileIdentity?
     /// Observer for `.AVAudioEngineConfigurationChange` (output-device switches
     /// stop the engine mid-render); removed on teardown.
     private var configObserver: NSObjectProtocol?
@@ -105,12 +115,14 @@ final class AudioPlayerModel: ObservableObject {
 
     var isLoaded: Bool { file != nil }
 
-    /// Loads `url` once (idempotent per URL). Failure leaves the transport
-    /// disabled rather than crashing.
+    /// Loads `url` once (idempotent per URL and file on disk). Failure leaves
+    /// the transport disabled rather than crashing.
     func load(_ url: URL) {
-        guard loadedURL != url else { return }
+        let identity = FileIdentity(url)
+        guard loadedURL != url || loadedIdentity != identity else { return }
         teardown()
         loadedURL = url
+        loadedIdentity = identity
 
         guard let file = try? AVAudioFile(forReading: url) else { return }
         let format = file.processingFormat
@@ -144,6 +156,19 @@ final class AudioPlayerModel: ObservableObject {
         currentTime = 0
         isPlaying = false
         scheduleSegment(from: 0)
+    }
+
+    /// Reloads the loaded URL when the file behind it was replaced, keeping the
+    /// position (seconds mean the same in the rebuilt file) and playing on if
+    /// it was. A stat when nothing changed: no reload, no gap.
+    func reloadIfReplaced() {
+        guard let url = loadedURL, FileIdentity(url) != loadedIdentity else { return }
+        let position = currentTime
+        let wasPlaying = isPlaying
+        load(url)
+        guard isLoaded else { return }
+        if position > 0 { seek(to: position) }
+        if wasPlaying { toggle() }
     }
 
     func toggle() {
@@ -278,9 +303,32 @@ final class AudioPlayerModel: ObservableObject {
         engine = nil
         file = nil
         loadedURL = nil
+        loadedIdentity = nil
         seekOffset = 0
         isPlaying = false
         currentTime = 0
         duration = 0
+    }
+}
+
+/// A file on disk as `stat` names it: device, inode, size and modification
+/// time. A file renamed over the old one at the same path differs; reading it
+/// costs one `stat`, never a download.
+struct FileIdentity: Equatable {
+    let device: Int32
+    let inode: UInt64
+    let size: Int64
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+
+    /// nil when there is no file at `url`.
+    init?(_ url: URL) {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return nil }
+        device = info.st_dev
+        inode = info.st_ino
+        size = info.st_size
+        modifiedSeconds = info.st_mtimespec.tv_sec
+        modifiedNanoseconds = info.st_mtimespec.tv_nsec
     }
 }
