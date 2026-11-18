@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.8] — 2026-11-18
+
 ### Fixed
 
 - **A meeting recorded with a Bluetooth headset or a MacBook's microphone played the other side at

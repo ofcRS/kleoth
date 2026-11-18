@@ -436,5 +436,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   review fixes in). Verified on films and tests only. Not yet by eye: a real drag, a lost mouse-up, a call offer's
   and a fault's buttons, VoiceOver actions, Reduce Motion. The updater delivered 0.5.6 on the second Mac (the user).
   Planned work lives in `docs/ROADMAP.md` (next: a finished meeting pushed to the T3 Code thread on the dev VMs).
+- v0.5.8 (2026-11-18): `meeting.m4a` was combined at the microphone's rate without resampling (a 16 kHz headset: three
+  times too long, the other side slowed); the combine resamples, and a launch pass rebuilds old files (PR #34, review
+  fixes in). Verified: tests, the repair on copies of real meetings. Not yet: the launch pass in the app, a listening test.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
