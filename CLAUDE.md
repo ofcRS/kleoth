@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (785 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
+swift build && swift test                        # core + CLI (790 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -39,6 +39,7 @@ swift build --package-path app --product micwatch && caffeinate -s -i app/.build
 swift build --package-path app --product micopen && caffeinate -s -i app/.build/debug/micopen 13   # holds the mic from another process, samples discarded; exit 3 without an existing mic grant (never prompts)
 swift run --package-path app pillsandbox                                # pill playground
 app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs (step@secs; --demo dictation|screen composes README frames)
+app/.build/debug/pillsandbox --film <dir> [--start-delay s] [--start-block s] --sequence peek,press:center,move:240:80@1,release   # a real drag; app-like start timing
 bash app/branding-src/demo/make-demos.sh                          # README demo GIFs from the real pill → docs/assets/demo-*.gif
 bash app/branding-src/demo/make-app-demos.sh [data-dir]            # meeting + viewer GIFs, screenshot-detail.png: a KleothDemo.app copy (-KleothDemo) films its own window
 bun app/branding-src/demo/make-demo-data.ts <dir> [--provider local]   # fictional meetings/recording, real on-device transcripts + summaries (default: Claude Code)
@@ -338,9 +339,17 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   main-queue turn late, so a capture start sets its backdrop FIRST, then dismisses its own leftover phase
   (`MeetingPillBridge` `.started`); `clearCapturePhaseBlocking` withdraws the other capture's. The other order
   leaves a hot mic with no bar. A rising bar clears ANY sticky `.failed` (a dictation's is terminal), and both
-  `setBackdrop` and the coordinator read the phase still to land (`pendingPhase` / `upcomingState`).
+  `setBackdrop` and the coordinator read the phase still to land (`pendingPhase` / `upcomingState`) — or the
+  one a drag holds for the drop: while `isDragging`, every `show`/hide is deferred to the drop (latest wins).
 - `referenceSize` is resolved against the four-field dock (275 pt, every edge) and, on bottom/top, the meeting
   bar (240 pt): a new longest shape must be folded in there, or a pill parked near a corner creeps.
+- Pill motion: never write the panel's frame mid-transition without zeroing `model.offset` (the capsule is drawn
+  off its own window — an empty pill), and settle on `PillMotion.settleDelay`, never `withAnimation(completion:)`:
+  with a move and a reshape started in the same turn (every rise and sink) the completion never fired.
+- A SwiftUI `Button` inside the capsule takes the press, so the parent's drag never starts from it: what must
+  drag (the dock's fields) is not a Button — the capsule's one `DragGesture(minimumDistance: 0)` clicks below
+  `PillGeometry.dragThreshold` and drags past it. Film clicks (`window.sendEvent`) can't fire a `.borderless`
+  Button (AppKit's tracking loop): a prompt's answers or a fault's action go through `perform:`.
 - Core Audio: per-process `IsRunningInput` listeners register and never fire (listen to `IsRunning`/`Devices`,
   then re-read), and `AudioObjectRemovePropertyListenerBlock` from Swift silently removes nothing (listeners
   stacked per start): use `AudioObjectAdd/RemovePropertyListener` with one `@convention(c)` proc.
