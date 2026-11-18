@@ -86,6 +86,9 @@ final class DictationPillModel: ObservableObject {
     /// The pill is being dragged (`DictationPillController.isDragging`): the
     /// closed-hand cursor, and no click lands at the drop.
     @Published private(set) var dragging = false
+    /// The dock field under a press that is still down and has not become a
+    /// drag — drawn pressed (`DictationPillController.pressMoved`).
+    @Published private(set) var pressedField: Int?
 
     // MARK: Controller-facing mutation
 
@@ -149,6 +152,10 @@ final class DictationPillModel: ObservableObject {
 
     func apply(dragging on: Bool) {
         if dragging != on { dragging = on }
+    }
+
+    func apply(pressedField field: Int?) {
+        if pressedField != field { pressedField = field }
     }
 
     func apply(dock metrics: PillDockMetrics) {
@@ -249,6 +256,14 @@ final class DictationPillModel: ObservableObject {
             return .openHand
         }
     }
+}
+
+/// How a press on the capsule ended (`DictationPillController.pressEnded`).
+enum PillPressEnd: Equatable {
+    /// A drag (dropped now or already), or nothing to act on.
+    case none
+    /// A click; on the peek dock, the field under the pointer.
+    case click(dockField: Int?)
 }
 
 /// The pointer shapes the pill sets (`DictationPillModel.cursor`). Set by

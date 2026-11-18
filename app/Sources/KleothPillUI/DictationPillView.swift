@@ -64,12 +64,9 @@ struct DictationPillView: View {
     @EnvironmentObject private var model: DictationPillModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// A press on the capsule is down (between the gesture's first
-    /// `onChanged` and its `onEnded`), not yet a drag.
-    @State private var pressing = false
-    /// The dock field under that press — drawn pressed until it lets go or
-    /// turns into a drag.
-    @State private var pressedField: Int?
+    /// A press on the capsule is down: marks the gesture's first update
+    /// (`pressGesture`). Resets by itself when the gesture ends or is cancelled.
+    @GestureState private var pressDown = false
 
     init(controller: DictationPillController) {
         self.controller = controller
@@ -123,6 +120,9 @@ struct DictationPillView: View {
             // its own press first and never drags.
             .gesture(pressGesture)
             .help(model.phase.pillText)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text(model.phase.pillText))
+            .accessibilityActions { capsuleActions }
             // A pill on a side edge stands up in every phase. Applied AFTER
             // the hit shape and gestures so they rotate with it — a horizontal
             // hit capsule under a vertical bar would leave only its middle
@@ -369,7 +369,7 @@ struct DictationPillView: View {
                         // No hover lift under a drag: the dock is being
                         // carried, not pointed at.
                         pointer: model.dragging ? nil : dockPointer,
-                        pressed: pressedField,
+                        pressed: model.dragging ? nil : model.pressedField,
                         rotation: edgeRotation,
                         menuOpen: model.menuOpen,
                         onField: { dockField($0) }
@@ -585,59 +585,43 @@ struct DictationPillView: View {
     /// glitchy… no intuitive place to click to start dragging" — every point
     /// of the peek dock was a Button, and a press on a Button never reached
     /// the capsule's drag). Now every point of the capsule but a real button
-    /// drags once the press has travelled `PillGeometry.dragThreshold`, the
-    /// dock's fields included; a press that never travels is a click
-    /// (`click(at:dockField:)`), so a hand that drifts a few points while
+    /// drags once the press has travelled `PillGeometry.dragThreshold` ON
+    /// SCREEN, the dock's fields included; a press that never travels is a
+    /// click (`click(dockField:)`), so a hand that drifts a few points while
     /// pressing still clicks.
     ///
-    /// The pill slides along its edge (and re-docks when dragged clearly
-    /// toward another one); the controller reads `NSEvent.mouseLocation`
-    /// itself — `value.translation` is measured against a coordinate space
-    /// that moves with the window, so it double-counts and the pill runs away
-    /// from the cursor. It is read here only BEFORE the drag starts, while the
-    /// window is still, for the threshold.
+    /// The controller owns the press (`pressBegan` / `pressMoved` /
+    /// `pressEnded`, `PillPress`) and reads the pointer itself:
+    /// `value.translation` is measured in the capsule's space, which moves
+    /// with the window during a drag (it double-counts, and after a drop made
+    /// without this gesture it could read as a click) and grows under a still
+    /// pointer while the dock opens (a press there was no click). The
+    /// `GestureState` only marks a press's first update — and resets on its
+    /// own if the gesture is cancelled.
     private var pressGesture: some Gesture {
         DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if model.dragging {
-                    controller.dragMoved()
-                    return
-                }
-                if !pressing {
-                    pressing = true
-                    pressedField = dockOut ? dockFieldIndex(at: value.startLocation) : nil
-                }
-                guard PillGeometry.isDrag(translation: value.translation) else { return }
-                pressedField = nil
-                controller.beginDrag()
-                controller.dragMoved()
+            .updating($pressDown) { _, down, _ in
+                guard !down else { return }
+                down = true
+                controller.pressBegan()
             }
-            .onEnded { value in
-                pressing = false
-                let field = pressedField
-                pressedField = nil
-                if model.dragging {
-                    controller.dragMoved()
-                    controller.commitDraggedPlacement()
-                    return
-                }
-                // A press that travelled is never a click — also when its
-                // drag was already dropped without it (`endDragIfReleased`).
-                guard !PillGeometry.isDrag(translation: value.translation) else { return }
-                click(at: value.startLocation, dockField: field)
+            .onChanged { _ in controller.pressMoved() }
+            .onEnded { _ in
+                if case .click(let field) = controller.pressEnded() { click(dockField: field) }
             }
     }
 
     /// A press that did not travel: click routing (screen-recording design
     /// §6.4). The capsule IS the control in the recording phases, so a tap on
-    /// it is the action — never a dismissal.
-    private func click(at location: CGPoint, dockField field: Int?) {
+    /// it is the action — never a dismissal. VoiceOver reaches the same
+    /// actions by name (`capsuleActions`).
+    private func click(dockField field: Int?) {
         switch model.phase {
         case .failed:
             controller.dismissFromUser()
         case .idle where dockOut:
-            // The dock's fields are its buttons: the one pressed acts.
-            dockField(field ?? dockFieldIndex(at: location))
+            // The dock's fields are its buttons: the one under the pointer acts.
+            if let field { dockField(field) }
         case .listening(handsFree: true):
             controller.perform(.stopHandsFreeDictation)
         case .listening(handsFree: false):
@@ -660,14 +644,27 @@ struct DictationPillView: View {
         }
     }
 
-    /// The dock field under a point in the capsule's own space (origin at its
-    /// top-left, un-rotated — the gesture is attached before the rotation),
-    /// through the hover lift's mapping (`PillGeometry.dockFieldIndex`).
-    private func dockFieldIndex(at location: CGPoint) -> Int {
-        PillGeometry.dockFieldIndex(
-            along: location.x - model.capsuleSize.width / 2,
-            pitch: model.dock.pitch, count: PillDockMetrics.fieldCount
-        )
+    /// The capsule's own click, for VoiceOver: it was an `.onTapGesture`,
+    /// which VoiceOver could press; the press gesture that replaced it is not
+    /// one it knows. Named after what the click does; nothing where it does
+    /// nothing (the dock's fields are buttons of their own).
+    @ViewBuilder
+    private var capsuleActions: some View {
+        switch model.phase {
+        case .failed:
+            Button("Dismiss") { controller.dismissFromUser() }
+        case .listening(handsFree: true):
+            Button("Stop dictation") { controller.perform(.stopHandsFreeDictation) }
+        case .listening(handsFree: false):
+            Button("Keep listening hands-free") { controller.perform(.switchToHandsFree) }
+        case .saved:
+            Button("Show in Finder") { controller.perform(.revealLastRecording) }
+        case .meetingSaved:
+            Button("Open in History") { controller.perform(.meeting(.openLast)) }
+        case .hidden, .idle, .armed, .transcribing, .polishing, .done, .warning, .recording, .saving,
+             .meeting, .prompt:
+            EmptyView()
+        }
     }
 
     /// Dictate · Meeting · Screen · More.
