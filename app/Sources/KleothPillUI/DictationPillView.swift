@@ -64,8 +64,9 @@ struct DictationPillView: View {
     @EnvironmentObject private var model: DictationPillModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// True between the first `onChanged` and `onEnded` of a drag.
-    @State private var dragging = false
+    /// A press on the capsule is down: marks the gesture's first update
+    /// (`pressGesture`). Resets by itself when the gesture ends or is cancelled.
+    @GestureState private var pressDown = false
 
     init(controller: DictationPillController) {
         self.controller = controller
@@ -99,29 +100,12 @@ struct DictationPillView: View {
             .accessibilityLabel(Text(model.phase.pillText))
     }
 
-    /// The pointer relative to the capsule's centre, in the capsule's OWN
-    /// (un-rotated) space, or nil when it is off the panel. The capsule is
-    /// centred on the root, displaced by `offset` and turned by
-    /// `edgeRotation`; undoing those here is what lets the peek dock's glyphs
-    /// light up correctly on a side edge too, without trusting what
-    /// `GeometryReader` reports through a `rotationEffect`.
-    private func dockPointer(rootSize: CGSize) -> CGPoint? {
-        guard let pointer = model.pointer else { return nil }
-        let center = CGPoint(
-            x: rootSize.width / 2 + model.offset.width,
-            y: rootSize.height / 2 + model.offset.height
-        )
-        let dx = pointer.x - center.x
-        let dy = pointer.y - center.y
-        let angle = -edgeRotation.radians
-        return CGPoint(x: dx * cos(angle) - dy * sin(angle), y: dx * sin(angle) + dy * cos(angle))
-    }
-
     private func pill(rootSize: CGSize) -> some View {
         // The hit shape is the CAPSULE, not the panel rect: the transparent
         // shadow margin around it must stay non-interactive, or a `.statusBar`-
         // level panel would swallow clicks aimed at the app underneath.
-        capsule(dockPointer: dockPointer(rootSize: rootSize))
+        // The pointer in the capsule's own space: `DictationPillModel.capsulePointer`.
+        capsule(dockPointer: model.capsulePointer(rootSize: rootSize))
             // The capsule sizes itself to its content whatever the panel's
             // size: while a transition is in flight the panel is a stage
             // larger than the capsule, and on a side edge it is narrower than
@@ -129,41 +113,16 @@ struct DictationPillView: View {
             // the label carries an explicit, screen-capped width.
             .fixedSize()
             .contentShape(Capsule(style: .continuous))
-            .gesture(dragGesture)
-            // Click routing (screen-recording design §6.4). The capsule IS the
-            // control in the recording phases, so a tap on it is the action —
-            // never a dismissal.
-            .onTapGesture {
-                switch model.phase {
-                case .failed:
-                    controller.dismissFromUser()
-                case .idle where model.peeking:
-                    // The body of the peek dock opens the menu; the glyphs on
-                    // it are the direct actions. Nothing starts from a stray
-                    // click on the capsule any more.
-                    controller.openMenu()
-                case .listening(handsFree: true):
-                    controller.perform(.stopHandsFreeDictation)
-                case .listening(handsFree: false):
-                    controller.perform(.switchToHandsFree)
-                case .saved:
-                    controller.perform(.revealLastRecording)
-                case .meetingSaved:
-                    controller.perform(.meeting(.openLast))
-                case .prompt:
-                    // Only its buttons answer a prompt: a stray click on the
-                    // capsule must never decline (or accept) a call offer.
-                    break
-                default:
-                    // `.recording` and `.meeting` deliberately do NOT stop
-                    // here: each bar is a toolbar with its own Stop button,
-                    // and everything else on it is the drag handle. A
-                    // whole-capsule stop was one slipped click away from
-                    // ending a recording the user was only trying to move.
-                    break
-                }
-            }
+            // ONE gesture for the whole capsule: a press that travels past
+            // `PillGeometry.dragThreshold` drags the pill, one that does not is
+            // a click on whatever is under it (`click(at:dockField:)`). A real
+            // Button inside (Stop, a prompt's words, ✕, a fault's action) takes
+            // its own press first and never drags.
+            .gesture(pressGesture)
             .help(model.phase.pillText)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text(model.phase.pillText))
+            .accessibilityActions { capsuleActions }
             // A pill on a side edge stands up in every phase. Applied AFTER
             // the hit shape and gestures so they rotate with it — a horizontal
             // hit capsule under a vertical bar would leave only its middle
@@ -173,6 +132,10 @@ struct DictationPillView: View {
             .scaleEffect(model.isPresented ? 1 : 0.9, anchor: .center)
             .opacity(model.isPresented ? 1 : 0)
             .padding(DictationPillController.shadowPadding)
+            // The cursor follows the phase and the pointer (an open hand on the
+            // body that drags, closed while dragged); the hosting view also
+            // re-asserts it on every move (`DictationPillController.ensurePanel`).
+            .onChange(of: model.cursor(rootSize: rootSize)) { _, cursor in cursor.set() }
     }
 
     private func capsule(dockPointer: CGPoint?) -> some View {
@@ -272,11 +235,8 @@ struct DictationPillView: View {
         var across: CGFloat = 1
     }
 
-    /// Horizontal on the bottom and top edges; on a side edge the pill stands
-    /// up in every phase, turned so text reads the way a spine label does —
-    /// bottom-to-top on the left, top-to-bottom on the right.
     /// The peek dock is out (or held out by its menu).
-    private var dockOut: Bool { model.phase == .idle && (model.peeking || model.menuOpen) }
+    private var dockOut: Bool { model.dockOut }
 
     /// Which dock surface is on the capsule: one of the two dock looks
     /// (`PillDockStyle`; Liquid Glass needs macOS 26 and falls back to ink)
@@ -372,16 +332,8 @@ struct DictationPillView: View {
         .animation(.easeOut(duration: 0.2), value: dockOut)
     }
 
-    private var edgeRotation: Angle {
-        // A flat phase (the recording toolbar, and every dictation phase over a
-        // live recording) never stands up — see `DictationPillModel.flat`.
-        guard !model.flat else { return .zero }
-        switch model.edge {
-        case .bottom, .top: return .zero
-        case .left: return .degrees(-90)
-        case .right: return .degrees(90)
-        }
-    }
+    /// See `DictationPillModel.edgeRotation`.
+    private var edgeRotation: Angle { model.edgeRotation }
 
     @ViewBuilder
     private func content(dockPointer: CGPoint?) -> some View {
@@ -414,13 +366,13 @@ struct DictationPillView: View {
                     // (filmed). It leaves at settle, already invisible.
                     PeekDock(
                         metrics: model.dock,
-                        pointer: dockPointer,
+                        // No hover lift under a drag: the dock is being
+                        // carried, not pointed at.
+                        pointer: model.dragging ? nil : dockPointer,
+                        pressed: model.dragging ? nil : model.pressedField,
                         rotation: edgeRotation,
                         menuOpen: model.menuOpen,
-                        onDictate: { controller.perform(.startHandsFreeDictation) },
-                        onMeeting: { controller.perform(.meeting(.start)) },
-                        onRecord: { controller.perform(.startScreenRecording) },
-                        onMenu: { controller.openMenu() }
+                        onField: { dockField($0) }
                     )
                     .opacity(dockOut ? 1 : 0)
                     .allowsHitTesting(dockOut)
@@ -460,12 +412,6 @@ struct DictationPillView: View {
             .frame(width: 10, height: 10)
             .animation(.spring(duration: 0.18, bounce: 0.35), value: model.hovered)
             .animation(.spring(duration: 0.18, bounce: 0.35), value: handsFree)
-            .onChange(of: model.hovered) { _, on in
-                (on ? NSCursor.pointingHand : NSCursor.arrow).set()
-            }
-            // The dictation ended under the pointer: the capsule is no longer
-            // a button, so the pointing hand must not outlive the slot.
-            .onDisappear { if model.hovered { NSCursor.arrow.set() } }
             .transition(.opacity)
             .accessibilityHidden(true)
             Waveform(mode: .live(level: model.level), reduceMotion: reduceMotion)
@@ -635,29 +581,100 @@ struct DictationPillView: View {
             .frame(width: model.labelWidth, alignment: .leading)
     }
 
-    /// The pill slides along its edge (and re-docks when dragged clearly
-    /// toward another one); the controller reads `NSEvent.mouseLocation`
-    /// itself — `value.translation` is measured against a coordinate space
-    /// that moves with the window, so it double-counts and the pill runs away
-    /// from the cursor. `minimumDistance: 6` leaves the buttons clickable and
-    /// is forgiving of a jittery click: raised from 3 once the capsule became a
-    /// start/stop CONTROL (§6.4) — a hand that drifts two points while pressing
-    /// "stop" must stop the recording, not re-dock the pill.
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { _ in
-                if !dragging {
-                    dragging = true
-                    controller.beginDrag()
-                }
-                controller.dragMoved()
+    /// Press → click or drag (the user, 2026-11-18: the drag was "very
+    /// glitchy… no intuitive place to click to start dragging" — every point
+    /// of the peek dock was a Button, and a press on a Button never reached
+    /// the capsule's drag). Now every point of the capsule but a real button
+    /// drags once the press has travelled `PillGeometry.dragThreshold` ON
+    /// SCREEN, the dock's fields included; a press that never travels is a
+    /// click (`click(dockField:)`), so a hand that drifts a few points while
+    /// pressing still clicks.
+    ///
+    /// The controller owns the press (`pressBegan` / `pressMoved` /
+    /// `pressEnded`, `PillPress`) and reads the pointer itself:
+    /// `value.translation` is measured in the capsule's space, which moves
+    /// with the window during a drag (it double-counts, and after a drop made
+    /// without this gesture it could read as a click) and grows under a still
+    /// pointer while the dock opens (a press there was no click). The
+    /// `GestureState` only marks a press's first update — and resets on its
+    /// own if the gesture is cancelled.
+    private var pressGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($pressDown) { _, down, _ in
+                guard !down else { return }
+                down = true
+                controller.pressBegan()
             }
+            .onChanged { _ in controller.pressMoved() }
             .onEnded { _ in
-                guard dragging else { return }
-                controller.dragMoved()
-                dragging = false
-                controller.commitDraggedPlacement()
+                if case .click(let field) = controller.pressEnded() { click(dockField: field) }
             }
+    }
+
+    /// A press that did not travel: click routing (screen-recording design
+    /// §6.4). The capsule IS the control in the recording phases, so a tap on
+    /// it is the action — never a dismissal. VoiceOver reaches the same
+    /// actions by name (`capsuleActions`).
+    private func click(dockField field: Int?) {
+        switch model.phase {
+        case .failed:
+            controller.dismissFromUser()
+        case .idle where dockOut:
+            // The dock's fields are its buttons: the one under the pointer acts.
+            if let field { dockField(field) }
+        case .listening(handsFree: true):
+            controller.perform(.stopHandsFreeDictation)
+        case .listening(handsFree: false):
+            controller.perform(.switchToHandsFree)
+        case .saved:
+            controller.perform(.revealLastRecording)
+        case .meetingSaved:
+            controller.perform(.meeting(.openLast))
+        case .prompt:
+            // Only its buttons answer a prompt: a stray click on the
+            // capsule must never decline (or accept) a call offer.
+            break
+        default:
+            // `.recording` and `.meeting` deliberately do NOT stop here: each
+            // bar is a toolbar with its own Stop button, and everything else
+            // on it is the drag handle. A whole-capsule stop was one slipped
+            // click away from ending a recording the user was only trying to
+            // move.
+            break
+        }
+    }
+
+    /// The capsule's own click, for VoiceOver: it was an `.onTapGesture`,
+    /// which VoiceOver could press; the press gesture that replaced it is not
+    /// one it knows. Named after what the click does; nothing where it does
+    /// nothing (the dock's fields are buttons of their own).
+    @ViewBuilder
+    private var capsuleActions: some View {
+        switch model.phase {
+        case .failed:
+            Button("Dismiss") { controller.dismissFromUser() }
+        case .listening(handsFree: true):
+            Button("Stop dictation") { controller.perform(.stopHandsFreeDictation) }
+        case .listening(handsFree: false):
+            Button("Keep listening hands-free") { controller.perform(.switchToHandsFree) }
+        case .saved:
+            Button("Show in Finder") { controller.perform(.revealLastRecording) }
+        case .meetingSaved:
+            Button("Open in History") { controller.perform(.meeting(.openLast)) }
+        case .hidden, .idle, .armed, .transcribing, .polishing, .done, .warning, .recording, .saving,
+             .meeting, .prompt:
+            EmptyView()
+        }
+    }
+
+    /// Dictate · Meeting · Screen · More.
+    private func dockField(_ index: Int) {
+        switch index {
+        case 0: controller.perform(.startHandsFreeDictation)
+        case 1: controller.perform(.meeting(.start))
+        case 2: controller.perform(.startScreenRecording)
+        default: controller.openMenu()
+        }
     }
 }
 
@@ -685,18 +702,25 @@ struct DictationPillView: View {
 /// belongs to a field (the gaps and insets are folded into the hit areas), so
 /// hovering anywhere lights something. Hover is computed from the panel-wide
 /// pointer (relative to the capsule's centre, un-rotated —
-/// `DictationPillView.dockPointer`), never from `.onHover`, which is dead
+/// `DictationPillModel.capsulePointer`), never from `.onHover`, which is dead
 /// while another app is active. Geometry comes from `PillDockMetrics`, which
 /// the sandbox scales and restyles live.
+///
+/// The fields are NOT Buttons (2026-11-18): a press on a Button never reached
+/// the capsule's drag, and the dock is nothing but fields — so the resting
+/// pill could not be dragged at all. The capsule's one press gesture
+/// (`DictationPillView.pressGesture`) clicks the field under a press that
+/// does not travel and drags the dock otherwise; a field is still a button to
+/// VoiceOver.
 private struct PeekDock: View {
     let metrics: PillDockMetrics
     let pointer: CGPoint?
+    /// The field under a press that is still down (drawn pressed).
+    let pressed: Int?
     let rotation: Angle
     let menuOpen: Bool
-    let onDictate: () -> Void
-    let onMeeting: () -> Void
-    let onRecord: () -> Void
-    let onMenu: () -> Void
+    /// Dictate · Meeting · Screen · More, by index — VoiceOver's press.
+    let onField: (Int) -> Void
 
     /// Which field the pointer is over. The capsule is divided into
     /// `PillDockMetrics.fieldCount` fields along its length, so a pointer
@@ -716,27 +740,24 @@ private struct PeekDock: View {
         HStack(spacing: 0) {
             PillDockTile(
                 metrics: metrics, look: look, symbol: "mic.fill", caption: "Dictate", label: "Start a dictation",
-                glyph: nil,
-                hot: hot == 0, lit: false, divider: !(hot == 0 || hot == 1), rotation: rotation, action: onDictate
+                glyph: nil, hot: hot == 0, lit: false, pressed: pressed == 0,
+                divider: !(hot == 0 || hot == 1), rotation: rotation, action: { onField(0) }
             )
             PillDockTile(
                 metrics: metrics, look: look, symbol: "person.2.wave.2.fill", caption: "Meeting", label: "Record a meeting",
-                glyph: nil,
-                hot: hot == 1, lit: false, divider: !(hot == 1 || hot == 2), rotation: rotation, action: onMeeting
+                glyph: nil, hot: hot == 1, lit: false, pressed: pressed == 1,
+                divider: !(hot == 1 || hot == 2), rotation: rotation, action: { onField(1) }
             )
             PillDockTile(
                 metrics: metrics, look: look, symbol: "record.circle.fill", caption: "Screen", label: "Record the screen",
-                glyph: PillStyle.recordTint,
-                hot: hot == 2, lit: false, divider: !(hot == 2 || hot == 3), rotation: rotation, action: onRecord
+                glyph: PillStyle.recordTint, hot: hot == 2, lit: false, pressed: pressed == 2,
+                divider: !(hot == 2 || hot == 3), rotation: rotation, action: { onField(2) }
             )
             PillDockTile(
                 metrics: metrics, look: look, symbol: "ellipsis", caption: "More", label: "More",
-                glyph: nil,
-                hot: hot == 3, lit: menuOpen, divider: false, rotation: rotation, action: onMenu
+                glyph: nil, hot: hot == 3, lit: menuOpen, pressed: pressed == 3,
+                divider: false, rotation: rotation, action: { onField(3) }
             )
-        }
-        .onChange(of: hot) { _, index in
-            (index == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
         }
         .accessibilityElement(children: .contain)
     }
@@ -756,9 +777,13 @@ private struct PillDockTile: View {
     let glyph: Color?
     let hot: Bool
     let lit: Bool
+    /// A press is down on this field: a quick squash (the old ButtonStyle's
+    /// look), released when the press lets go or becomes a drag.
+    let pressed: Bool
     /// A hairline on the trailing edge, separating this field from the next.
     let divider: Bool
     let rotation: Angle
+    /// VoiceOver's press; the pointer's click comes through the capsule.
     let action: () -> Void
 
     private var active: Bool { hot || lit }
@@ -775,63 +800,57 @@ private struct PillDockTile: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            ZStack {
-                if active {
-                    RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous)
-                        .fill(Color.white.opacity(PillDockStyle.hoverPlate(look)))
-                        .transition(.opacity)
-                }
-                VStack(spacing: metrics.captionGap) {
-                    Image(systemName: symbol)
-                        .font(.system(size: metrics.iconSize, weight: .semibold))
-                        .foregroundStyle(iconStyle)
-                        // A fixed slot: the glyphs differ in height (the ⋯ is
-                        // a quarter of the mic's), so without it the More
-                        // caption sat higher than its neighbours and the dots
-                        // lower than the other glyphs' centres (user, 2026-09-09).
-                        .frame(height: metrics.iconSlotHeight)
-                    if metrics.showsCaptions {
-                        Text(caption)
-                            .font(.system(size: metrics.captionSize, weight: .medium))
-                            .foregroundStyle(captionStyle)
-                            .lineLimit(1)
-                            .fixedSize()
-                    }
-                }
-                // Upright on every edge (the capsule itself is rotated there).
-                .rotationEffect(-rotation)
+        ZStack {
+            if active {
+                RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous)
+                    .fill(Color.white.opacity(PillDockStyle.hoverPlate(look)))
+                    .transition(.opacity)
             }
-            .frame(width: metrics.tile.width, height: metrics.tile.height)
-            .scaleEffect(hot ? 1.03 : 1)
-            .padding(.horizontal, metrics.gap / 2)
-            .padding(.vertical, metrics.verticalInset)
-            .contentShape(Rectangle())
-            .overlay(alignment: .trailing) {
-                if divider {
-                    Rectangle()
-                        .fill(PillDockStyle.divider(look))
-                        .frame(width: 1, height: metrics.tile.height * 0.5)
-                        .transition(.opacity)
+            VStack(spacing: metrics.captionGap) {
+                Image(systemName: symbol)
+                    .font(.system(size: metrics.iconSize, weight: .semibold))
+                    .foregroundStyle(iconStyle)
+                    // A fixed slot: the glyphs differ in height (the ⋯ is
+                    // a quarter of the mic's), so without it the More
+                    // caption sat higher than its neighbours and the dots
+                    // lower than the other glyphs' centres (user, 2026-09-09).
+                    .frame(height: metrics.iconSlotHeight)
+                if metrics.showsCaptions {
+                    Text(caption)
+                        .font(.system(size: metrics.captionSize, weight: .medium))
+                        .foregroundStyle(captionStyle)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
+            }
+            // Upright on every edge (the capsule itself is rotated there).
+            .rotationEffect(-rotation)
+        }
+        .frame(width: metrics.tile.width, height: metrics.tile.height)
+        .scaleEffect(hot ? 1.03 : 1)
+        .padding(.horizontal, metrics.gap / 2)
+        .padding(.vertical, metrics.verticalInset)
+        .contentShape(Rectangle())
+        .overlay(alignment: .trailing) {
+            if divider {
+                Rectangle()
+                    .fill(PillDockStyle.divider(look))
+                    .frame(width: 1, height: metrics.tile.height * 0.5)
+                    .transition(.opacity)
             }
         }
-        .buttonStyle(PillDockTileStyle())
+        // Pressed = a quick squash; works for an inactive app (the press comes
+        // from the capsule's own gesture, not from hover tracking).
+        .scaleEffect(pressed ? 0.95 : 1)
+        .opacity(pressed ? 0.85 : 1)
+        .animation(.spring(duration: 0.14, bounce: 0.3), value: pressed)
         .animation(.spring(duration: 0.22, bounce: 0.25), value: active)
         .animation(.easeOut(duration: 0.15), value: divider)
         .help(label)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
-    }
-}
-
-/// Pressed = a quick squash; works for an inactive app (`isPressed` comes
-/// from the button's own gesture, not from hover tracking).
-private struct PillDockTileStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(.spring(duration: 0.14, bounce: 0.3), value: configuration.isPressed)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
     }
 }
 

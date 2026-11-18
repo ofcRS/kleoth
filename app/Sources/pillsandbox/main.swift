@@ -25,7 +25,9 @@ import KleothPillUI
 ///          peek / unpeek = pointer enters / leaves the resting pill, hover:<spot> / click:<spot>
 ///          with spots mic|meet|rec|menu|center|stop|label (label = over a text phase's words,
 ///          clear of its buttons), perform:startMeeting|stopMeeting|acceptOffer|neverOffer|
-///          acceptStop|startScreenRecording|…;
+///          acceptStop|startScreenRecording|…; press:<spot> / move:<dx>:<dy> / release = a real
+///          drag through the pill's own window (move animates over its hold, screen points, y up;
+///          lose-mouseup = the button goes up but the mouse-up is never delivered);
 ///          any item may end in `@<seconds>` to hold it that long
 ///          instead of `--hold`, e.g. `listening@3.2`)
 ///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
@@ -88,6 +90,13 @@ struct Arguments {
     var slidesDirectory: URL?
     var slidesLength: TimeInterval = 20
     var slidesMarks: [TimeInterval] = []
+    /// The app's timing for a start from the pill (0 = the old, synchronous
+    /// sandbox): `--start-delay` — a meeting or screen recording's bar comes
+    /// up that long after the click (`RecordingController.start()` awaits its
+    /// captures); `--start-block` — a hands-free dictation blocks the main
+    /// thread that long before `.listening` (`DictationCapture.start()`).
+    var startDelay: TimeInterval = 0
+    var startBlock: TimeInterval = 0
 
     enum LevelPattern: String {
         case off, speech, steady
@@ -111,6 +120,8 @@ struct Arguments {
             case "--demo": out.demo = value().flatMap(DemoKind.init(rawValue:)); i += 1
             case "--slides": out.slidesDirectory = value().map { URL(fileURLWithPath: $0, isDirectory: true) }; i += 1
             case "--length": out.slidesLength = value().flatMap(Double.init) ?? 20; i += 1
+            case "--start-delay": out.startDelay = value().flatMap(Double.init) ?? 0; i += 1
+            case "--start-block": out.startBlock = value().flatMap(Double.init) ?? 0; i += 1
             case "--marks": out.slidesMarks = value()?.split(separator: ",").compactMap { Double($0) } ?? []; i += 1
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
@@ -332,6 +343,7 @@ final class SandboxDriver: ObservableObject {
     }
 
     private func log(_ line: String) {
+        if arguments.filmDirectory != nil { print("action: \(line)") }
         actionLog.insert(line, at: 0)
         if actionLog.count > 8 { actionLog.removeLast() }
     }
@@ -343,6 +355,7 @@ final class SandboxDriver: ObservableObject {
         switch action {
         case .startHandsFreeDictation:
             log("Start dictation (hands-free)")
+            if arguments.startBlock > 0 { Thread.sleep(forTimeInterval: arguments.startBlock) }
             handsFreeTask?.cancel()
             controller.show(.listening(handsFree: true))
             phase = "hands-free"
@@ -372,9 +385,11 @@ final class SandboxDriver: ObservableObject {
             }
         case .startScreenRecording:
             log("Record screen… (would open the region picker)")
-            SandboxClock.recordingStart = Date()
-            backdropRecording = true
-            simulateRecordingLevels = true
+            afterStartDelay { [weak self] in
+                SandboxClock.recordingStart = Date()
+                self?.backdropRecording = true
+                self?.simulateRecordingLevels = true
+            }
         case .stopScreenRecording:
             log("Stop recording → saving → saved")
             simulateRecordingLevels = false
@@ -429,9 +444,11 @@ final class SandboxDriver: ObservableObject {
             switch action {
             case .start:
                 log("Record meeting (would call RecordingController.start())")
-                SandboxClock.meetingStart = Date()
-                backdropMeeting = true
-                simulateRecordingLevels = true
+                afterStartDelay { [weak self] in
+                    SandboxClock.meetingStart = Date()
+                    self?.backdropMeeting = true
+                    self?.simulateRecordingLevels = true
+                }
             case .acceptOffer:
                 log("Record (offer accepted — would call RecordingController.start())")
                 // The bridge's `.started` order: the meeting backdrop FIRST —
@@ -464,6 +481,15 @@ final class SandboxDriver: ObservableObject {
             case .openLast:
                 log("Open History on the last meeting")
             }
+        }
+    }
+
+    /// Runs a capture's "it started" now, or `--start-delay` later.
+    private func afterStartDelay(_ body: @escaping @MainActor () -> Void) {
+        guard arguments.startDelay > 0 else { return body() }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(arguments.startDelay))
+            body()
         }
     }
 
@@ -696,6 +722,12 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     let start = Date()
     var speechClock = 0.0
     var pointerSpot: String?
+    // A scripted drag (`press:` / `move:` / `release`): where the held
+    // pointer is in screen coordinates, the move in flight, and whether the
+    // emulated tracking area last said "inside".
+    var heldPointer: CGPoint?
+    var dragMove: (from: CGPoint, by: CGVector, duration: TimeInterval, begun: Date)?
+    var heldInside = true
     for item in args.sequence {
         let parts = item.split(separator: "@", maxSplits: 1).map(String.init)
         let name = parts[0]
@@ -724,6 +756,38 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             // may send events to its own windows.
             pointerSpot = String(name.dropFirst(6))
             filmClick(String(name.dropFirst(6)), edge: args.edge, controller: controller)
+        } else if name.hasPrefix("press:") {
+            // "press:<spot>" — mouse DOWN on the pill at a named spot (see
+            // `filmPointer`), delivered to the pill window like `click:`; the
+            // drag reads the film pointer instead of the real cursor.
+            let spot = String(name.dropFirst(6))
+            if let point = filmScreenPoint(spot, edge: args.edge, controller: controller) {
+                heldPointer = point
+                heldInside = true
+                controller.filmPointerLocation = point
+                controller.filmLeftButtonDown = true
+                filmMouse(.leftMouseDown, at: point)
+            }
+            pointerSpot = nil
+        } else if name.hasPrefix("move:") {
+            // "move:<dx>:<dy>" — drags the held pointer by (dx, dy) screen
+            // points (y up) over this step's hold, one leftMouseDragged per frame.
+            let parts = name.dropFirst(5).split(separator: ":").compactMap { Double($0) }
+            if let from = heldPointer, parts.count == 2 {
+                dragMove = (from: from, by: CGVector(dx: parts[0], dy: parts[1]), duration: max(holdFor * 0.8, 0.05), begun: Date())
+            }
+        } else if name == "release" {
+            // Mouse UP where the held pointer is; the pointer stays there.
+            controller.filmLeftButtonDown = false
+            if let point = heldPointer { filmMouse(.leftMouseUp, at: point) }
+            heldPointer = nil
+            dragMove = nil
+        } else if name == "lose-mouseup" {
+            // The button goes up but the mouse-up never reaches the pill (sleep,
+            // a lock, a system prompt): only the button state changes. A later
+            // `release` delivers the late mouse-up.
+            controller.filmLeftButtonDown = false
+            dragMove = nil
         } else if name.hasPrefix("perform:") {
             // "perform:startScreenRecording|stopScreenRecording|startMeeting|stopMeeting|startHandsFreeDictation|…"
             // — fires a pill action through the controller, so the SANDBOX
@@ -775,6 +839,21 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
         let phaseStart = Date()
         while Date().timeIntervalSince(phaseStart) < holdFor {
             speechClock += interval
+            if let move = dragMove {
+                let t = min(1, Date().timeIntervalSince(move.begun) / move.duration)
+                let point = CGPoint(x: move.from.x + move.by.dx * t, y: move.from.y + move.by.dy * t)
+                heldPointer = point
+                controller.filmPointerLocation = point
+                filmMouse(.leftMouseDragged, at: point)
+                // The tracking area: an exit is delivered mid-drag too (an
+                // entered one only after the mouse-up) — AppKit's rule.
+                let inside = controller.panelFrame?.contains(point) ?? false
+                if inside != heldInside {
+                    heldInside = inside
+                    if !inside { controller.setHovered(false) }
+                }
+                if t >= 1 { dragMove = nil }
+            }
             if case .listening = state {
                 let syllable = max(0, sin(speechClock * 9.0)) * (0.5 + 0.5 * sin(speechClock * 1.3))
                 controller.setLevel(min(1, 0.15 + 0.85 * syllable))
@@ -784,7 +863,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
                 controller.setRecordingLevels(syntheticLevels(args.levels, at: speechClock))
             }
             if let frame = controller.captureFrame() {
-                var pointer: CGPoint?
+                var pointer: CGPoint? = heldPointer
                 if let spot = pointerSpot, let p = filmPointer(spot, edge: args.edge, controller: controller) {
                     // Root space is y-down from the panel's top-left.
                     pointer = CGPoint(x: frame.panelFrame.minX + p.x, y: frame.panelFrame.maxY - p.y)
@@ -883,6 +962,12 @@ func writeFilm(_ frames: [CapturedFrame], to dir: URL, edge: PillGeometry.Edge) 
             imageRect = CGRect(origin: imageRect.origin, size: imageSize)
         }
         ctx.draw(image, in: imageRect)
+        // The film's pointer (a drag's held pointer, a hover spot): a ring.
+        if let pointer = captured.pointer {
+            ctx.setStrokeColor(CGColor(red: 0.1, green: 0.5, blue: 1, alpha: 0.9))
+            ctx.setLineWidth(1.5)
+            ctx.strokeEllipse(in: CGRect(x: pointer.x - 4, y: pointer.y - 4, width: 8, height: 8))
+        }
         guard let image = ctx.makeImage() else { continue }
         pngs[index] = image
         try writePNG(image, to: dir.appendingPathComponent(String(format: "frame-%04d.png", index)))
@@ -947,8 +1032,10 @@ func writePNG(_ image: CGImage, to url: URL) throws {
 /// "along" is the panel's y there — the same mapping the view undoes in
 /// `dockPointer`.
 @MainActor
-func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) -> CGPoint? {
-    guard let frame = controller.panelFrame else { return nil }
+func filmPointer(
+    _ spot: String, edge: PillGeometry.Edge, controller: DictationPillController, in panelFrame: CGRect? = nil
+) -> CGPoint? {
+    guard let frame = panelFrame ?? controller.panelFrame else { return nil }
     let center = CGPoint(x: frame.width / 2, y: frame.height / 2)
     // The dock's fields through the SAME mapping `PeekDock`'s hit test uses
     // (`PillGeometry.dockField*`), so a film can never light the wrong field.
@@ -994,21 +1081,40 @@ func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationP
 /// own event handling — the one thing the timer-driven `perform:` cannot do.
 @MainActor
 func filmClick(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) {
-    guard let point = filmPointer(spot, edge: edge, controller: controller),
-          let frame = controller.panelFrame,
-          let window = NSApp.windows.first(where: { String(describing: type(of: $0)) == "DictationPanel" })
-    else { print("click:\(spot): no pill window"); return }
-    // Root space is y-down from the top-left; NSEvent wants y-up from the bottom-left.
-    let location = CGPoint(x: point.x, y: frame.height - point.y)
-    let now = ProcessInfo.processInfo.systemUptime
-    for (type, pressure) in [(NSEvent.EventType.leftMouseDown, Float(1)), (.leftMouseUp, 0)] {
-        guard let event = NSEvent.mouseEvent(
-            with: type, location: location, modifierFlags: [], timestamp: now,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: pressure
-        ) else { continue }
-        window.sendEvent(event)
+    guard let point = filmScreenPoint(spot, edge: edge, controller: controller) else {
+        print("click:\(spot): no pill window"); return
     }
-    print("click:\(spot) at \(location) in window \(window.windowNumber)")
+    controller.filmPointerLocation = point
+    controller.filmLeftButtonDown = true
+    filmMouse(.leftMouseDown, at: point)
+    controller.filmLeftButtonDown = false
+    filmMouse(.leftMouseUp, at: point)
+    print("click:\(spot) at \(point) (screen)")
+}
+
+/// A named spot on the pill in SCREEN coordinates (y up).
+@MainActor
+/// Measured on the SETTLED panel (`settledPanelFrame`): mid-transition the
+/// panel is a larger stage, and a user aims at where the pill is going.
+func filmScreenPoint(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) -> CGPoint? {
+    guard let frame = controller.settledPanelFrame,
+          let point = filmPointer(spot, edge: edge, controller: controller, in: frame) else { return nil }
+    return CGPoint(x: frame.minX + point.x, y: frame.maxY - point.y)
+}
+
+/// One synthesized mouse event at a SCREEN point, sent to the pill's own
+/// window (located in that window's coordinates as they are NOW — the panel
+/// moves under a drag).
+@MainActor
+func filmMouse(_ kind: NSEvent.EventType, at screenPoint: CGPoint) {
+    guard let window = NSApp.windows.first(where: { String(describing: type(of: $0)) == "DictationPanel" }) else { return }
+    let location = CGPoint(x: screenPoint.x - window.frame.minX, y: screenPoint.y - window.frame.minY)
+    guard let event = NSEvent.mouseEvent(
+        with: kind, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+        pressure: kind == .leftMouseUp ? 0 : 1
+    ) else { return }
+    window.sendEvent(event)
 }
 
 /// The film's stage: a plain light or dark window behind the pill, for grabs

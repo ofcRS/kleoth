@@ -53,15 +53,14 @@ public final class DictationPillController: DictationPillPresenting {
     /// lands during the stagger as anticipation.
     /// Tuned short (was 0.55 / 0.5 s): the user reads anything slower as lag
     /// between the key press and the pill.
-    static let moveSpring: Animation = .spring(duration: 0.34, bounce: 0.25)
-    static let shapeSpring: Animation = .spring(duration: 0.3, bounce: 0.18)
+    /// The durations live in `PillMotion` (KleothCore), which also decides
+    /// when a transition has ended and the panel settles.
+    static let moveSpring: Animation = .spring(duration: PillMotion.moveDuration, bounce: 0.25)
+    static let shapeSpring: Animation = .spring(duration: PillMotion.shapeDuration, bounce: 0.18)
     /// A peek (hover, or the chord's first frame) is a short hop out of the
     /// edge and back: quicker and tighter than a rise.
-    static let peekSpring: Animation = .spring(duration: 0.22, bounce: 0.2)
-    static let stagger: TimeInterval = 0.06
-    /// Nominal durations of the two springs, for picking the beat that ends last.
-    static let moveDuration: TimeInterval = 0.34
-    static let shapeDuration: TimeInterval = 0.3
+    static let peekSpring: Animation = .spring(duration: PillMotion.peekDuration, bounce: 0.2)
+    static let stagger: TimeInterval = PillMotion.stagger
 
     /// What the SwiftUI content renders.
     let model = DictationPillModel()
@@ -75,7 +74,7 @@ public final class DictationPillController: DictationPillPresenting {
     private(set) var menuOpen = false
     /// Peeking or the menu is open: an offer would pull the dock from under
     /// the pointer, so the meeting side waits (meetings design §3.2.3).
-    public var isInteracting: Bool { peeking || menuOpen }
+    public var isInteracting: Bool { peeking || menuOpen || isDragging }
     /// The pointer is on the CAPSULE (any phase): an offer's lifetime waits.
     /// Answered from geometry, like `closeMenu`'s and `reconsiderPointer`'s
     /// re-checks — never from `model.hovered` alone: the tracking area sends no
@@ -114,19 +113,55 @@ public final class DictationPillController: DictationPillPresenting {
     /// The rect the panel settles to when the in-flight transition completes;
     /// nil when the panel is settled (frame == capsule rect, offset == zero).
     private var pendingFrame: CGRect?
-    /// The phase an in-flight transition has yet to apply: `transition` puts
-    /// `model.phase` on the NEXT main-queue turn, so for that turn the model
-    /// still shows the old phase. nil once applied, or when the transition was
-    /// superseded by a settle or a hide (its phase will never land).
-    private var pendingPhase: DictationPillState?
-    /// Bumped by every transition, settle, and hide so a stale spring
-    /// completion can never shrink the panel to a rect that is no longer the
-    /// destination.
-    private var transitionGeneration = 0
+    /// The transitions in flight (`PillTransitionLedger`, KleothCore): each is
+    /// a generation, bumped by every transition, settle and hide so a stale
+    /// callout or settle timer can never shrink the panel to a rect that is no
+    /// longer the destination. Its PENDING shape is what a transition has yet
+    /// to apply: `transition` puts `model.phase` (with its capsule size and
+    /// flatness) on the NEXT main-queue turn, so for that turn the model still
+    /// shows the old phase. A `settle()` in that turn (a drag starting) lands
+    /// it at once instead of dropping it; a hide forgets it.
+    private var ledger = PillTransitionLedger<PendingShape>()
+    private struct PendingShape {
+        var phase: DictationPillState
+        var capsule: CGSize
+        var flat: Bool
+    }
+    /// The phase the pending shape carries.
+    private var pendingPhase: DictationPillState? { ledger.pending?.phase }
     /// Where along the edge the pointer grabbed the pill, relative to the
     /// anchor center, so a drag does not snap the pill's center to the cursor.
     /// Reset to zero when a drag re-docks to an edge with the other axis.
     private var dragGrabOffset: CGFloat = 0
+    /// A drag is in progress (`beginDrag` … `commitDraggedPlacement`). The
+    /// pill keeps the phase, size and peek it was grabbed in until the drop:
+    /// a transition started under a drag springs a STAGE that the drag then
+    /// overwrote with the dragged frame — the capsule, still offset on that
+    /// stage, was drawn outside its own panel (an empty or half-cut pill), and
+    /// the spring's settle then threw the panel back to where the drag began.
+    /// And a hover exit no longer collapses the dock out from under the drag.
+    private(set) var isDragging = false
+    /// What the pill was asked to do while dragged (`PillDragHold`,
+    /// KleothCore): held for the drop, the LATEST request winning as it would
+    /// without the drag — except a capture going hot, which shows at once
+    /// where the pill is being dragged (`isHotCapture`).
+    private var dragHold = PillDragHold<DictationPillState>()
+    /// While a drag is in progress: watches the left button, so a drag whose
+    /// mouse-up never arrives (sleep, a lock, Mission Control, a system
+    /// prompt) is dropped within `dragWatchInterval` instead of holding the
+    /// pill — and every capture bar asked for meanwhile — until the next event.
+    private var dragWatchTask: Task<Void, Never>?
+    static let dragWatchInterval: Duration = .milliseconds(250)
+    /// The press in progress on the capsule (`pressBegan` … `pressEnded`),
+    /// measured on screen (`PillPress`).
+    private var press: PillPress?
+    /// The phase the pill is heading for: one asked for during a drag, else
+    /// the one a transition has yet to apply, else what it shows. Every "is
+    /// the pill resting?" decision reads this — `model.phase` alone answered
+    /// for a phase that was already being replaced.
+    private var upcomingPhase: DictationPillState { deferredPhase ?? pendingPhase ?? model.phase }
+    /// The phase a drag is holding for the drop, if any.
+    private var deferredPhase: DictationPillState? { dragHold.heldPhase(hidden: .hidden) }
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -144,8 +179,26 @@ public final class DictationPillController: DictationPillPresenting {
     // MARK: DictationPillPresenting
 
     public func show(_ state: DictationPillState) {
+        // A drag whose mouse-up never arrived is dropped FIRST: its drop may
+        // replay a held phase with its own auto-hide, and this newer request
+        // must cancel that timer, not run before it (a held `.saved`'s 4 s
+        // timer dismissed the `.listening` that dropped it).
+        endDragIfReleased()
         hideTask?.cancel()
         hideTask = nil
+        if isDragging {
+            // See `isDragging`. A `.hidden` still goes through `dismiss()`,
+            // whose backdrop decides — and is held too.
+            if state == .hidden {
+                dismiss()
+            } else if dragHold.receive(.show(state), hot: Self.isHotCapture(state)) == .applyNow {
+                applyWhileDragged(state)
+            }
+            return
+        }
+        // The dock is out under the pointer: whatever replaces it starts from
+        // a capsule that is already fully on screen (a start from the pill).
+        let fromDock = state != .idle && model.phase == .idle && (peeking || menuOpen)
         if state != .idle, peeking {
             peekTask?.cancel()
             peeking = false
@@ -173,7 +226,7 @@ public final class DictationPillController: DictationPillPresenting {
         model.apply(labelWidth: layout.labelWidth)
 
         if alreadyUp {
-            transition(to: target, phase: state, capsule: layout.capsuleSize, flat: layout.flat)
+            transition(to: target, phase: state, capsule: layout.capsuleSize, flat: layout.flat, fromDock: fromDock)
         } else {
             // A fresh show starts from the tucked spot and emerges, so even the
             // first pill of the day comes in from the edge rather than popping.
@@ -260,16 +313,18 @@ public final class DictationPillController: DictationPillPresenting {
     public func setBackdrop(_ newBackdrop: DictationPillBackdrop) {
         guard backdrop != newBackdrop else { return }
         backdrop = newBackdrop
-        guard Self.isRestingFamily(pendingPhase ?? model.phase) else { return }
+        guard Self.isRestingFamily(upcomingPhase) else { return }
         if let state = newBackdrop.state {
             show(state)
-        } else if model.phase != .hidden {
+        } else if upcomingPhase != .hidden {
             hideCompletely()
         }
     }
 
-    /// What the pill is showing right now.
-    public var currentState: DictationPillState { dismissingState ?? model.phase }
+    /// What the pill is showing right now — or, during a drag, what it will
+    /// show at the drop (`isDragging`): the coordinator decides what to
+    /// dismiss from this, and a phase held for the drop is already its owner's.
+    public var currentState: DictationPillState { dismissingState ?? deferredPhase ?? model.phase }
     private var dismissingState: DictationPillState?
 
     /// What the pill shows once the transition in flight lands: `currentState`,
@@ -277,7 +332,8 @@ public final class DictationPillController: DictationPillPresenting {
     /// counts (`model.phase` changes a turn later on a panel that is up) — the
     /// coordinator's "is a dictation phase live?" input. During a ✕ it is still
     /// the dismissed phase, like `currentState`.
-    public var upcomingState: DictationPillState { dismissingState ?? pendingPhase ?? model.phase }
+    /// A phase asked for during a drag counts too: it lands at the drop.
+    public var upcomingState: DictationPillState { dismissingState ?? upcomingPhase }
 
     public func setResting(_ visible: Bool) {
         setBackdrop(visible ? .idle : .hidden)
@@ -311,7 +367,7 @@ public final class DictationPillController: DictationPillPresenting {
         // land a turn later with nothing left to take it down. Showing the
         // backdrop supersedes that transition (the generation check), so the
         // phase never appears.
-        if model.phase == state, pendingPhase == nil || pendingPhase == state,
+        if model.phase == state, upcomingPhase == state,
            panel?.isVisible == true, model.isPresented { return }
         show(state)
     }
@@ -347,6 +403,11 @@ public final class DictationPillController: DictationPillPresenting {
     }
 
     private func hideCompletely() {
+        endDragIfReleased()
+        if isDragging {
+            _ = dragHold.receive(.hide, hot: false)
+            return
+        }
         guard let panel, panel.isVisible else {
             model.isPresented = false
             model.apply(phase: .hidden)
@@ -361,6 +422,9 @@ public final class DictationPillController: DictationPillPresenting {
         withAnimation(.easeOut(duration: Self.fadeOutDuration)) {
             model.isPresented = false
         }
+        // Never reassigned without a cancel: a replaced timer would still
+        // fire (a replayed phase's auto-hide dismissed whatever came after).
+        hideTask?.cancel()
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Int(Self.fadeOutDuration * 1000)))
             guard !Task.isCancelled, let self, let panel = self.panel else { return }
@@ -373,7 +437,8 @@ public final class DictationPillController: DictationPillPresenting {
     /// "Reset pill position".
     public func resetPosition() {
         defaults.removeObject(forKey: Self.placementDefaultsKey)
-        guard let panel, panel.isVisible, let screen = defaultScreen() else { return }
+        // A drag in progress writes its own placement at the drop.
+        guard !isDragging, let panel, panel.isVisible, let screen = defaultScreen() else { return }
         currentDisplayId = screen.kleothDisplayId
         let edge = dockEdge(on: screen)
         let layout = layout(for: model.phase, edge: edge, on: screen)
@@ -385,35 +450,57 @@ public final class DictationPillController: DictationPillPresenting {
 
     // MARK: View-facing API (DictationPillView)
 
-    /// Called once at drag start: finishes any in-flight transition (so the
-    /// panel is exactly the capsule and the drag moves what the user sees) and
-    /// remembers where along the edge the pointer grabbed it.
+    /// Called once, when a press on the pill has travelled past
+    /// `PillGeometry.dragThreshold`: finishes any in-flight transition (so the
+    /// panel is exactly the capsule and the drag moves what the user sees —
+    /// a phase still waiting for its turn lands now, it is never dropped) and
+    /// remembers where along the edge the pointer grabbed it. From here to
+    /// the drop the pill keeps its phase, size and peek (`isDragging`).
     ///
-    /// The grab is measured against the PANEL's own centre rather than
-    /// `anchorCenter`: settled, the two are the same for an upright phase, and
+    /// The grab is measured against the PANEL's own centre rather than the
+    /// anchor's: settled, the two are the same for an upright phase, and
     /// for a flat recording bar on a side edge the panel is the only thing
     /// that knows where the along-axis clamp actually put it.
     func beginDrag() {
+        guard !isDragging else { return }
         closeMenu()
         settle()
+        isDragging = true
+        dragHold = PillDragHold()
+        model.apply(dragging: true)
+        model.apply(pressedField: nil)
+        dragWatchTask?.cancel()
+        dragWatchTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.dragWatchInterval)
+                guard !Task.isCancelled, let self, self.isDragging else { return }
+                self.endDragIfReleased()
+            }
+        }
+        // A collapse already counting down (the pointer left the dock just
+        // before the press moved) must not fire under the drag.
+        peekTask?.cancel()
+        peekTask = nil
         guard let panel else { return }
-        let mouse = NSEvent.mouseLocation
-        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
-        dragGrabOffset = model.edge.isVertical ? mouse.y - center.y : mouse.x - center.x
+        dragGrabOffset = PillGeometry.grabOffset(
+            pointer: dragPointerLocation, panelCenter: CGPoint(x: panel.frame.midX, y: panel.frame.midY), edge: model.edge
+        )
     }
 
     /// Live drag, driven by `NSEvent.mouseLocation` (never
     /// `DragGesture.Value.translation`, which double-counts as the window
     /// moves under the cursor). The pill slides ALONG its edge only: the
     /// pointer's along-axis coordinate (minus the grab offset) becomes the
-    /// anchor's, the orthogonal one is the edge's fixed inset. A resting pill
-    /// pops fully on screen while dragged and tucks back on release. Dragging
-    /// clearly toward another edge — past the corner diagonal by
-    /// `PillGeometry.redockHysteresis` — re-docks there, re-laying the panel
-    /// out on the spot (a side edge stands it up).
+    /// anchor's, the orthogonal one is the edge's fixed inset — placed by
+    /// `activeOrigin`, the function the settled pill uses, so the first frame
+    /// of a drag moves nothing. A resting pill pops fully on screen while
+    /// dragged and tucks back on release. Dragging clearly toward another
+    /// edge — past the corner diagonal by `PillGeometry.redockHysteresis` —
+    /// re-docks there, re-laying the panel out on the spot (a side edge
+    /// stands it up).
     func dragMoved() {
-        guard let panel else { return }
-        let mouse = NSEvent.mouseLocation
+        guard isDragging, let panel else { return }
+        let mouse = dragPointerLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
             ?? panelScreen() ?? defaultScreen() else { return }
         let edge = PillGeometry.dragEdge(current: model.edge, pointer: mouse, in: screen.frame)
@@ -426,25 +513,37 @@ public final class DictationPillController: DictationPillPresenting {
             model.apply(edge: edge)
             model.apply(labelWidth: layout.labelWidth)
         }
-        let along = (edge.isVertical ? mouse.y : mouse.x) - dragGrabOffset
-        let size = layout.panelSize
-        let center = PillGeometry.dockedCenter(
-            edge: edge, along: along,
-            panelSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: layout.flat, dock: model.dock, on: screen),
-            shadowPadding: Self.shadowPadding, in: Self.bounds(of: screen)
+        let origin = activeOrigin(
+            panelSize: layout.panelSize, edge: edge, flat: layout.flat, on: screen,
+            along: PillGeometry.dragAlong(pointer: mouse, grabOffset: dragGrabOffset, edge: edge)
         )
-        panel.setFrame(
-            CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height),
-            display: true
-        )
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            panel.setFrame(CGRect(origin: origin, size: layout.panelSize), display: true)
+        }
     }
 
-    /// Persists where the user dropped the pill: the edge it is docked on and
-    /// its fraction along it (see `PillPlacement`). The pill then springs to
-    /// its phase's spot — tucked into the edge if resting.
+    /// The drop: persists where the user left the pill — the edge it is
+    /// docked on and its fraction along it (see `PillPlacement`) — then lets
+    /// the pill go on from the new spot: to whatever it was asked to show
+    /// meanwhile (`dragHold`), else to its own phase's spot, tucked
+    /// into the edge if resting. The pointer is read again last: a dock
+    /// dropped with the pointer off it collapses (after `peekLinger`) at its
+    /// NEW place, not halfway through the drag.
     func commitDraggedPlacement() {
-        guard let panel else { return }
-        guard let screen = panelScreen() ?? defaultScreen() else { return }
+        guard isDragging else { return }
+        isDragging = false
+        dragWatchTask?.cancel()
+        dragWatchTask = nil
+        model.apply(dragging: false)
+        model.apply(pressedField: nil)
+        let deferred = dragHold.drop()
+        defer { reconsiderPointerAfterDrag() }
+        guard let panel, let screen = panelScreen() ?? defaultScreen() else {
+            replay(deferred)
+            return
+        }
         currentDisplayId = screen.kleothDisplayId
         // The dragged frame is the phase's panel centered on the anchor, so
         // its center fractions ARE the anchor's.
@@ -459,12 +558,163 @@ public final class DictationPillController: DictationPillPresenting {
         if let data = try? JSONEncoder().encode(placement) {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
+        guard deferred == nil else {
+            replay(deferred)
+            return
+        }
         let edge = dockEdge(on: screen)
         let layout = layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
         transition(to: CGRect(origin: origin, size: layout.panelSize), phase: model.phase, capsule: layout.capsuleSize, flat: layout.flat)
+    }
+
+    // MARK: The press (DictationPillView.pressGesture)
+
+    /// A press went down on the capsule (the gesture's first update): where,
+    /// ON SCREEN (`PillPress`). The gesture's own translation is measured in
+    /// the capsule's space, which moves with the window during a drag and
+    /// grows under a still pointer while the dock opens.
+    func pressBegan() {
+        press = PillPress(at: dragPointerLocation)
+    }
+
+    /// The pointer moved with the button down: past the threshold the press
+    /// becomes a drag (once), and from then on the drag follows the pointer.
+    func pressMoved() {
+        if isDragging {
+            dragMoved()
+            return
+        }
+        if press == nil { pressBegan() }
+        guard var current = press else { return }
+        let becameDrag = current.move(to: dragPointerLocation)
+        press = current
+        if becameDrag {
+            beginDrag()
+            dragMoved()
+        } else if current.isClick {
+            // The dock field under the press, drawn pressed — resolved on the
+            // SETTLED dock, so a press while it opens names the field the
+            // user aimed at.
+            model.apply(pressedField: model.dockOut ? settledDockField(at: current.start) : nil)
+        }
+    }
+
+    /// The button went up: a drop if the press became a drag — also when that
+    /// drag was already dropped without it (`endDragIfReleased`), which used
+    /// to fall through to a click — else a click, on the dock field under the
+    /// pointer (again on the settled dock).
+    func pressEnded() -> PillPressEnd {
+        defer {
+            press = nil
+            model.apply(pressedField: nil)
+        }
+        if isDragging {
+            dragMoved()
+            commitDraggedPlacement()
+            return .none
+        }
+        guard var current = press else { return .none }
+        _ = current.move(to: dragPointerLocation)
+        guard current.isClick else { return .none }
+        return .click(dockField: model.dockOut ? settledDockField(at: dragPointerLocation) : nil)
+    }
+
+    /// The dock field under a screen point, on the dock as it will SETTLE
+    /// (`settledPanelFrame`): mid-peek the capsule is still growing, and the
+    /// field a user aims at is the one of the dock that is coming out.
+    private func settledDockField(at point: CGPoint) -> Int {
+        let frame = settledPanelFrame ?? .zero
+        let along = PillGeometry.alongCapsule(
+            pointer: point, capsuleCenter: CGPoint(x: frame.midX, y: frame.midY),
+            edge: model.edge, flat: ledger.pending?.flat ?? model.flat
+        )
+        return PillGeometry.dockFieldIndex(along: along, pitch: model.dock.pitch, count: PillDockMetrics.fieldCount)
+    }
+
+    /// The phases that mean a capture just went (or still is) hot — a
+    /// microphone live, a recording rolling. A drag never holds them: their
+    /// indicator shows at once (the hot-mic rule), where the pill is.
+    private static func isHotCapture(_ state: DictationPillState) -> Bool {
+        switch state {
+        case .armed, .listening, .recording, .meeting:
+            return true
+        case .hidden, .idle, .transcribing, .polishing, .done, .warning, .failed, .saving, .saved,
+             .meetingSaved, .prompt:
+            return false
+        }
+    }
+
+    /// A hot capture's phase during a drag: applied NOW, without a spring
+    /// (nothing animates under a drag — a spring's stage is what the drag
+    /// used to overwrite), at the dragged position, and the drag goes on with
+    /// it. The grab is kept inside the new capsule, which may be shorter.
+    private func applyWhileDragged(_ state: DictationPillState) {
+        guard let panel, panel.isVisible else { return }
+        let layout = layout(for: state, edge: model.edge, on: panelScreen() ?? anchorScreen())
+        guard model.phase != state || model.capsuleSize != layout.capsuleSize || model.flat != layout.flat else { return }
+        if state != .idle, peeking {
+            peekTask?.cancel()
+            peekTask = nil
+            peeking = false
+            model.apply(peeking: false)
+        }
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            model.apply(labelWidth: layout.labelWidth)
+            model.apply(offset: .zero)
+            model.apply(phase: state)
+            model.apply(capsuleSize: layout.capsuleSize)
+            model.apply(flat: layout.flat)
+        }
+        // In place, content shown: a `.rise`'s reveal must never hide a live bar.
+        model.apply(beat: .morph)
+        releaseDockSurface()
+        let alongExtent = model.edge.isVertical ? layout.panelSize.height : layout.panelSize.width
+        let half = max(0, alongExtent / 2 - Self.shadowPadding)
+        dragGrabOffset = min(max(dragGrabOffset, -half), half)
+        dragMoved()
+        announce(state)
+        scheduleAutoHide(for: state)
+    }
+
+    /// A drag whose mouse-up never reached the gesture (its `onEnded` did not
+    /// run) must not hold the pill forever: once the left button is up, it is
+    /// a drop. Checked wherever a held request arrives, and every
+    /// `dragWatchInterval` while the drag lasts (`dragWatchTask`). The film
+    /// reads its own button (`filmLeftButtonDown`).
+    @discardableResult
+    private func endDragIfReleased() -> Bool {
+        guard isDragging, !leftButtonDown else { return false }
+        commitDraggedPlacement()
+        return true
+    }
+
+    /// What a drag held back, now: a phase springs from the drop spot to its
+    /// place at the new anchor; a hide fades the pill out there.
+    private func replay(_ request: PillDragHold<DictationPillState>.Request?) {
+        switch request {
+        case .show(let state): show(state)
+        case .hide: hideCompletely()
+        case nil: break
+        }
+    }
+
+    /// After a drop, the hover the drag kept still: an exit delivered
+    /// mid-drag only updated `hovered`, so the peek decision is made here.
+    private func reconsiderPointerAfterDrag() {
+        let inside: Bool
+        if ignoresRealPointer {
+            inside = model.hovered
+        } else if let panel, panel.isVisible {
+            inside = (pendingFrame ?? panel.frame).contains(NSEvent.mouseLocation)
+        } else {
+            inside = false
+        }
+        handleHover(inside)
     }
 
     /// The pill's action button. The handler lives in `DictationController`;
@@ -522,9 +772,13 @@ public final class DictationPillController: DictationPillPresenting {
             guard let self, !self.ignoresRealPointer else { return }
             self.handleHover(hovering)
         }
-        hosting.onPointerMove = { [weak self] point in
+        hosting.onPointerMove = { [weak self, weak hosting] point in
             guard let self, !self.ignoresRealPointer else { return }
             self.model.apply(pointer: point)
+            // Re-asserted on every move, not only when the answer changes:
+            // anything else that set the cursor meanwhile (the menu's rows,
+            // another app as the pointer crossed it) is put right at once.
+            if point != nil, let hosting { self.model.cursor(rootSize: hosting.bounds.size).set() }
         }
         hosting.onSecondaryClick = { [weak self] in self?.openMenu() }
         // The hosting view is a SUBVIEW of a plain container — never the
@@ -598,6 +852,30 @@ public final class DictationPillController: DictationPillPresenting {
     /// wandering over the pill while the film runs (it tucked a timed film).
     public var ignoresRealPointer = false
 
+    /// Film mode: where the scripted pointer is, in screen coordinates — what
+    /// a drag reads instead of `NSEvent.mouseLocation`, so the sandbox can
+    /// film a real drag (synthesized mouse events through the pill's own
+    /// window) without moving the user's cursor. Ignored unless
+    /// `ignoresRealPointer` is set.
+    public var filmPointerLocation: CGPoint?
+
+    /// Film mode: whether the film's left button is down — what a drag checks
+    /// instead of `NSEvent.pressedMouseButtons` (the real button is up for
+    /// the whole film). The sandbox's `lose-mouseup` lifts it without sending
+    /// the mouse-up, the way a mouse-up lost to sleep or a system prompt does.
+    public var filmLeftButtonDown = false
+
+    /// The left button, real or the film's.
+    private var leftButtonDown: Bool {
+        ignoresRealPointer ? filmLeftButtonDown : NSEvent.pressedMouseButtons & 1 != 0
+    }
+
+    /// The pointer a drag follows: the real one, or the film's.
+    private var dragPointerLocation: CGPoint {
+        if ignoresRealPointer, let filmPointerLocation { return filmPointerLocation }
+        return NSEvent.mouseLocation
+    }
+
     /// What the tracking area reports, exposed for the sandbox's film mode
     /// (there is no pointer to move in a headless run).
     public func setHovered(_ hovering: Bool) {
@@ -614,6 +892,9 @@ public final class DictationPillController: DictationPillPresenting {
 
 
     private func handleHover(_ hovering: Bool) {
+        // A drag that ended unseen is dropped first; the drop reads the
+        // pointer again itself.
+        if endDragIfReleased() { return }
         peekTask?.cancel()
         peekTask = nil
         model.apply(hovered: hovering)
@@ -622,7 +903,11 @@ public final class DictationPillController: DictationPillPresenting {
         // for `fadeOutDuration`, and `closeMenu()`'s pointer re-check lands
         // inside that window — peeking it would `show(.idle)` and cancel the
         // hide. A pill on its way out is never pulled back by the pointer.
-        guard model.phase == .idle, !menuOpen, backdrop == .idle else { return }
+        // `upcomingPhase`, not `model.phase`: for a turn after a `show` the
+        // model still says `.idle`, and a hover then peeked the dock right
+        // over a dictation's `.listening` — superseding it. A drag keeps the
+        // peek as it is; the drop decides (`reconsiderPointerAfterDrag`).
+        guard upcomingPhase == .idle, !menuOpen, backdrop == .idle, !isDragging else { return }
         if hovering {
             setPeeking(true)
         } else {
@@ -641,7 +926,7 @@ public final class DictationPillController: DictationPillPresenting {
         // The dock's surface comes out with it — and leaves only once the
         // collapse has settled (`releaseDockSurface`), never here.
         if on { model.apply(dockHeld: true) }
-        if model.phase == .idle, panel?.isVisible == true { show(.idle) }
+        if upcomingPhase == .idle, panel?.isVisible == true { show(.idle) }
     }
 
     /// Re-reads the REAL pointer once a phase has switched to `.idle` under it.
@@ -651,7 +936,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// dismissed fault — got no `mouseEntered` and stayed tucked until the
     /// pointer left and came back. Now it peeks straight out of the collapse.
     private func reconsiderPointer() {
-        guard !ignoresRealPointer, !peeking, !menuOpen, model.phase == .idle,
+        guard !ignoresRealPointer, !peeking, !menuOpen, !isDragging, model.phase == .idle, upcomingPhase == .idle,
               let panel, panel.isVisible else { return }
         let frame = pendingFrame ?? panel.frame
         if frame.contains(NSEvent.mouseLocation) { handleHover(true) }
@@ -710,7 +995,7 @@ public final class DictationPillController: DictationPillPresenting {
         model.apply(menuOpen: true)
         peekTask?.cancel()
         peekTask = nil
-        if model.phase == .idle { setPeeking(true) }
+        if upcomingPhase == .idle { setPeeking(true) }
 
         let menuPanel = ensureMenuPanel()
         layoutMenu()
@@ -959,7 +1244,7 @@ public final class DictationPillController: DictationPillPresenting {
         if let data = try? JSONEncoder().encode(placement) {
             defaults.set(data, forKey: Self.placementDefaultsKey)
         }
-        guard let panel, panel.isVisible else { return }
+        guard !isDragging, let panel, panel.isVisible else { return }
         currentDisplayId = screen.kleothDisplayId
         let layout = layout(for: model.phase, edge: edge, on: screen)
         let origin = origin(for: model.phase, panelSize: layout.panelSize, edge: edge, on: screen)
@@ -1010,6 +1295,9 @@ public final class DictationPillController: DictationPillPresenting {
 
     /// The panel's current frame in screen coordinates (sandbox / tests).
     public var panelFrame: CGRect? { panel?.frame }
+    /// Where the panel is heading: the in-flight transition's destination,
+    /// else its frame — what a user aims a click at while the pill moves.
+    public var settledPanelFrame: CGRect? { panel.map { pendingFrame ?? $0.frame } }
     /// The capsule itself, un-rotated (width = its length along the edge) —
     /// for the sandbox's named pointer spots on a text phase (`label`).
     public var capsuleSize: CGSize { model.capsuleSize }
@@ -1030,8 +1318,9 @@ public final class DictationPillController: DictationPillPresenting {
         panel.orderOut(nil)
         model.isPresented = false
         model.apply(phase: .hidden)
-        // A hidden panel is settled by definition; forget any in-flight move.
-        transitionGeneration += 1
+        // A hidden panel is settled by definition; forget any in-flight move
+        // (its pending shape included — further down).
+        ledger.cancel()
         pendingFrame = nil
         model.apply(offset: .zero)
         model.apply(dockHeld: false)
@@ -1048,7 +1337,6 @@ public final class DictationPillController: DictationPillPresenting {
         peekTask = nil
         peeking = false
         model.apply(peeking: false)
-        pendingPhase = nil
         // A backdrop that rose while the panel faded out was only stored (the
         // old phase was still up); it takes over now, so a capture that
         // started in the fade never ends up with no bar (hot-mic rule).
@@ -1057,6 +1345,7 @@ public final class DictationPillController: DictationPillPresenting {
 
     private func scheduleAutoHide(for state: DictationPillState) {
         guard let delay = state.autoHideAfter else { return }
+        hideTask?.cancel()
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
@@ -1069,14 +1358,21 @@ public final class DictationPillController: DictationPillPresenting {
     /// Moves the capsule to `target` (a panel rect: capsule + shadow margin)
     /// and switches it to `phase`, on one spring. See the type comment for the
     /// stage technique. Under Reduce Motion the panel simply jumps.
-    private func transition(to target: CGRect, phase: DictationPillState, capsule: CGSize, flat: Bool) {
+    ///
+    /// `fromDock`: the change replaces the peeked dock (a start from the
+    /// pill's own fields or menu). That capsule is already out of the edge, so
+    /// it MORPHS — never the `.rise`, whose content stays hidden until the
+    /// capsule "has left the edge": from the dock that was a dock-sized empty
+    /// capsule, held for as long as the main thread was busy starting the
+    /// capture (the user's "empty pill when starting from the pill").
+    private func transition(
+        to target: CGRect, phase: DictationPillState, capsule: CGSize, flat: Bool, fromDock: Bool = false
+    ) {
         guard let panel else { return }
-        transitionGeneration += 1
-        let generation = transitionGeneration
 
         guard !Self.reduceMotion else {
+            ledger.cancel()
             pendingFrame = nil
-            pendingPhase = nil
             var still = Transaction()
             still.disablesAnimations = true
             withTransaction(still) {
@@ -1123,15 +1419,15 @@ public final class DictationPillController: DictationPillPresenting {
         }
 
         let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
-        pendingPhase = phase
+        let generation = ledger.begin(PendingShape(phase: phase, capsule: capsule, flat: flat))
         // The animated changes go out on the NEXT main-queue callout so
         // SwiftUI has committed the re-expressed start position first; a
         // change in the same turn would spring from the previous graph value,
         // which is a different point on the new stage.
         Task { @MainActor [weak self] in
-            guard let self, self.transitionGeneration == generation else { return }
-            // Applied below in this same callout (or already the model's).
-            self.pendingPhase = nil
+            // Applied below in this same callout (or already the model's) —
+            // unless a later transition, a settle or a hide got there first.
+            guard let self, self.ledger.take(generation) else { return }
             let moves = self.model.offset != destination
             let reshapes = self.model.phase != phase || self.model.capsuleSize != capsule
                 || self.model.flat != flat
@@ -1142,7 +1438,7 @@ public final class DictationPillController: DictationPillPresenting {
             // The choreography cue for the view (squash-and-stretch along the
             // travel axis + content reveal) — fired before the springs so its
             // keyframes start on the same frame.
-            let wasResting = self.model.phase == .idle
+            let wasResting = self.model.phase == .idle && !fromDock
             let cue: MotionBeat.Kind = moves
                 ? (phase == .idle ? (wasResting ? .peek : .sink)
                     : (wasResting ? (phase == .armed ? .peek : .rise) : .morph))
@@ -1151,19 +1447,12 @@ public final class DictationPillController: DictationPillPresenting {
             // Sinking to rest: shape first, then move (it shrinks, then
             // slips into the edge). Rising: move and shape start together —
             // the size is explicit now, so the capsule visibly grows out of
-            // the edge instead of popping. The completion rides whichever
-            // beat ends last — and only a beat that actually changes state,
-            // since a no-op body completes immediately and would settle
-            // mid-flight.
+            // the edge instead of popping.
             let shapeFirst = phase == .idle
+            let staggeredMove = shapeFirst && cue != .peek
             let moveAnimation = cue == .peek ? Self.peekSpring
-                : (shapeFirst ? Self.moveSpring.delay(Self.stagger) : Self.moveSpring)
+                : (staggeredMove ? Self.moveSpring.delay(Self.stagger) : Self.moveSpring)
             let shapeAnimation = Self.shapeSpring
-            let completeOnMove = moves && (shapeFirst || !reshapes || (Self.moveDuration >= Self.shapeDuration))
-            let settleWhenDone: () -> Void = { [weak self] in
-                guard let self, self.transitionGeneration == generation else { return }
-                self.settle()
-            }
             let reshape = {
                 self.model.apply(phase: phase)
                 self.model.apply(capsuleSize: capsule)
@@ -1173,22 +1462,23 @@ public final class DictationPillController: DictationPillPresenting {
                 self.model.apply(flat: flat)
             }
             if moves {
-                if completeOnMove {
-                    withAnimation(moveAnimation, completionCriteria: .logicallyComplete) {
-                        self.model.apply(offset: destination)
-                    } completion: { settleWhenDone() }
-                } else {
-                    withAnimation(moveAnimation) { self.model.apply(offset: destination) }
-                }
+                withAnimation(moveAnimation) { self.model.apply(offset: destination) }
             }
             if reshapes {
-                if completeOnMove {
-                    withAnimation(shapeAnimation) { reshape() }
-                } else {
-                    withAnimation(shapeAnimation, completionCriteria: .logicallyComplete) {
-                        reshape()
-                    } completion: { settleWhenDone() }
-                }
+                withAnimation(shapeAnimation) { reshape() }
+            }
+            // Settle once the beat that ends last has ended (`PillMotion`).
+            // Not `withAnimation(_:completionCriteria:_:completion:)`: with a
+            // move and a reshape started in this same turn — every rise and
+            // sink — that completion never fired, so the panel stayed a stage
+            // (and the dock's surface stayed held) until the next morph.
+            let delay = PillMotion.settleDelay(
+                moves: moves, reshapes: reshapes, staggeredMove: staggeredMove, peek: cue == .peek
+            )
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, self.ledger.isCurrent(generation) else { return }
+                self.settle()
             }
             // The phase is `.idle` from here on; a pointer parked on the pill
             // turns the sink into a peek (a re-targeted transition).
@@ -1199,13 +1489,23 @@ public final class DictationPillController: DictationPillPresenting {
     /// Ends any in-flight transition NOW: panel = destination rect, offset =
     /// zero, both without animation and in the same turn, so the screen does
     /// not change. Safe to call when already settled.
+    ///
+    /// A transition still waiting for its turn is cancelled by the bump — but
+    /// its SHAPE lands here, at once: dropping it (as this did) left the panel
+    /// sized for the new phase around the old one (a drag starting the turn
+    /// after a `show(.listening)` kept a capsule-less dock in a listening-
+    /// sized panel while the dictation ran — an empty pill).
     private func settle() {
-        transitionGeneration += 1
-        // A transition still waiting for its turn is cancelled by the bump.
-        pendingPhase = nil
-        releaseDockSurface()
         var still = Transaction()
         still.disablesAnimations = true
+        if let shape = ledger.settle() {
+            withTransaction(still) {
+                model.apply(phase: shape.phase)
+                model.apply(capsuleSize: shape.capsule)
+                model.apply(flat: shape.flat)
+            }
+        }
+        releaseDockSurface()
         guard let panel, let target = pendingFrame else {
             if model.offset != .zero {
                 withTransaction(still) { model.apply(offset: .zero) }
@@ -1228,7 +1528,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// Displays changed: put the pill back on its anchor (tucked if resting)
     /// on whatever screen still exists, without animation.
     private func reanchorAfterScreenChange() {
-        guard let panel, panel.isVisible else { return }
+        // Mid-drag the drag itself follows the pointer onto whatever screen
+        // exists, and the drop re-anchors.
+        guard !isDragging, let panel, panel.isVisible else { return }
         guard let screen = panelScreen() ?? anchorScreen() else { return }
         settle()
         currentDisplayId = screen.kleothDisplayId
@@ -1296,28 +1598,12 @@ public final class DictationPillController: DictationPillPresenting {
         capsuleHeight(for: .warning("")) + 2 * shadowPadding
     }
 
-    /// The anchor's center: the reference panel docked on `edge` at the saved
-    /// along-axis fraction (if the saved placement is for this screen), else
-    /// centered on the edge. The screen is the caller's choice — for a fresh
-    /// show that is the placement's display, else the one **under the mouse**
-    /// (for an `.accessory` app with no key window `NSScreen.main` is whatever
-    /// screen last had one — unreliable — while the mouse is where the user
-    /// is looking).
-    private func anchorCenter(
-        edge: PillGeometry.Edge, panelSize: CGSize, flat: Bool, on screen: NSScreen
-    ) -> CGPoint {
-        let bounds = Self.bounds(of: screen)
-        return PillGeometry.dockedCenter(
-            edge: edge,
-            along: savedAlong(edge: edge, on: screen, in: bounds),
-            panelSize: Self.dockReferenceSize(panelSize: panelSize, edge: edge, flat: flat, dock: model.dock, on: screen),
-            shadowPadding: Self.shadowPadding,
-            in: bounds
-        )
-    }
-
     /// Where along its edge the pill is parked: the saved fraction if the saved
-    /// placement is for this screen, else the middle of the edge.
+    /// placement is for this screen, else the middle of the edge. The screen
+    /// is the caller's choice — for a fresh show that is the placement's
+    /// display, else the one **under the mouse** (for an `.accessory` app with
+    /// no key window `NSScreen.main` is whatever screen last had one —
+    /// unreliable — while the mouse is where the user is looking).
     private func savedAlong(edge: PillGeometry.Edge, on screen: NSScreen, in bounds: CGRect) -> CGFloat {
         if let placement = savedPlacement(),
            self.screen(for: placement)?.kleothDisplayId == screen.kleothDisplayId {
@@ -1326,21 +1612,30 @@ public final class DictationPillController: DictationPillPresenting {
         return edge.isVertical ? bounds.midY : bounds.midX
     }
 
-    /// A phase's active origin: its panel centered on the anchor. Clamping is
-    /// a no-op for anything no larger than the reference size; only an
-    /// over-long text pill can still be nudged.
+    /// A phase's active origin: its panel centered on the anchor — the
+    /// reference panel docked at `along` (the saved placement's, or a
+    /// drag's) — then clamped (`PillGeometry.dockedOrigin`). Clamping is a
+    /// no-op for anything no larger than the reference size; it lifts the
+    /// thicker peek dock off the edge, and only an over-long text pill can
+    /// still be nudged along it.
     ///
     /// A flat bar on a side edge is placed differently on purpose: it is not
     /// centered on the upright anchor but pinned by its NEAR END, so a 250 pt
     /// toolbar lies along the edge and grows inward instead of hanging half
     /// off the display.
     private func activeOrigin(
-        panelSize size: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?
+        panelSize size: CGSize, edge: PillGeometry.Edge, flat: Bool, on screen: NSScreen?, along: CGFloat? = nil
     ) -> CGPoint {
         guard let screen else { return .zero }
-        let center = anchorCenter(edge: edge, panelSize: size, flat: flat, on: screen)
-        let origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
-        return PillGeometry.clamp(origin, panelSize: size, in: Self.bounds(of: screen))
+        let bounds = Self.bounds(of: screen)
+        return PillGeometry.dockedOrigin(
+            edge: edge,
+            along: along ?? savedAlong(edge: edge, on: screen, in: bounds),
+            panelSize: size,
+            referenceSize: Self.dockReferenceSize(panelSize: size, edge: edge, flat: flat, dock: model.dock, on: screen),
+            shadowPadding: Self.shadowPadding,
+            in: bounds
+        )
     }
 
     /// The edge the pill is docked on for `screen`: the saved one, or — for a

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import KleothCore
@@ -82,6 +83,12 @@ final class DictationPillModel: ObservableObject {
     @Published private(set) var dockHeld = false
     /// The peek dock's geometry (`PillDockMetrics`); the sandbox rescales it live.
     @Published private(set) var dock = PillDockMetrics()
+    /// The pill is being dragged (`DictationPillController.isDragging`): the
+    /// closed-hand cursor, and no click lands at the drop.
+    @Published private(set) var dragging = false
+    /// The dock field under a press that is still down and has not become a
+    /// drag — drawn pressed (`DictationPillController.pressMoved`).
+    @Published private(set) var pressedField: Int?
 
     // MARK: Controller-facing mutation
 
@@ -143,6 +150,14 @@ final class DictationPillModel: ObservableObject {
         if dockHeld != on { dockHeld = on }
     }
 
+    func apply(dragging on: Bool) {
+        if dragging != on { dragging = on }
+    }
+
+    func apply(pressedField field: Int?) {
+        if pressedField != field { pressedField = field }
+    }
+
     func apply(dock metrics: PillDockMetrics) {
         if dock != metrics { dock = metrics }
     }
@@ -171,6 +186,99 @@ final class DictationPillModel: ObservableObject {
     private func clampUnit(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(value, 0), 1)
+    }
+
+    // MARK: Derived (view + controller)
+
+    /// The peek dock is out (or held out by its menu).
+    var dockOut: Bool { phase == .idle && (peeking || menuOpen) }
+
+    /// Horizontal on the bottom and top edges; on a side edge the pill stands
+    /// up in every phase, turned so text reads the way a spine label does —
+    /// bottom-to-top on the left, top-to-bottom on the right. A flat phase
+    /// (the recording toolbar, and every dictation phase over a live
+    /// recording) never stands up — see `flat`.
+    var edgeRotation: Angle {
+        guard !flat else { return .zero }
+        switch edge {
+        case .bottom, .top: return .zero
+        case .left: return .degrees(-90)
+        case .right: return .degrees(90)
+        }
+    }
+
+    /// The pointer relative to the capsule's centre, in the capsule's OWN
+    /// (un-rotated) space, or nil when it is off the panel. The capsule is
+    /// centred on the root (`rootSize` = the panel's content), displaced by
+    /// `offset` and turned by `edgeRotation`; undoing those here is what lets
+    /// the peek dock's fields light up — and the cursor change — correctly on
+    /// a side edge too, without trusting what `GeometryReader` reports through
+    /// a `rotationEffect`.
+    func capsulePointer(rootSize: CGSize) -> CGPoint? {
+        guard let pointer else { return nil }
+        let dx = pointer.x - (rootSize.width / 2 + offset.width)
+        let dy = pointer.y - (rootSize.height / 2 + offset.height)
+        let angle = -edgeRotation.radians
+        return CGPoint(x: dx * cos(angle) - dy * sin(angle), y: dx * sin(angle) + dy * cos(angle))
+    }
+
+    /// What the pointer should look like over the pill: a closed hand while it
+    /// is dragged; over the capsule, a pointing hand where a click acts (a
+    /// dock field, a bar's Stop, a prompt's buttons, a capsule that is a
+    /// button) and an OPEN hand on the body that only drags — the drag's
+    /// affordance (the user, 2026-11-18: "no intuitive place to click to
+    /// start dragging"). Every point of the capsule drags past
+    /// `PillGeometry.dragThreshold` except a real button (Stop, a prompt's
+    /// words, ✕, a fault's action).
+    func cursor(rootSize: CGSize) -> PillCursor {
+        if dragging { return .closedHand }
+        guard isPresented, let point = capsulePointer(rootSize: rootSize) else { return .arrow }
+        let size = capsuleSize
+        guard abs(point.x) <= size.width / 2, abs(point.y) <= size.height / 2 else { return .arrow }
+        switch phase {
+        case .hidden:
+            return .arrow
+        case .idle, .armed:
+            return dockOut ? .pointingHand : .arrow
+        case .listening, .saved, .meetingSaved, .failed:
+            // The capsule itself is the button (stop / hands-free / reveal /
+            // open / dismiss) — and still drags.
+            return .pointingHand
+        case .recording, .meeting:
+            let stop = size.width / 2 - PillStyle.compactPadding - PillStyle.stopButtonSize / 2
+            let overStop = hypot(point.x - stop, point.y) <= PillStyle.stopButtonSize / 2 + 4
+            return overStop ? .pointingHand : .openHand
+        case .prompt:
+            // symbol · words | buttons: the words drag, the buttons click.
+            let wordsEnd = -size.width / 2 + PillStyle.spacingM + 20 + PillStyle.spacingS + (labelWidth ?? 0)
+            return point.x > wordsEnd ? .pointingHand : .openHand
+        case .transcribing, .polishing, .done, .warning, .saving:
+            return .openHand
+        }
+    }
+}
+
+/// How a press on the capsule ended (`DictationPillController.pressEnded`).
+enum PillPressEnd: Equatable {
+    /// A drag (dropped now or already), or nothing to act on.
+    case none
+    /// A click; on the peek dock, the field under the pointer.
+    case click(dockField: Int?)
+}
+
+/// The pointer shapes the pill sets (`DictationPillModel.cursor`). Set by
+/// hand on every pointer move: Kleoth is never the active app, so AppKit's
+/// cursor rects (and SwiftUI's pointer styles) do not run for the panel.
+enum PillCursor: Equatable {
+    case arrow, pointingHand, openHand, closedHand
+
+    func set() {
+        switch self {
+        case .arrow: NSCursor.arrow.set()
+        case .pointingHand: NSCursor.pointingHand.set()
+        case .openHand: NSCursor.openHand.set()
+        case .closedHand: NSCursor.closedHand.set()
+        }
     }
 }
 
