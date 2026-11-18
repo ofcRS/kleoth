@@ -227,6 +227,21 @@ public enum PillGeometry {
         (edge.isVertical ? pointer.y : pointer.x) - grabOffset
     }
 
+    /// A screen pointer's offset from a capsule's centre along the capsule's
+    /// OWN axis (the one the dock's fields run along, negative toward its
+    /// start). On a side edge an upright capsule is turned — +90° on the
+    /// right (its start at the top), −90° on the left (its start at the
+    /// bottom); a `flat` one never is. The hover lift's mapping
+    /// (`DictationPillModel.capsulePointer`), from screen coordinates.
+    public static func alongCapsule(pointer: CGPoint, capsuleCenter: CGPoint, edge: Edge, flat: Bool) -> CGFloat {
+        guard !flat else { return pointer.x - capsuleCenter.x }
+        switch edge {
+        case .bottom, .top: return pointer.x - capsuleCenter.x
+        case .right: return capsuleCenter.y - pointer.y
+        case .left: return pointer.y - capsuleCenter.y
+        }
+    }
+
     /// The along-axis coordinate a saved placement encodes for `edge`.
     public static func along(for placement: PillPlacement, edge: Edge, in bounds: CGRect) -> CGFloat {
         edge.isVertical
@@ -432,6 +447,126 @@ public enum PillGeometry {
     private static func clampUnit(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(value, 0), 1)
+    }
+}
+
+/// One press on the pill, measured on SCREEN: a click until the pointer has
+/// travelled `PillGeometry.dragThreshold` from where it went down, then a
+/// drag for good. Not the gesture's own translation, which is measured in
+/// the capsule's space: it moves with the window during a drag and grows
+/// under a still pointer while the capsule animates (a press on the opening
+/// dock was no click).
+public struct PillPress: Equatable, Sendable {
+    public let start: CGPoint
+    /// The press became a drag (and stays one, however its drop came about).
+    public private(set) var dragged = false
+
+    public init(at start: CGPoint) {
+        self.start = start
+    }
+
+    /// Feeds the pointer's screen position; true exactly once — when this
+    /// press becomes a drag.
+    public mutating func move(to point: CGPoint) -> Bool {
+        guard !dragged else { return false }
+        let travel = CGSize(width: point.x - start.x, height: point.y - start.y)
+        guard PillGeometry.isDrag(translation: travel) else { return false }
+        dragged = true
+        return true
+    }
+
+    /// Whether the release is a click: never once the press became a drag.
+    public var isClick: Bool { !dragged }
+}
+
+/// What a drag does with the requests that reach the pill while it is
+/// carried (`DictationPillController.isDragging`): it HOLDS them for the drop,
+/// the latest winning as it would with no drag — except a capture going hot,
+/// which applies at once (a live microphone always has its indicator) and,
+/// being the newest request, replaces anything held before it.
+public struct PillDragHold<Phase: Equatable>: Equatable {
+    public enum Request: Equatable {
+        case show(Phase)
+        case hide
+    }
+
+    public enum Decision: Equatable {
+        case hold
+        case applyNow
+    }
+
+    public private(set) var held: Request?
+
+    public init() {}
+
+    public mutating func receive(_ request: Request, hot: Bool) -> Decision {
+        if hot {
+            held = nil
+            return .applyNow
+        }
+        held = request
+        return .hold
+    }
+
+    /// The held request, once, at the drop.
+    public mutating func drop() -> Request? {
+        defer { held = nil }
+        return held
+    }
+
+    /// The phase the drop will bring (`hidden` for a held hide), or nil.
+    public func heldPhase(hidden: Phase) -> Phase? {
+        switch held {
+        case .show(let phase): return phase
+        case .hide: return hidden
+        case nil: return nil
+        }
+    }
+}
+
+/// The pill's transitions in flight: each one is a generation, and its shape
+/// (phase, size, flatness) is PENDING from the moment it is asked for until
+/// its own callout applies it — or until a settle lands it at once. A later
+/// transition, a settle or a hide make the earlier generation stale, so its
+/// callout and its settle timer do nothing. A settle never drops the pending
+/// shape (it did: a drag starting in that turn left the new phase unapplied).
+public struct PillTransitionLedger<Shape> {
+    public private(set) var generation = 0
+    public private(set) var pending: Shape?
+
+    public init() {}
+
+    /// A new transition: supersedes any in flight. Returns its generation.
+    public mutating func begin(_ shape: Shape) -> Int {
+        generation += 1
+        pending = shape
+        return generation
+    }
+
+    /// Whether `generation` is still the transition in flight.
+    public func isCurrent(_ generation: Int) -> Bool { generation == self.generation }
+
+    /// The transition's own callout: true when it is still current and its
+    /// shape still pending — the caller applies it now (it is no longer pending).
+    public mutating func take(_ generation: Int) -> Bool {
+        guard isCurrent(generation), pending != nil else { return false }
+        pending = nil
+        return true
+    }
+
+    /// Ends whatever is in flight NOW: a new generation (stale callouts and
+    /// timers), and the shape still pending, which the caller applies at once.
+    public mutating func settle() -> Shape? {
+        generation += 1
+        defer { pending = nil }
+        return pending
+    }
+
+    /// Ends whatever is in flight and forgets its shape (a hide; a jump that
+    /// applies its own shape directly).
+    public mutating func cancel() {
+        generation += 1
+        pending = nil
     }
 }
 
