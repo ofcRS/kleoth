@@ -26,7 +26,8 @@ import KleothPillUI
 ///          with spots mic|meet|rec|menu|center|stop|label (label = over a text phase's words,
 ///          clear of its buttons), perform:startMeeting|stopMeeting|acceptOffer|neverOffer|
 ///          acceptStop|startScreenRecording|…; press:<spot> / move:<dx>:<dy> / release = a real
-///          drag through the pill's own window (move animates over its hold, screen points, y up);
+///          drag through the pill's own window (move animates over its hold, screen points, y up;
+///          lose-mouseup = the button goes up but the mouse-up is never delivered);
 ///          any item may end in `@<seconds>` to hold it that long
 ///          instead of `--hold`, e.g. `listening@3.2`)
 ///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
@@ -764,6 +765,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
                 heldPointer = point
                 heldInside = true
                 controller.filmPointerLocation = point
+                controller.filmLeftButtonDown = true
                 filmMouse(.leftMouseDown, at: point)
             }
             pointerSpot = nil
@@ -776,8 +778,15 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             }
         } else if name == "release" {
             // Mouse UP where the held pointer is; the pointer stays there.
+            controller.filmLeftButtonDown = false
             if let point = heldPointer { filmMouse(.leftMouseUp, at: point) }
             heldPointer = nil
+            dragMove = nil
+        } else if name == "lose-mouseup" {
+            // The button goes up but the mouse-up never reaches the pill (sleep,
+            // a lock, a system prompt): only the button state changes. A later
+            // `release` delivers the late mouse-up.
+            controller.filmLeftButtonDown = false
             dragMove = nil
         } else if name.hasPrefix("perform:") {
             // "perform:startScreenRecording|stopScreenRecording|startMeeting|stopMeeting|startHandsFreeDictation|…"
@@ -1023,8 +1032,10 @@ func writePNG(_ image: CGImage, to url: URL) throws {
 /// "along" is the panel's y there — the same mapping the view undoes in
 /// `dockPointer`.
 @MainActor
-func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) -> CGPoint? {
-    guard let frame = controller.panelFrame else { return nil }
+func filmPointer(
+    _ spot: String, edge: PillGeometry.Edge, controller: DictationPillController, in panelFrame: CGRect? = nil
+) -> CGPoint? {
+    guard let frame = panelFrame ?? controller.panelFrame else { return nil }
     let center = CGPoint(x: frame.width / 2, y: frame.height / 2)
     // The dock's fields through the SAME mapping `PeekDock`'s hit test uses
     // (`PillGeometry.dockField*`), so a film can never light the wrong field.
@@ -1070,27 +1081,24 @@ func filmPointer(_ spot: String, edge: PillGeometry.Edge, controller: DictationP
 /// own event handling — the one thing the timer-driven `perform:` cannot do.
 @MainActor
 func filmClick(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) {
-    guard let point = filmPointer(spot, edge: edge, controller: controller),
-          let frame = controller.panelFrame,
-          let window = NSApp.windows.first(where: { String(describing: type(of: $0)) == "DictationPanel" })
-    else { print("click:\(spot): no pill window"); return }
-    // Root space is y-down from the top-left; NSEvent wants y-up from the bottom-left.
-    let location = CGPoint(x: point.x, y: frame.height - point.y)
-    let now = ProcessInfo.processInfo.systemUptime
-    for (type, pressure) in [(NSEvent.EventType.leftMouseDown, Float(1)), (.leftMouseUp, 0)] {
-        guard let event = NSEvent.mouseEvent(
-            with: type, location: location, modifierFlags: [], timestamp: now,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: pressure
-        ) else { continue }
-        window.sendEvent(event)
+    guard let point = filmScreenPoint(spot, edge: edge, controller: controller) else {
+        print("click:\(spot): no pill window"); return
     }
-    print("click:\(spot) at \(location) in window \(window.windowNumber)")
+    controller.filmPointerLocation = point
+    controller.filmLeftButtonDown = true
+    filmMouse(.leftMouseDown, at: point)
+    controller.filmLeftButtonDown = false
+    filmMouse(.leftMouseUp, at: point)
+    print("click:\(spot) at \(point) (screen)")
 }
 
 /// A named spot on the pill in SCREEN coordinates (y up).
 @MainActor
+/// Measured on the SETTLED panel (`settledPanelFrame`): mid-transition the
+/// panel is a larger stage, and a user aims at where the pill is going.
 func filmScreenPoint(_ spot: String, edge: PillGeometry.Edge, controller: DictationPillController) -> CGPoint? {
-    guard let point = filmPointer(spot, edge: edge, controller: controller), let frame = controller.panelFrame else { return nil }
+    guard let frame = controller.settledPanelFrame,
+          let point = filmPointer(spot, edge: edge, controller: controller, in: frame) else { return nil }
     return CGPoint(x: frame.minX + point.x, y: frame.maxY - point.y)
 }
 
