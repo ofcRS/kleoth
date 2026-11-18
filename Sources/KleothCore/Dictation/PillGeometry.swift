@@ -182,6 +182,51 @@ public enum PillGeometry {
         }
     }
 
+    /// The origin of a panel docked on `edge` at `along`: centred on the
+    /// anchor (`dockedCenter` resolved against `referenceSize`, the one size
+    /// every phase shares so a pill near a corner never creeps), then clamped
+    /// into `bounds` with its OWN size — which lifts a panel thicker than the
+    /// reference (the peek dock) off the edge. The settled pill and a drag both
+    /// place the panel with this, so a press that has not moved yet moves
+    /// nothing (the drag used to skip the clamp: the dock dropped 11 pt).
+    public static func dockedOrigin(
+        edge: Edge, along: CGFloat, panelSize: CGSize, referenceSize: CGSize, shadowPadding: CGFloat, in bounds: CGRect
+    ) -> CGPoint {
+        let center = dockedCenter(
+            edge: edge, along: along, panelSize: referenceSize, shadowPadding: shadowPadding, in: bounds
+        )
+        let origin = CGPoint(x: center.x - panelSize.width / 2, y: center.y - panelSize.height / 2)
+        return clamp(origin, panelSize: panelSize, in: bounds)
+    }
+
+    // MARK: Drag
+
+    /// How far (points) a press on the pill must travel before it is a drag.
+    /// Below it the press is a click — a hand that drifts while clicking Stop
+    /// must stop the recording, not move the pill.
+    public static let dragThreshold: CGFloat = 6
+
+    /// Whether a press that has moved by `translation` is a drag. A
+    /// non-finite translation is not.
+    public static func isDrag(translation: CGSize) -> Bool {
+        let distance = (translation.width * translation.width + translation.height * translation.height).squareRoot()
+        return distance.isFinite && distance >= dragThreshold
+    }
+
+    /// Where along `edge` the pointer grabbed a panel centred at
+    /// `panelCenter`: its offset from that centre on the edge's axis (x on
+    /// bottom/top, y on the sides). Kept for the whole drag, so the grabbed
+    /// point stays under the cursor instead of the centre snapping to it.
+    public static func grabOffset(pointer: CGPoint, panelCenter: CGPoint, edge: Edge) -> CGFloat {
+        edge.isVertical ? pointer.y - panelCenter.y : pointer.x - panelCenter.x
+    }
+
+    /// The along-axis coordinate a drag puts the panel's centre at: the
+    /// pointer's, minus the grab.
+    public static func dragAlong(pointer: CGPoint, grabOffset: CGFloat, edge: Edge) -> CGFloat {
+        (edge.isVertical ? pointer.y : pointer.x) - grabOffset
+    }
+
     /// The along-axis coordinate a saved placement encodes for `edge`.
     public static func along(for placement: PillPlacement, edge: Edge, in bounds: CGRect) -> CGFloat {
         edge.isVertical
@@ -387,5 +432,36 @@ public enum PillGeometry {
     private static func clampUnit(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(value, 0), 1)
+    }
+}
+
+/// The pill's motion timing (`DictationPillController`): a transition moves
+/// the capsule on one spring and reshapes it on another, and the panel
+/// SETTLES (shrinks back to the capsule, offset zero) once the last of them
+/// has ended. The controller builds its springs from these durations, so the
+/// settle can never come before a beat it waits for.
+public enum PillMotion {
+    /// The move spring (a rise out of the edge, a sink, a slide).
+    public static let moveDuration: TimeInterval = 0.34
+    /// The shape spring (size, phase, the tumble between upright and flat).
+    public static let shapeDuration: TimeInterval = 0.3
+    /// A peek: the short hop of the resting pill under the pointer.
+    public static let peekDuration: TimeInterval = 0.22
+    /// The beat between the two springs when one waits for the other (a sink
+    /// shrinks first, then slides into the edge).
+    public static let stagger: TimeInterval = 0.06
+
+    /// How long after a transition starts the panel may settle: the end of
+    /// its last beat. `staggeredMove` = the move starts a `stagger` late; a
+    /// `peek` moves on the peek spring (never staggered). Zero when nothing
+    /// animates.
+    ///
+    /// A timer, not SwiftUI's `withAnimation(completion:)`: on the pill that
+    /// callback did not fire for a move and a reshape started in the same
+    /// turn (every rise and sink), so the panel stayed a stage — and the
+    /// dock's surface stayed held — until the next morph.
+    public static func settleDelay(moves: Bool, reshapes: Bool, staggeredMove: Bool, peek: Bool) -> TimeInterval {
+        let moveEnd = peek ? peekDuration : (staggeredMove ? stagger : 0) + moveDuration
+        return max(moves ? moveEnd : 0, reshapes ? shapeDuration : 0)
     }
 }
