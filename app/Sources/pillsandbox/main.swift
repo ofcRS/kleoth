@@ -30,6 +30,11 @@ import KleothPillUI
 ///          lose-mouseup = the button goes up but the mouse-up is never delivered);
 ///          any item may end in `@<seconds>` to hold it that long
 ///          instead of `--hold`, e.g. `listening@3.2`)
+///         `--save-seconds <s>`: how long a stop's `.saving` lasts (`perform:stopMeeting`,
+///         a bar's `click:stop`, `perform:acceptStop`; default 1.2). `--check-content`:
+///         exit 1 when a settled frame of a phase with content is empty (`contentCheck`,
+///         `content-check.txt`). A `hover:` spot left on the pill through a collapse to
+///         `.idle` peeks the dock out of it, as a parked pointer does in the app.
 ///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
 ///         stage (a desktop, an editor or a slide window, captions, the fn+shift
 ///         keys, a cursor) in `<dir>/demo/` with an ffmpeg concat list, for the
@@ -97,6 +102,16 @@ struct Arguments {
     /// thread that long before `.listening` (`DictationCapture.start()`).
     var startDelay: TimeInterval = 0
     var startBlock: TimeInterval = 0
+    /// `--save-seconds`: how long a stop's `.saving` lasts before the saved
+    /// confirmation (the app's combine takes ~17 s for a 47-minute meeting
+    /// since 0.5.8; the sandbox's default stays 1.2 s).
+    var saveSeconds: TimeInterval = 1.2
+    /// `--check-content`: fail the film (exit 1, `content-check.txt`) when a
+    /// frame of a phase that has content — anything but `.hidden` and a tucked
+    /// `.idle` — has stayed settled with nothing drawn inside the capsule
+    /// (`contentCheck`). The empty dock after a meeting's stop (2026-11-19)
+    /// was a frame like that for 7 s.
+    var checkContent = false
 
     enum LevelPattern: String {
         case off, speech, steady
@@ -122,6 +137,8 @@ struct Arguments {
             case "--length": out.slidesLength = value().flatMap(Double.init) ?? 20; i += 1
             case "--start-delay": out.startDelay = value().flatMap(Double.init) ?? 0; i += 1
             case "--start-block": out.startBlock = value().flatMap(Double.init) ?? 0; i += 1
+            case "--save-seconds": out.saveSeconds = value().flatMap(Double.init) ?? 1.2; i += 1
+            case "--check-content": out.checkContent = true
             case "--marks": out.slidesMarks = value()?.split(separator: ",").compactMap { Double($0) } ?? []; i += 1
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
@@ -402,14 +419,15 @@ final class SandboxDriver: ObservableObject {
             // `setBackdrop(.idle)` tuck the bar and the wave never showed: the
             // saving capsule ran empty for its whole 1.2 s (filmed 2026-09-09).
             controller.show(.saving)
+            let save = arguments.saveSeconds
             handsFreeTask = Task { [weak self] in
                 guard let self else { return }
-                try? await Task.sleep(for: .seconds(1.2))
+                try? await Task.sleep(for: .seconds(save))
                 guard !Task.isCancelled else { return }
                 backdropRecording = false
                 // What the toolbar showed, at the app's ~22 MB a minute, in the
                 // app's own words (`ScreenRecordingSummary.pillText`).
-                let seconds = max(1, Int(Date().timeIntervalSince(SandboxClock.recordingStart) - 1.2))
+                let seconds = max(1, Int(Date().timeIntervalSince(SandboxClock.recordingStart) - save))
                 let bytes = Int64(Double(seconds) / 60 * 22_000_000)
                 controller.show(.saved("\(ElapsedFormatter.string(seconds: seconds)) · \(ScreenRecordingFileNaming.sizeText(bytes: bytes))"))
             }
@@ -470,12 +488,13 @@ final class SandboxDriver: ObservableObject {
                 // then the backdrop goes FIRST and the confirmation follows
                 // (`ScreenRecordingController.showSaved`).
                 controller.show(.saving)
+                let save = arguments.saveSeconds
                 handsFreeTask = Task { [weak self] in
                     guard let self else { return }
-                    try? await Task.sleep(for: .seconds(1.2))
+                    try? await Task.sleep(for: .seconds(save))
                     guard !Task.isCancelled else { return }
                     backdropMeeting = false
-                    let seconds = max(1, Int(Date().timeIntervalSince(SandboxClock.meetingStart) - 1.2))
+                    let seconds = max(1, Int(Date().timeIntervalSince(SandboxClock.meetingStart) - save))
                     controller.show(.meetingSaved("Meeting saved · \(ElapsedFormatter.string(seconds: seconds))"))
                 }
             case .openLast:
@@ -695,6 +714,10 @@ struct CapturedFrame {
     var step = ""
     /// Where the film's pointer is, in screen coordinates (nil = off the pill).
     var pointer: CGPoint?
+    /// The peek dock was out (`DictationPillController.showsDock`).
+    var showsDock = false
+    /// No transition in flight: the panel was its destination rect.
+    var settled = false
 }
 
 /// Runs the sequence, captures, writes frames + sheet. Returns a one-line summary.
@@ -869,7 +892,9 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
                     pointer = CGPoint(x: frame.panelFrame.minX + p.x, y: frame.panelFrame.maxY - p.y)
                 }
                 captured.append(CapturedFrame(
-                    time: Date().timeIntervalSince(start), frame: frame, step: name, pointer: pointer
+                    time: Date().timeIntervalSince(start), frame: frame, step: name, pointer: pointer,
+                    showsDock: controller.showsDock,
+                    settled: controller.settledPanelFrame == frame.panelFrame
                 ))
                 if args.grabFrames {
                     // One fixed region for the whole film (a strip needs a
@@ -909,11 +934,110 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
             FileHandle.standardError.write(Data("demo failed: \(error)\n".utf8))
         }
     }
-    let summary = "\(captured.count) frames → \(dir.path)  sheet: \(sheetName)"
+    var summary = "\(captured.count) frames → \(dir.path)  sheet: \(sheetName)"
+    var contentFailed = false
+    if args.checkContent {
+        let report = contentCheck(captured)
+        try? report.lines.joined(separator: "\n").write(
+            to: dir.appendingPathComponent("content-check.txt"), atomically: true, encoding: .utf8
+        )
+        contentFailed = !report.passed
+        summary += "\n" + report.lines[0]
+    }
     print(summary)
     fflush(stdout)
-    if exitWhenDone { exit(0) }
+    if exitWhenDone { exit(contentFailed ? 1 : 0) }
     return summary
+}
+
+/// `--check-content`: every frame of a phase that has content, once the pill
+/// has been SETTLED on it for `contentCheckSettle`, must have something drawn
+/// inside the capsule — a glyph, a bar, a word. The phases without content
+/// are `.hidden` and a tucked `.idle` (the dock out counts as content).
+/// Measured on the panel's own pixels (`captureFrame`): the capsule's body is
+/// where the window is nearly opaque, and "ink" is a pixel of it clearly
+/// brighter or more saturated than the dark surface, away from the rim and the
+/// round ends. Mid-transition frames are not judged — a rise reveals its
+/// content on purpose, and the stage moves the capsule off-centre.
+let contentCheckSettle: TimeInterval = 0.35
+/// Fewer ink pixels than this in a settled active frame is an empty pill. A
+/// glyph or a 3 pt bar alone is far above it at 2×; the empty dock measured 0.
+let contentCheckMinimumInk = 12
+
+func contentCheck(_ frames: [CapturedFrame]) -> (passed: Bool, lines: [String]) {
+    var judged = 0
+    var empty: [String] = []
+    var stableKey = ""
+    var stableSince: TimeInterval = 0
+    for (index, captured) in frames.enumerated() {
+        let phase = captured.frame.phase
+        let f = captured.frame.panelFrame
+        let key = "\(phaseName(phase))|\(captured.showsDock)|\(f.minX),\(f.minY),\(f.width),\(f.height)"
+        if key != stableKey || !captured.settled {
+            stableKey = captured.settled ? key : ""
+            stableSince = captured.time
+            continue
+        }
+        guard captured.time - stableSince >= contentCheckSettle else { continue }
+        let expectsContent: Bool
+        switch phase {
+        case .hidden: expectsContent = false
+        case .idle: expectsContent = captured.showsDock
+        default: expectsContent = true
+        }
+        guard expectsContent else { continue }
+        judged += 1
+        let ink = contentInk(in: captured.frame.image)
+        if ink < contentCheckMinimumInk {
+            let dock = phase == .idle ? " (dock)" : ""
+            empty.append(String(
+                format: "frame-%04d  t=%.2fs  %@%@ settled %.2fs with ink=%d", index, captured.time,
+                phaseName(phase) as NSString, dock as NSString, captured.time - stableSince, ink
+            ))
+        }
+    }
+    let head = empty.isEmpty
+        ? "content check: PASS — \(judged) settled frames of a phase with content, none empty"
+        : "content check: FAIL — \(empty.count) of \(judged) settled frames of a phase with content are EMPTY"
+    return (empty.isEmpty, [head] + empty)
+}
+
+/// Ink pixels inside the capsule of one panel capture (see `contentCheck`).
+func contentInk(in image: CGImage) -> Int {
+    let width = image.width, height = image.height
+    guard width > 0, height > 0, let ctx = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ), let data = ctx.data else { return 0 }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+    // The capsule's body: nearly opaque (its shadow and the margin are not).
+    var minX = width, maxX = -1, minY = height, maxY = -1
+    for y in 0..<height {
+        for x in 0..<width where pixels[(y * width + x) * 4 + 3] >= 191 {
+            minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+        }
+    }
+    guard maxX > minX, maxY > minY else { return 0 }
+    let bodyWidth = maxX - minX + 1, bodyHeight = maxY - minY + 1
+    let short = min(bodyWidth, bodyHeight)
+    // Off the round ends along the long axis, off the rim across it.
+    let alongInset = short / 2, acrossInset = max(2, short / 5)
+    let insetX = bodyWidth >= bodyHeight ? alongInset : acrossInset
+    let insetY = bodyWidth >= bodyHeight ? acrossInset : alongInset
+    var ink = 0
+    for y in (minY + insetY)..<max(minY + insetY, maxY - insetY) {
+        for x in (minX + insetX)..<max(minX + insetX, maxX - insetX) {
+            let i = (y * width + x) * 4
+            let alpha = Int(pixels[i + 3])
+            guard alpha >= 191 else { continue }
+            // Un-premultiply, then: bright (white ink) or saturated (red, green, blue ink).
+            let r = Int(pixels[i]) * 255 / alpha, g = Int(pixels[i + 1]) * 255 / alpha, b = Int(pixels[i + 2]) * 255 / alpha
+            let top = max(r, g, b), bottom = min(r, g, b)
+            if top > 120 || top - bottom > 70 { ink += 1 }
+        }
+    }
+    return ink
 }
 
 /// Composes every frame onto one fixed canvas (the union of all panel rects,
