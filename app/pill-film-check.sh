@@ -17,6 +17,7 @@
 # app/Sources/pillsandbox/main.swift) when a settled frame of a phase with content has nothing drawn
 # inside the capsule, a transition never settles, a capture's bar is due and not on screen, or no
 # frame was judged at all. A film that crashes or runs past FILM_TIMEOUT seconds is reported as such.
+# PILL_TRACE=1 also turns the pill trace on for the films (`log show … category == "PillTrace"`).
 #
 # The pill shows on screen for each film but reads no real pointer and sends no events outside its
 # own window; placement is the sandbox's own defaults suite, never the app's.
@@ -42,7 +43,7 @@ COUNT=0
 film() {   # film <name> <args…>
   local name="$1"; shift
   COUNT=$((COUNT + 1))
-  "$SANDBOX" --film "$OUT/$name" --fps 15 --check-content "$@" >"$OUT/$name.log" 2>&1 &
+  "$SANDBOX" --film "$OUT/$name" --fps 15 --check-content "$@" ${PILL_TRACE:+-KleothPillTrace YES} >"$OUT/$name.log" 2>&1 &
   local pid=$!
   ( sleep "$FILM_TIMEOUT"; kill -9 "$pid" 2>/dev/null && echo timeout >"$OUT/$name.timeout" ) 2>/dev/null &
   local watchdog=$!
@@ -50,7 +51,7 @@ film() {   # film <name> <args…>
   pkill -P "$watchdog" 2>/dev/null; kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
   local report="$OUT/$name/content-check.txt"
   if [ "$status" -eq 0 ]; then
-    echo "ok      $name"
+    echo "ok      $name — $(sed -n 1p "$report" 2>/dev/null | sed "s/^content check: //")"
     return
   fi
   FAILED=1
