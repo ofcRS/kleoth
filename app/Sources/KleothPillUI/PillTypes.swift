@@ -126,8 +126,9 @@ public struct PillPrompt: Equatable, Sendable {
 }
 
 /// Redacted: an offer's text can carry a calendar event's title ("“Weekly
-/// sync” on Zoom — record it?"), and the opt-in pill trace logs
-/// `String(describing:)` of the phase in public. Printing only the id means no
+/// sync” on Zoom — record it?"). The opt-in pill trace prints phases through
+/// `PillTrace.name` (ids and kinds only); this keeps any other
+/// `String(describing:)` of a phase just as safe. Printing only the id means no
 /// log line built from a phase can ever hold an offer's words. Swift prints an
 /// enum's payload with its `debugDescription`, so both are overridden.
 extension PillPrompt: CustomStringConvertible, CustomDebugStringConvertible {

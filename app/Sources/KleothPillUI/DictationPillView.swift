@@ -139,7 +139,11 @@ struct DictationPillView: View {
     }
 
     private func capsule(dockPointer: CGPoint?) -> some View {
-        HStack(spacing: PillStyle.spacingS) {
+        // The beat's keyframes are chosen from the TRIGGER, read here — never
+        // from the animated value (see `ContentReveal`).
+        let beatKind = model.beat.kind
+        let reduceMotion = reduceMotion
+        return HStack(spacing: PillStyle.spacingS) {
             content(dockPointer: dockPointer)
         }
         // The content is revealed by the motion beat (`Choreography.content`)
@@ -175,16 +179,16 @@ struct DictationPillView: View {
         // always along its THICKNESS (y): a bottom pill rises vertically, a
         // side pill is rotated 90° so its screen-horizontal slide is its own y.
         .keyframeAnimator(
-            initialValue: Choreography(kind: model.beat.kind),
+            initialValue: Choreography(),
             trigger: model.beat
         ) { content, pose in
             content.scaleEffect(
                 x: reduceMotion ? 1 : pose.across,
                 y: reduceMotion ? 1 : pose.along
             )
-        } keyframes: { pose in
+        } keyframes: { _ in
             KeyframeTrack(\.along) {
-                switch pose.kind {
+                switch beatKind {
                 case .rise:
                     CubicKeyframe(0.82, duration: 0.05)   // anticipation: squat in the edge
                     SpringKeyframe(1.32, duration: 0.12, spring: .snappy)   // stretch on the way up
@@ -204,7 +208,7 @@ struct DictationPillView: View {
                 }
             }
             KeyframeTrack(\.across) {
-                switch pose.kind {
+                switch beatKind {
                 case .rise:
                     CubicKeyframe(1.14, duration: 0.05)
                     SpringKeyframe(0.9, duration: 0.12, spring: .snappy)
@@ -227,10 +231,10 @@ struct DictationPillView: View {
     }
 
     /// One pose of the squash-and-stretch: scale along the travel axis and
-    /// across it, in the capsule's own space. `kind` rides along so the
-    /// keyframes can pick their shape from the initial value.
+    /// across it, in the capsule's own space. No `kind` in here: a beat that
+    /// lands mid-flight is handed this value as it was, and a kind read from
+    /// it was the PREVIOUS beat's (`ContentReveal`).
     private struct Choreography {
-        var kind: MotionBeat.Kind
         var along: CGFloat = 1
         var across: CGFloat = 1
     }
@@ -1067,55 +1071,54 @@ private struct StopButton: View {
 
 // MARK: - Content reveal
 
-/// Fades the capsule's content with the motion: hidden for the first stretch
-/// of a rise (the pill leaves the edge as a plain blob, then the bars bloom
-/// in), gone early on a sink, untouched for in-place morphs and peeks.
+/// Fades the capsule's content with the motion (`PillReveal`, KleothCore):
+/// hidden for the first stretch of a rise (the pill leaves the edge as a plain
+/// blob, then the bars bloom in), gone early on a sink until it has settled,
+/// untouched for in-place morphs and peeks. Every beat ends with the content
+/// shown. The surface is not under it: the capsule never disappears, only
+/// what is in it.
+///
+/// The keyframes are picked from the TRIGGER (`beat`, read in `body`), never
+/// from the animated value. SwiftUI hands a keyframe animator that is
+/// retriggered mid-flight its IN-FLIGHT value, so a `kind` stored in that
+/// value was the previous beat's: the dock peeking out 50 ms into a sink (a
+/// confirmation collapsing under a parked pointer) replayed the sink, whose
+/// content then stayed at nothing — the empty grey capsule the user saw after
+/// stopping a meeting (2026-11-19).
 private struct ContentReveal: ViewModifier {
     let beat: MotionBeat
     let reduceMotion: Bool
 
     func body(content: Content) -> some View {
-        content
-            .keyframeAnimator(initialValue: Reveal(kind: beat.kind), trigger: beat) { content, reveal in
+        let opacity = PillReveal.opacity(for: beat.kind)
+        let scale = PillReveal.scale(for: beat.kind)
+        let reduceMotion = reduceMotion
+        return content
+            .keyframeAnimator(initialValue: Reveal(), trigger: beat) { content, reveal in
                 content
                     .opacity(reduceMotion ? 1 : reveal.opacity)
-                    .scaleEffect(reduceMotion ? 1 : reveal.scale)
-            } keyframes: { reveal in
-                KeyframeTrack(\.opacity) {
-                    switch reveal.kind {
-                    case .rise:
-                        CubicKeyframe(0.0, duration: 0.08)
-                        CubicKeyframe(1.0, duration: 0.16)
-                    case .sink:
-                        CubicKeyframe(0.0, duration: 0.1)
-                    case .morph, .peek:
-                        CubicKeyframe(1.0, duration: 0.01)
-                    }
-                }
-                KeyframeTrack(\.scale) {
-                    switch reveal.kind {
-                    case .rise:
-                        CubicKeyframe(0.6, duration: 0.08)
-                        SpringKeyframe(1.0, duration: 0.22, spring: .bouncy)
-                    case .sink:
-                        CubicKeyframe(0.7, duration: 0.1)
-                    case .morph, .peek:
-                        CubicKeyframe(1.0, duration: 0.01)
-                    }
-                }
+                    .scaleEffect(reduceMotion ? 1 : CGFloat(reveal.scale))
+            } keyframes: { _ in
+                KeyframeTrack(\.opacity) { Self.track(opacity) }
+                KeyframeTrack(\.scale) { Self.track(scale) }
             }
     }
 
-    private struct Reveal {
-        var kind: MotionBeat.Kind
-        var opacity: Double = 1
-        var scale: CGFloat = 1
-        init(kind: MotionBeat.Kind) {
-            self.kind = kind
-            // A rise starts hidden; everything else starts visible.
-            opacity = kind == .rise ? 0 : 1
-            scale = kind == .rise ? 0.6 : 1
+    @KeyframeTrackContentBuilder<Double>
+    private static func track(_ keyframes: [PillRevealKeyframe]) -> some KeyframeTrackContent<Double> {
+        for keyframe in keyframes {
+            switch keyframe.curve {
+            case .cubic: CubicKeyframe(keyframe.value, duration: keyframe.duration)
+            case .linear: LinearKeyframe(keyframe.value, duration: keyframe.duration)
+            case .bouncySpring: SpringKeyframe(keyframe.value, duration: keyframe.duration, spring: .bouncy)
+            }
         }
+    }
+
+    /// Shown at rest. No `kind` in here (see above).
+    private struct Reveal {
+        var opacity: Double = 1
+        var scale: Double = 1
     }
 }
 
