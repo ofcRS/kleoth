@@ -192,7 +192,10 @@ public final class DictationPillController: DictationPillPresenting {
             if state == .hidden {
                 dismiss()
             } else if dragHold.receive(.show(state), hot: Self.isHotCapture(state)) == .applyNow {
+                trace("show \(Self.traceName(state)) under a drag: applied now (hot capture)")
                 applyWhileDragged(state)
+            } else {
+                trace("show \(Self.traceName(state)) under a drag: held for the drop")
             }
             return
         }
@@ -203,6 +206,19 @@ public final class DictationPillController: DictationPillPresenting {
             peekTask?.cancel()
             peeking = false
             model.apply(peeking: false)
+        }
+        // The menu is open over an active phase that now collapses to rest
+        // (`openMenu` peeks only from rest): the pill comes out as the dock the
+        // menu holds. It used to be sized as the dock but placed TUCKED, with
+        // neither the pill's fill (the dock is out) nor the dock's surface and
+        // fields (never held) — an invisible pill half off the screen.
+        if state == .idle, menuOpen, !peeking {
+            trace("dock out under the open menu")
+            peekTask?.cancel()
+            peekTask = nil
+            peeking = true
+            model.apply(peeking: true)
+            model.apply(dockHeld: true)
         }
 
         guard state != .hidden else {
@@ -224,6 +240,13 @@ public final class DictationPillController: DictationPillPresenting {
         // must be in place before the phase springs.
         model.apply(edge: edge)
         model.apply(labelWidth: layout.labelWidth)
+        trace(
+            "show \(Self.traceName(state)) over \(Self.traceName(upcomingPhase)) backdrop=\(Self.traceName(backdrop))"
+                + (alreadyUp ? "" : " — fresh, out of the edge")
+                + (fromDock ? " — from the dock" : "")
+                + (state == .idle && (peeking || menuOpen) ? " — dock out" : "")
+                + " capsule=\(Int(layout.capsuleSize.width))x\(Int(layout.capsuleSize.height))\(layout.flat ? " flat" : "")"
+        )
 
         if alreadyUp {
             transition(to: target, phase: state, capsule: layout.capsuleSize, flat: layout.flat, fromDock: fromDock)
@@ -299,6 +322,7 @@ public final class DictationPillController: DictationPillPresenting {
     public func dismiss() {
         hideTask?.cancel()
         hideTask = nil
+        trace("dismiss \(Self.traceName(upcomingPhase)) → backdrop=\(Self.traceName(backdrop))")
         collapseToBackdrop()
     }
 
@@ -312,8 +336,14 @@ public final class DictationPillController: DictationPillPresenting {
     /// paint over an `.armed` asked for in the same turn.
     public func setBackdrop(_ newBackdrop: DictationPillBackdrop) {
         guard backdrop != newBackdrop else { return }
+        let old = backdrop
         backdrop = newBackdrop
-        guard Self.isRestingFamily(upcomingPhase) else { return }
+        let takesOver = Self.isRestingFamily(upcomingPhase)
+        trace(
+            "backdrop \(Self.traceName(old)) → \(Self.traceName(newBackdrop)): "
+                + (takesOver ? "takes over" : "stored, \(Self.traceName(upcomingPhase)) stays up")
+        )
+        guard takesOver else { return }
         if let state = newBackdrop.state {
             show(state)
         } else if upcomingPhase != .hidden {
@@ -368,7 +398,10 @@ public final class DictationPillController: DictationPillPresenting {
         // backdrop supersedes that transition (the generation check), so the
         // phase never appears.
         if model.phase == state, upcomingPhase == state,
-           panel?.isVisible == true, model.isPresented { return }
+           panel?.isVisible == true, model.isPresented {
+            trace("collapse: already on \(Self.traceName(state))")
+            return
+        }
         show(state)
     }
 
@@ -405,6 +438,7 @@ public final class DictationPillController: DictationPillPresenting {
     private func hideCompletely() {
         endDragIfReleased()
         if isDragging {
+            trace("hide under a drag: held for the drop")
             _ = dragHold.receive(.hide, hot: false)
             return
         }
@@ -413,6 +447,7 @@ public final class DictationPillController: DictationPillPresenting {
             model.apply(phase: .hidden)
             return
         }
+        trace("hide \(Self.traceName(model.phase)): fade out")
 
         guard !Self.reduceMotion else {
             finishHide(panel)
@@ -465,6 +500,7 @@ public final class DictationPillController: DictationPillPresenting {
         guard !isDragging else { return }
         closeMenu()
         settle()
+        trace("drag begins on \(Self.traceName(model.phase))")
         isDragging = true
         dragHold = PillDragHold()
         model.apply(dragging: true)
@@ -539,6 +575,11 @@ public final class DictationPillController: DictationPillPresenting {
         model.apply(dragging: false)
         model.apply(pressedField: nil)
         let deferred = dragHold.drop()
+        switch deferred {
+        case .show(let state): trace("drop; replays \(Self.traceName(state))")
+        case .hide: trace("drop; replays a hide")
+        case nil: trace("drop")
+        }
         defer { reconsiderPointerAfterDrag() }
         guard let panel, let screen = panelScreen() ?? defaultScreen() else {
             replay(deferred)
@@ -748,6 +789,7 @@ public final class DictationPillController: DictationPillPresenting {
         // the coordinator would then misroute a dictation ✕ as a recording one.
         dismissingState = model.phase
         defer { dismissingState = nil }
+        trace("dismissed by the user: \(Self.traceName(model.phase))")
         dismiss()
         onDismiss?()
     }
@@ -807,14 +849,18 @@ public final class DictationPillController: DictationPillPresenting {
         return container
     }
 
-    /// Opt-in diagnostics for the panel's frame: every resize/move is logged
-    /// with the phase and the first non-system frame of the call stack, so a
-    /// layout fight can be attributed (`defaults write dev.kleoth.app
-    /// KleothPillTrace -bool YES`, then `/usr/bin/log show --predicate
-    /// 'subsystem == "dev.kleoth" AND category == "PillTrace"'`).
+    /// A line of the opt-in pill trace (`PillTrace`).
+    private func trace(_ message: @autoclosure () -> String) {
+        PillTrace.log(message())
+    }
+
+    private static func traceName(_ state: DictationPillState) -> String { PillTrace.name(state) }
+    private static func traceName(_ backdrop: DictationPillBackdrop) -> String { PillTrace.name(backdrop) }
+
+    /// Every resize/move of the panel, with the phase and the first non-system
+    /// frame of the call stack, so a layout fight can be attributed.
     private func installFrameTrace(on panel: DictationPanel) {
-        guard UserDefaults.standard.bool(forKey: "KleothPillTrace") else { return }
-        let log = Logger(subsystem: "dev.kleoth", category: "PillTrace")
+        guard let log = PillTrace.logger else { return }
         for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
             let token = NotificationCenter.default.addObserver(forName: name, object: panel, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -829,7 +875,7 @@ public final class DictationPillController: DictationPillPresenting {
                         .prefix(3)
                         .map { $0.split(separator: " ", maxSplits: 3).last.map(String.init) ?? $0 }
                         .joined(separator: " < ")
-                    log.error("\(name == NSWindow.didResizeNotification ? "resize" : "move", privacy: .public) phase=\(String(describing: self.model.phase), privacy: .public) frame=\(NSStringFromRect(panel.frame), privacy: .public) from=\(origin, privacy: .public)")
+                    log.error("\(name == NSWindow.didResizeNotification ? "resize" : "move", privacy: .public) phase=\(Self.traceName(self.model.phase), privacy: .public) frame=\(NSStringFromRect(panel.frame), privacy: .public) from=\(origin, privacy: .public)")
                 }
             }
             frameTraceTokens.append(token)
@@ -897,6 +943,7 @@ public final class DictationPillController: DictationPillPresenting {
         if endDragIfReleased() { return }
         peekTask?.cancel()
         peekTask = nil
+        if model.hovered != hovering { trace("pointer \(hovering ? "on" : "off") the pill (\(Self.traceName(upcomingPhase)))") }
         model.apply(hovered: hovering)
         // `backdrop == .idle`: a resting pill that is FADING OUT (the menu's
         // "Hide for 1 hour", Settings turning dictation off) is still `.idle`
@@ -921,6 +968,7 @@ public final class DictationPillController: DictationPillPresenting {
 
     private func setPeeking(_ on: Bool) {
         guard peeking != on else { return }
+        trace(on ? "dock out" : "dock in")
         peeking = on
         model.apply(peeking: on)
         // The dock's surface comes out with it — and leaves only once the
@@ -935,11 +983,17 @@ public final class DictationPillController: DictationPillPresenting {
     /// parked pointer — the `.saved` confirmation after a recording, a
     /// dismissed fault — got no `mouseEntered` and stayed tucked until the
     /// pointer left and came back. Now it peeks straight out of the collapse.
+    ///
+    /// Film mode reads the film's scripted hover instead (`isPointerOver`'s
+    /// rule), so a film can park the pointer on the pill through a collapse —
+    /// the user's flow after a meeting's Stop (2026-11-19).
     private func reconsiderPointer() {
-        guard !ignoresRealPointer, !peeking, !menuOpen, !isDragging, model.phase == .idle, upcomingPhase == .idle,
+        guard !peeking, !menuOpen, !isDragging, model.phase == .idle, upcomingPhase == .idle,
               let panel, panel.isVisible else { return }
-        let frame = pendingFrame ?? panel.frame
-        if frame.contains(NSEvent.mouseLocation) { handleHover(true) }
+        let inside = ignoresRealPointer
+            ? model.hovered
+            : (pendingFrame ?? panel.frame).contains(NSEvent.mouseLocation)
+        if inside { handleHover(true) }
     }
 
     /// Drops the dock's surface from the capsule if the dock is down. Called
@@ -992,6 +1046,7 @@ public final class DictationPillController: DictationPillPresenting {
         menuModel.entries = Self.menuEntries(for: menuContentShown, microphonesExpanded: false)
 
         menuOpen = true
+        trace("menu open over \(Self.traceName(upcomingPhase))")
         model.apply(menuOpen: true)
         peekTask?.cancel()
         peekTask = nil
@@ -1013,6 +1068,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// the pill tucks after `peekLinger` like any other hover exit).
     public func closeMenu() {
         guard menuOpen else { return }
+        trace("menu closed")
         menuOpen = false
         model.apply(menuOpen: false)
         removeMenuMonitors()
@@ -1179,7 +1235,9 @@ public final class DictationPillController: DictationPillPresenting {
         // Labelled `handler:` arguments, not trailing closures: a trailing
         // closure inside an `if let` condition reads as the statement body
         // (compiler warning).
-        if let global = NSEvent.addGlobalMonitorForEvents(
+        // Film mode skips it: a click the user makes in another app while a
+        // film runs must not close the film's menu (the real pointer is ignored).
+        if !ignoresRealPointer, let global = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
             handler: { [weak self] _ in
                 MainActor.assumeIsolated { self?.closeMenu() }
@@ -1301,6 +1359,12 @@ public final class DictationPillController: DictationPillPresenting {
     /// The capsule itself, un-rotated (width = its length along the edge) —
     /// for the sandbox's named pointer spots on a text phase (`label`).
     public var capsuleSize: CGSize { model.capsuleSize }
+    /// The peek dock is out (or held out by the menu) — for the sandbox's
+    /// content check: a tucked `.idle` is the one phase drawn with nothing in it.
+    public var showsDock: Bool { model.dockOut }
+    /// What the pill collapses to (`setBackdrop`) — for the sandbox's content
+    /// check: a capture's backdrop means a bar must be on screen.
+    public var currentBackdrop: DictationPillBackdrop { backdrop }
 
     private func present() {
         guard !Self.reduceMotion else {
@@ -1340,6 +1404,7 @@ public final class DictationPillController: DictationPillPresenting {
         // A backdrop that rose while the panel faded out was only stored (the
         // old phase was still up); it takes over now, so a capture that
         // started in the fade never ends up with no bar (hot-mic rule).
+        trace("ordered out" + (backdrop.state == nil ? "" : "; backdrop=\(Self.traceName(backdrop)) rose in the fade"))
         if let state = backdrop.state { show(state) }
     }
 
@@ -1348,8 +1413,9 @@ public final class DictationPillController: DictationPillPresenting {
         hideTask?.cancel()
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            guard !Task.isCancelled else { return }
-            self?.dismiss()
+            guard !Task.isCancelled, let self else { return }
+            self.trace("auto-hide \(Self.traceName(state))")
+            self.dismiss()
         }
     }
 
@@ -1419,6 +1485,8 @@ public final class DictationPillController: DictationPillPresenting {
         }
 
         let destination = Self.offset(ofCenter: CGPoint(x: target.midX, y: target.midY), in: stage)
+        // Read now, with the layout the caller sized `capsule` from.
+        let toDock = phase == .idle && (peeking || menuOpen)
         let generation = ledger.begin(PendingShape(phase: phase, capsule: capsule, flat: flat))
         // The animated changes go out on the NEXT main-queue callout so
         // SwiftUI has committed the re-expressed start position first; a
@@ -1439,11 +1507,12 @@ public final class DictationPillController: DictationPillPresenting {
             // travel axis + content reveal) — fired before the springs so its
             // keyframes start on the same frame.
             let wasResting = self.model.phase == .idle && !fromDock
-            let cue: MotionBeat.Kind = moves
-                ? (phase == .idle ? (wasResting ? .peek : .sink)
-                    : (wasResting ? (phase == .armed ? .peek : .rise) : .morph))
-                : .morph
+            let cue = PillMotion.beat(
+                moves: moves, toResting: phase == .idle, toDock: toDock,
+                fromResting: wasResting, toArmed: phase == .armed
+            )
             self.model.apply(beat: cue)
+            self.trace("beat \(cue) \(Self.traceName(self.model.phase)) → \(Self.traceName(phase))\(toDock ? " (dock)" : "") moves=\(moves) reshapes=\(reshapes)")
             // Sinking to rest: shape first, then move (it shrinks, then
             // slips into the edge). Rising: move and shape start together —
             // the size is explicit now, so the capsule visibly grows out of
@@ -1504,6 +1573,10 @@ public final class DictationPillController: DictationPillPresenting {
                 model.apply(capsuleSize: shape.capsule)
                 model.apply(flat: shape.flat)
             }
+            // Landed without its spring: in place, content shown at once —
+            // never left to whatever the last beat's reveal was doing.
+            model.apply(beat: .morph)
+            trace("settle landed \(Self.traceName(shape.phase))")
         }
         releaseDockSurface()
         guard let panel, let target = pendingFrame else {
@@ -1933,10 +2006,17 @@ public final class DictationPillController: DictationPillPresenting {
     // MARK: Environment
 
     /// System-wide "Reduce motion". Read at call time — the user can flip it
-    /// while the app runs.
+    /// while the app runs. The view reads the same answer (`DictationPillView.reduceMotion`).
     static var reduceMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        motionOverride.map { !$0 } ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
+
+    /// The sandbox's films only (`pillsandbox --motion on|off`): true = full
+    /// motion, false = Reduce Motion, whatever the system says; nil (the app,
+    /// always) = the system setting. CI's runners have Reduce Motion ON, where
+    /// every transition jumps and the content reveal is skipped — a film there
+    /// shows none of the motion bugs unless it forces motion on.
+    public static var motionOverride: Bool?
 
     /// The pill is not a key window, so VoiceOver never focuses it: each phase
     /// has to be spoken explicitly.
@@ -2022,6 +2102,76 @@ extension DictationPillState {
     public var fault: DictationPillFault? {
         if case .failed(let fault) = self { return fault }
         return nil
+    }
+}
+
+// MARK: - Trace
+
+/// The opt-in pill trace (`defaults write dev.kleoth.app KleothPillTrace -bool
+/// YES`, relaunch, then `/usr/bin/log show --predicate 'subsystem ==
+/// "dev.kleoth" AND category == "PillTrace"'`): every resize/move of the panel,
+/// and every decision behind one — a `show` and what it lands on, a `dismiss`,
+/// a backdrop taken over or only stored, a hide, the beat each transition
+/// plays, a settle landing a phase, the pointer on/off the pill, the dock
+/// out/in, a drag and its drop, and the coordinator's own calls (a phase
+/// refused, queued or withdrawn) — so a report can be diagnosed from the log
+/// alone. Phases print through `name`: kinds and ids only, never an offer's
+/// words, a fault's message or a meeting's title. Read once per launch.
+public enum PillTrace {
+    static let logger: Logger? = UserDefaults.standard.bool(forKey: "KleothPillTrace")
+        ? Logger(subsystem: "dev.kleoth", category: "PillTrace") : nil
+
+    public static var isOn: Bool { logger != nil }
+
+    /// One line, public in the log (the caller builds it from `name` only).
+    public static func log(_ message: @autoclosure () -> String) {
+        guard let logger else { return }
+        let text = message()
+        logger.error("\(text, privacy: .public)")
+    }
+
+    /// A phase as the trace prints it. Only the two saved confirmations keep
+    /// their label ("Meeting saved · 47:41", "2:14 · 48 MB": a length and a
+    /// size, never a name); a prompt is its id, a fault its kind.
+    public static func name(_ state: DictationPillState) -> String {
+        switch state {
+        case .hidden: return "hidden"
+        case .idle: return "idle"
+        case .armed: return "armed"
+        case .listening(let handsFree): return handsFree ? "listening(hands-free)" : "listening"
+        case .transcribing: return "transcribing"
+        case .polishing: return "polishing"
+        case .done: return "done"
+        case .warning: return "warning"
+        case .failed(let fault): return "failed(\(name(fault)))"
+        case .recording: return "recording"
+        case .saving: return "saving"
+        case .saved(let text): return "saved(\(text))"
+        case .meeting: return "meeting"
+        case .meetingSaved(let text): return "meetingSaved(\(text))"
+        case .prompt(let prompt): return "prompt(\(prompt.id))"
+        }
+    }
+
+    public static func name(_ backdrop: DictationPillBackdrop) -> String {
+        switch backdrop {
+        case .hidden: return "hidden"
+        case .idle: return "idle"
+        case .recording: return "recording"
+        case .meeting: return "meeting"
+        }
+    }
+
+    private static func name(_ fault: DictationPillFault) -> String {
+        switch fault {
+        case .missingElevenLabsKey: return "missingElevenLabsKey"
+        case .needsAccessibility: return "needsAccessibility"
+        case .secureInput: return "secureInput"
+        case .message: return "message"
+        case .screenRecordingNeeded: return "screenRecordingNeeded"
+        case .screenRecordingStale: return "screenRecordingStale"
+        case .transcriptionKept(_, let id): return "transcriptionKept(\(id))"
+        }
     }
 }
 

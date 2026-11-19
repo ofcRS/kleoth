@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (812 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
+swift build && swift test                        # core + CLI (819 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -41,6 +41,7 @@ swift build --package-path app --product micopen && caffeinate -s -i app/.build/
 swift run --package-path app pillsandbox                                # pill playground
 app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs (step@secs; --demo dictation|screen composes README frames)
 app/.build/debug/pillsandbox --film <dir> [--start-delay s] [--start-block s] --sequence peek,press:center,move:240:80@1,release   # a real drag (lose-mouseup = a lost mouse-up); app-like start timing
+bash app/pill-film-check.sh [--quick] [out-dir]  # 25 films, ~5 min, `--check-content --motion on`: fails on a settled EMPTY pill, a stuck transition, a capture with no bar; --quick = CI's 4 (~45 s)
 bash app/branding-src/demo/make-demos.sh                          # README demo GIFs from the real pill → docs/assets/demo-*.gif
 bash app/branding-src/demo/make-app-demos.sh [data-dir]            # meeting + viewer GIFs, screenshot-detail.png: a KleothDemo.app copy (-KleothDemo) films its own window
 bun app/branding-src/demo/make-demo-data.ts <dir> [--provider local]   # fictional meetings/recording, real on-device transcripts + summaries (default: Claude Code)
@@ -49,7 +50,8 @@ bun marketing/sync.ts check [--offline] | apply [--no-remote]   # public pitch: 
 bun test ./marketing/sync.test.ts                              # release-gate command parser
 ```
 Logs: `/usr/bin/log stream --predicate 'subsystem == "dev.kleoth"'` (categories `Dictation`,
-`DictationHotkey`, `Covers`, `MeetingDetection`, `MicActivity`, `PillTrace` — the latter needs `defaults write dev.kleoth.app KleothPillTrace -bool YES`).
+`DictationHotkey`, `Covers`, `MeetingDetection`, `MicActivity`, `PillTrace` — the latter needs `defaults write dev.kleoth.app KleothPillTrace -bool YES`
+and a relaunch: resizes plus every show/dismiss/backdrop/beat/hover decision, phases as kinds and ids only).
 Crash reports: `~/Library/Logs/DiagnosticReports/Kleoth-*.ips`. Reset TCC: `tccutil reset ScreenCapture|Accessibility dev.kleoth.app`.
 
 ## Architecture — two SwiftPM packages
@@ -353,6 +355,14 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Pill motion: never write the panel's frame mid-transition without zeroing `model.offset` (the capsule is drawn
   off its own window — an empty pill), and settle on `PillMotion.settleDelay`, never `withAnimation(completion:)`:
   with a move and a reshape started in the same turn (every rise and sink) the completion never fired.
+- `keyframeAnimator(trigger:)` re-triggered MID-FLIGHT hands its keyframes closure the in-flight value: pick the
+  keyframes from the trigger read in `body`, never from a field of the animated value (a `kind` stored there was the
+  previous beat's: a peek 50 ms into a sink replayed the sink — the empty dock of 2026-11-19; a meeting bar rising in a
+  sink came up empty too). Every beat's content reveal ends shown, a rise opens with a jump to hidden (`PillReveal`).
+  Unit tests cannot see which keyframes the VIEW plays: only the films can (`app/pill-film-check.sh`, `--quick` in CI).
+  CI's macOS runners have Reduce Motion ON (every transition jumps, no beat, no reveal): a film there proves nothing
+  about motion unless it forces it (`pillsandbox --motion on`, the script's default).
+  The menu open over an active phase that collapses: `show(.idle)` brings the dock out (it was placed tucked, invisible).
 - A SwiftUI `Button` inside the capsule takes the press, so the parent's drag never starts from it: what must
   drag (the dock's fields) is not a Button — the capsule's one `DragGesture(minimumDistance: 0)` clicks below
   `PillGeometry.dragThreshold` and drags past it, measured ON SCREEN (`PillPress`): its `translation` is
@@ -439,5 +449,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - v0.5.8 (2026-11-18): `meeting.m4a` was combined at the microphone's rate without resampling (a 16 kHz headset: three
   times too long, the other side slowed); the combine resamples, and a launch pass rebuilds old files (PR #34, review
   fixes in). Verified: tests, the repair on copies of real meetings. Not yet: the launch pass in the app, a listening test.
+- Unreleased (PR #36, `fix/pill-empty-on-stop`): the empty grey capsule after a meeting's stop was the DOCK peeking out
+  50 ms into the sink, its fields left at opacity 0 (gotcha above). Verified on films + tests only; not by eye.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.

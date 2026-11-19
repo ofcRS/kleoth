@@ -130,9 +130,17 @@ final class PillCoordinator {
     func showRecordingPhase(_ state: DictationPillState) {
         guard !isDictationPhaseLive else {
             if case .saved = state { queueConfirmation(state, owner: .recording) }
+            PillTrace.log("recording \(PillTrace.name(state)) under a dictation: \(Self.isConfirmation(state) ? "queued" : "dropped")")
             return
         }
         present(state, owner: .recording)
+    }
+
+    private static func isConfirmation(_ state: DictationPillState) -> Bool {
+        switch state {
+        case .saved, .meetingSaved: return true
+        default: return false
+        }
     }
 
     /// `pill.dismiss()` iff the pill is showing something the recording side put
@@ -259,12 +267,19 @@ final class PillCoordinator {
     /// prompt, a refusal the detector retries.
     @discardableResult
     func showMeetingPhase(_ state: DictationPillState) -> Bool {
-        if meetingPhaseYieldsToScreenRecording(state) { return false }
+        if meetingPhaseYieldsToScreenRecording(state) {
+            PillTrace.log("meeting \(PillTrace.name(state)) refused: the screen recording's bar is up")
+            return false
+        }
         if case .prompt = state {
-            guard !isPillBusyForPrompts else { return false }
+            guard !isPillBusyForPrompts else {
+                PillTrace.log("meeting \(PillTrace.name(state)) refused: the pill is busy (\(PillTrace.name(pill.upcomingState)))")
+                return false
+            }
         }
         guard !isDictationPhaseLive else {
             if case .meetingSaved = state { queueConfirmation(state, owner: .meeting) }
+            PillTrace.log("meeting \(PillTrace.name(state)) under a dictation: \(Self.isConfirmation(state) ? "queued" : "dropped")")
             return false
         }
         present(state, owner: .meeting)
@@ -357,6 +372,7 @@ final class PillCoordinator {
             return
         }
         let displaced = currentMeetingPromptId
+        PillTrace.log("\(PillTrace.name(pill.upcomingState)) withdrawn for the rising \(rising) bar")
         lastShowOwner = nil
         pill.dismiss()
         if let displaced { onMeetingPromptDisplaced?(displaced) }
@@ -433,8 +449,15 @@ final class PillCoordinator {
     private func flushQueuedConfirmation() {
         guard let queued = queuedConfirmation else { return }
         cancelQueuedConfirmation()
-        guard Date().timeIntervalSince(queued.at) <= ScreenRecordingDefaults.savedConfirmationMaxDelay else { return }
-        if queued.owner == .meeting, meetingPhaseYieldsToScreenRecording(queued.state) { return }
+        guard Date().timeIntervalSince(queued.at) <= ScreenRecordingDefaults.savedConfirmationMaxDelay else {
+            PillTrace.log("queued \(PillTrace.name(queued.state)) dropped: too late")
+            return
+        }
+        if queued.owner == .meeting, meetingPhaseYieldsToScreenRecording(queued.state) {
+            PillTrace.log("queued \(PillTrace.name(queued.state)) dropped: the screen recording's bar is up")
+            return
+        }
+        PillTrace.log("queued \(PillTrace.name(queued.state)) shown")
         present(queued.state, owner: queued.owner)
     }
 
@@ -509,6 +532,7 @@ final class PillCoordinator {
     /// `.meetingSaved` is queued behind it as usual.
     fileprivate func dictationDidShow(_ state: DictationPillState) {
         if case .saving = pill.upcomingState, lastShowOwner == .meeting, meetingSince != nil {
+            PillTrace.log("a dictation over the meeting's saving: the meeting's bar goes")
             meetingSince = nil
             meetingRecording = false
             recompute()   // stored only: `.saving` is still up

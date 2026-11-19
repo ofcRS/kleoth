@@ -600,3 +600,101 @@ public enum PillMotion {
         return max(moves ? moveEnd : 0, reshapes ? shapeDuration : 0)
     }
 }
+
+// MARK: - Motion beats
+
+/// The cue a pill transition plays (`DictationPillController.transition`):
+/// the view's squash-and-stretch and its content reveal both key off it.
+public enum PillBeat: Equatable, Sendable {
+    /// Out of the edge into an active phase.
+    case rise
+    /// Back into the edge.
+    case sink
+    /// Phase-to-phase in place (listening → transcribing → …).
+    case morph
+    /// The resting pill pulled out (or released) by the pointer.
+    case peek
+}
+
+extension PillMotion {
+    /// The beat a transition plays. `toResting`: the destination is `.idle`;
+    /// `toDock`: with the peek dock out; `fromResting`: the capsule leaves the
+    /// resting sliver (not the dock a start from the pill replaces);
+    /// `toArmed`: the chord's first frame.
+    ///
+    /// An active phase going straight to the DOCK (a confirmation collapsing
+    /// under a parked pointer) is a morph, never a sink: the dock is on screen
+    /// and its fields must show at once (2026-11-19, the empty dock).
+    public static func beat(moves: Bool, toResting: Bool, toDock: Bool, fromResting: Bool, toArmed: Bool) -> PillBeat {
+        guard moves else { return .morph }
+        if toResting { return fromResting ? .peek : (toDock ? .morph : .sink) }
+        return fromResting ? (toArmed ? .peek : .rise) : .morph
+    }
+}
+
+/// One keyframe of the pill's content reveal (`DictationPillView`'s
+/// `ContentReveal`): the value it reaches, how long it takes, and how.
+public struct PillRevealKeyframe: Equatable, Sendable {
+    /// `jump`: straight to the value, no interpolation (duration 0).
+    public enum Curve: Equatable, Sendable { case cubic, linear, bouncySpring, jump }
+    public var value: Double
+    public var duration: TimeInterval
+    public var curve: Curve
+
+    public init(_ value: Double, _ duration: TimeInterval, _ curve: Curve = .cubic) {
+        self.value = value
+        self.duration = duration
+        self.curve = curve
+    }
+}
+
+/// How the capsule's CONTENT (never its surface) fades and scales on each
+/// beat: hidden for the first stretch of a rise (the pill leaves the edge as
+/// a plain blob, then the bars bloom in), gone early on a sink, untouched for
+/// in-place morphs and peeks.
+///
+/// A rise opens with a JUMP to hidden: the animator starts each beat from its
+/// current value — fully shown at rest — and a rise that only faded to 0
+/// flashed its content out first.
+///
+/// EVERY beat ends with the content shown. A sink used to end at nothing and
+/// hold it until the next beat, so anything that landed meanwhile without a
+/// clean beat of its own was drawn empty — the dock that peeked out 50 ms
+/// into a sink stayed a blank capsule for as long as the pointer stayed
+/// (2026-11-19). Now a sink keeps its content hidden only until it has
+/// settled in the edge (`sinkEnd`), where the resting sliver has nothing to
+/// show, and then shows it again.
+public enum PillReveal {
+    /// When a sink has settled: its move starts a `stagger` late.
+    static var sinkEnd: TimeInterval {
+        PillMotion.settleDelay(moves: true, reshapes: true, staggeredMove: true, peek: false)
+    }
+    private static let fadeOut: TimeInterval = 0.1
+    private static let snap: TimeInterval = 0.01
+
+    public static func opacity(for beat: PillBeat) -> [PillRevealKeyframe] {
+        switch beat {
+        case .rise: return [PillRevealKeyframe(0, 0, .jump), PillRevealKeyframe(0, 0.08), PillRevealKeyframe(1, 0.16)]
+        case .sink:
+            return [
+                PillRevealKeyframe(0, fadeOut),
+                PillRevealKeyframe(0, sinkEnd - fadeOut, .linear),
+                PillRevealKeyframe(1, snap),
+            ]
+        case .morph, .peek: return [PillRevealKeyframe(1, snap)]
+        }
+    }
+
+    public static func scale(for beat: PillBeat) -> [PillRevealKeyframe] {
+        switch beat {
+        case .rise: return [PillRevealKeyframe(0.6, 0, .jump), PillRevealKeyframe(0.6, 0.08), PillRevealKeyframe(1, 0.22, .bouncySpring)]
+        case .sink:
+            return [
+                PillRevealKeyframe(0.7, fadeOut),
+                PillRevealKeyframe(0.7, sinkEnd - fadeOut, .linear),
+                PillRevealKeyframe(1, snap),
+            ]
+        case .morph, .peek: return [PillRevealKeyframe(1, snap)]
+        }
+    }
+}

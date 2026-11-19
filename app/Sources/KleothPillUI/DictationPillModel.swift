@@ -283,17 +283,10 @@ enum PillCursor: Equatable {
 }
 
 /// What kind of move the capsule is making, for the view's choreography.
+/// The kinds and which transition plays which live in KleothCore
+/// (`PillBeat`, `PillMotion.beat`), with the content reveal (`PillReveal`).
 struct MotionBeat: Equatable {
-    enum Kind: Equatable {
-        /// Out of the edge into an active phase.
-        case rise
-        /// Back into the edge.
-        case sink
-        /// Phase-to-phase in place (listening → transcribing → …).
-        case morph
-        /// The resting pill pulled out (or released) by the pointer.
-        case peek
-    }
+    typealias Kind = PillBeat
     var kind: Kind
     var id: Int
 }
