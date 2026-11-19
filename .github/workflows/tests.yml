@@ -2,7 +2,10 @@
 # - core: the KleothCore + CLI unit tests (`swift test`);
 # - app: the release app as it ships (`make-app.sh release`: its Bundle.module guards), then the packaged-app
 #   smoke test with the build folders out of reach (`app/smoke-test.sh`: History and every Settings page, the
-#   test that catches #17 and #22). One PNG per screen is kept as the `smoke-frames` artifact;
+#   test that catches #17 and #22). One PNG per screen is kept as the `smoke-frames` artifact. Then the
+#   pill's film guard (`app/pill-film-check.sh --quick`, ~30 s): the real pill filmed through a meeting's
+#   stop and a meeting starting inside a sink, failing on any settled EMPTY pill (frames kept as the
+#   `pill-films` artifact when it fails);
 # - marketing: the release-gate command parser (`marketing/sync.test.ts`) and the update feed's pure
 #   parts (`app/make-appcast.test.ts`).
 # The app is signed ad hoc here (no "Kleoth Self-Signed" identity) and never installed.
@@ -51,6 +54,16 @@ jobs:
         with:
           name: smoke-frames
           path: ${{ runner.temp }}/smoke-frames
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Pill film guard (app/pill-film-check.sh --quick)
+        timeout-minutes: 10
+        run: bash app/pill-film-check.sh --quick "$RUNNER_TEMP/pill-films"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: pill-films
+          path: ${{ runner.temp }}/pill-films
           if-no-files-found: ignore
           retention-days: 14
 
