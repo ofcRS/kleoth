@@ -118,9 +118,11 @@ else
     --sequence "meeting@1,hover:stop@0.4,click:stop@9,wait:1.2"
   film "reduce-motion-dictation" --motion off --edge left \
     --sequence "idle@1,peek@0.8,unpeek@0.8,armed@0.3,listening@1.5,transcribing@1,done@1.5,idle@1"
-  # A dictation over a meeting, then its save (the design's phase-1 film).
+  # A dictation over a meeting, then its save (the design's phase-1 film), in the bridge's order:
+  # the meeting's backdrop goes before "Meeting saved" — an idle pill over a live meeting backdrop
+  # is a capture with no bar, which the check fails.
   film "meeting-dictation" --edge bottom --backdrop meeting \
-    --sequence "meeting@1,armed@0.3,listening@1.2,transcribing@0.8,done@1.4,meeting@1,saving@1.5,meetingsaved@1,idle@1"
+    --sequence "meeting@1,armed@0.3,listening@1.2,transcribing@0.8,done@1.4,meeting@1,saving@1.5,backdrop:idle@0,meetingsaved@1,idle@1"
   # A new chord landing inside a sink (done → idle), then a whole dictation.
   film "chord-in-sink" --edge bottom \
     --sequence "idle@1,listening@1,done@1.02,armed@0.3,listening@1.2,done@1.5,idle@1"

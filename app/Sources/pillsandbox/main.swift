@@ -964,7 +964,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
         // a failure (a capture with no bar at all), never a silent pass.
         let line = "captured nothing (panel never visible)"
         if args.checkContent {
-            try? (["content check: FAIL — \(line)"] + liveFailures).joined(separator: "\n")
+            try? ((["content check: FAIL — \(line)"] + liveFailures).joined(separator: "\n") + "\n")
                 .write(to: dir.appendingPathComponent("content-check.txt"), atomically: true, encoding: .utf8)
         }
         print(args.checkContent ? "content check: FAIL — \(line)" : line)
@@ -995,7 +995,7 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     var contentFailed = false
     if args.checkContent {
         let report = contentCheck(captured, liveFailures: liveFailures)
-        try? report.lines.joined(separator: "\n").write(
+        try? (report.lines.joined(separator: "\n") + "\n").write(
             to: dir.appendingPathComponent("content-check.txt"), atomically: true, encoding: .utf8
         )
         contentFailed = !report.passed
@@ -1163,6 +1163,10 @@ func contentInk(in image: CGImage) -> Int {
 /// motion reads relative to the edge. Writes PNGs and a contact sheet.
 func writeFilm(_ frames: [CapturedFrame], to dir: URL, edge: PillGeometry.Edge) throws -> URL {
     let scale: CGFloat = 2
+    // The captures' own pixels per point: 2 on a Retina screen, 1 on CI's
+    // virtual display (drawn at 2 per point there, they came out half-size).
+    let first = frames[0].frame
+    let captureScale = max(1, (CGFloat(first.image.width) / max(first.panelFrame.width, 1)).rounded())
     var region = frames.map(\.frame.panelFrame).reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -12, dy: -12)
     region = region.integral
     let screen = frames[0].frame.screenFrame
@@ -1198,7 +1202,7 @@ func writeFilm(_ frames: [CapturedFrame], to dir: URL, edge: PillGeometry.Edge) 
         // A capture taken in the same turn as a panel resize can predate the
         // new frame; draw it at its own size so it is never stretched.
         let image = captured.frame.image
-        let imageSize = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        let imageSize = CGSize(width: CGFloat(image.width) / captureScale, height: CGFloat(image.height) / captureScale)
         var imageRect = captured.frame.panelFrame
         if abs(imageSize.width - imageRect.width) > 0.5 || abs(imageSize.height - imageRect.height) > 0.5 {
             imageRect = CGRect(origin: imageRect.origin, size: imageSize)
