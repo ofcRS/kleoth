@@ -3,9 +3,10 @@
 # - app: the release app as it ships (`make-app.sh release`: its Bundle.module guards), then the packaged-app
 #   smoke test with the build folders out of reach (`app/smoke-test.sh`: History and every Settings page, the
 #   test that catches #17 and #22). One PNG per screen is kept as the `smoke-frames` artifact. Then the
-#   pill's film guard (`app/pill-film-check.sh --quick`, ~30 s): the real pill filmed through a meeting's
-#   stop and a meeting starting inside a sink, failing on any settled EMPTY pill (frames kept as the
-#   `pill-films` artifact when it fails);
+#   pill's film guard (`app/pill-film-check.sh --quick`, ~45 s): the real pill filmed with full motion
+#   forced (the runner has Reduce Motion on) through a meeting's stop, a meeting starting inside a sink
+#   and the bare sink races, failing on any settled EMPTY pill (frames kept as the `pill-films`
+#   artifact when it fails);
 # - marketing: the release-gate command parser (`marketing/sync.test.ts`) and the update feed's pure
 #   parts (`app/make-appcast.test.ts`).
 # The app is signed ad hoc here (no "Kleoth Self-Signed" identity) and never installed.
