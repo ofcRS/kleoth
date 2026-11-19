@@ -6,6 +6,8 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.9] — 2026-11-19
+
 ### Fixed
 
 - **The pill could turn into an empty grey capsule after you stopped a meeting.** Once "Meeting
