@@ -48,12 +48,33 @@ import Foundation
         #expect(abs(total(scale) - total(opacity)) < 0.001)
     }
 
-    /// Unchanged: a rise leaves the edge as a plain blob and blooms its
-    /// content in.
-    @Test func aRiseRevealsItsContentOnceOutOfTheEdge() {
-        #expect(PillReveal.opacity(for: .rise).first?.value == 0)
-        #expect(PillReveal.scale(for: .rise).first?.value == 0.6)
-        #expect(total(PillReveal.opacity(for: .rise)) <= 0.3)
+    /// A rise leaves the edge as a plain blob and blooms its content in — from
+    /// HIDDEN on its first frame: it jumps to nothing (no fade out of whatever
+    /// the reveal was showing), holds while the capsule leaves the edge, then
+    /// fades and springs in. The animator starts every beat from its current
+    /// value (fully shown at rest), so without the jump a rise faded 1 → 0
+    /// first.
+    @Test func aRiseStartsHiddenAndBloomsItsContentIn() {
+        let opacity = PillReveal.opacity(for: .rise)
+        let scale = PillReveal.scale(for: .rise)
+        #expect(opacity.first == PillRevealKeyframe(0, 0, .jump))
+        #expect(scale.first == PillRevealKeyframe(0.6, 0, .jump))
+        #expect(opacity.dropFirst().first?.value == 0)
+        #expect(total(opacity) <= 0.3)
+        #expect(opacity.last?.value == 1)
+        #expect(scale.last?.value == 1)
+    }
+
+    /// A jump is the only keyframe with no duration, and only a rise opens
+    /// with one.
+    @Test func onlyARiseJumps() {
+        for beat in beats {
+            for keyframe in PillReveal.opacity(for: beat) + PillReveal.scale(for: beat) {
+                #expect((keyframe.curve == .jump) == (keyframe.duration == 0), "\(beat)")
+            }
+            let jumps = (PillReveal.opacity(for: beat) + PillReveal.scale(for: beat)).contains { $0.curve == .jump }
+            #expect(jumps == (beat == .rise), "\(beat)")
+        }
     }
 
     /// Unchanged: a morph or a peek shows the content at once.
@@ -66,10 +87,14 @@ import Foundation
 
     // MARK: Which beat a transition plays
 
-    /// The bug's own transition: an active phase ("Meeting saved") straight
-    /// onto the peek dock under the pointer. The dock is ON screen, so this is
-    /// no sink into the edge: its fields show at once.
-    @Test func theDockComingOutOfAnActivePhaseIsNoSink() {
+    /// An active phase collapsing STRAIGHT onto the peek dock — the pill's
+    /// menu open over a confirmation when it auto-hides, or a hover landing in
+    /// the same main-queue turn as the collapse. The dock is ON screen, so this
+    /// is no sink into the edge: its fields show at once. (Not the reported
+    /// flow: there the collapse sank first and the dock peeked out of the sink
+    /// 40–56 ms later — a sink, then a peek, which the reveal now plays
+    /// right.)
+    @Test func theDockComingStraightOutOfAnActivePhaseIsNoSink() {
         #expect(PillMotion.beat(moves: true, toResting: true, toDock: true, fromResting: false, toArmed: false) == .morph)
     }
 

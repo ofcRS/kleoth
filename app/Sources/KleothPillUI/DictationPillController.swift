@@ -207,6 +207,19 @@ public final class DictationPillController: DictationPillPresenting {
             peeking = false
             model.apply(peeking: false)
         }
+        // The menu is open over an active phase that now collapses to rest
+        // (`openMenu` peeks only from rest): the pill comes out as the dock the
+        // menu holds. It used to be sized as the dock but placed TUCKED, with
+        // neither the pill's fill (the dock is out) nor the dock's surface and
+        // fields (never held) — an invisible pill half off the screen.
+        if state == .idle, menuOpen, !peeking {
+            trace("dock out under the open menu")
+            peekTask?.cancel()
+            peekTask = nil
+            peeking = true
+            model.apply(peeking: true)
+            model.apply(dockHeld: true)
+        }
 
         guard state != .hidden else {
             dismiss()
@@ -1033,6 +1046,7 @@ public final class DictationPillController: DictationPillPresenting {
         menuModel.entries = Self.menuEntries(for: menuContentShown, microphonesExpanded: false)
 
         menuOpen = true
+        trace("menu open over \(Self.traceName(upcomingPhase))")
         model.apply(menuOpen: true)
         peekTask?.cancel()
         peekTask = nil
@@ -1054,6 +1068,7 @@ public final class DictationPillController: DictationPillPresenting {
     /// the pill tucks after `peekLinger` like any other hover exit).
     public func closeMenu() {
         guard menuOpen else { return }
+        trace("menu closed")
         menuOpen = false
         model.apply(menuOpen: false)
         removeMenuMonitors()
@@ -1220,7 +1235,9 @@ public final class DictationPillController: DictationPillPresenting {
         // Labelled `handler:` arguments, not trailing closures: a trailing
         // closure inside an `if let` condition reads as the statement body
         // (compiler warning).
-        if let global = NSEvent.addGlobalMonitorForEvents(
+        // Film mode skips it: a click the user makes in another app while a
+        // film runs must not close the film's menu (the real pointer is ignored).
+        if !ignoresRealPointer, let global = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
             handler: { [weak self] _ in
                 MainActor.assumeIsolated { self?.closeMenu() }
@@ -1345,6 +1362,9 @@ public final class DictationPillController: DictationPillPresenting {
     /// The peek dock is out (or held out by the menu) — for the sandbox's
     /// content check: a tucked `.idle` is the one phase drawn with nothing in it.
     public var showsDock: Bool { model.dockOut }
+    /// What the pill collapses to (`setBackdrop`) — for the sandbox's content
+    /// check: a capture's backdrop means a bar must be on screen.
+    public var currentBackdrop: DictationPillBackdrop { backdrop }
 
     private func present() {
         guard !Self.reduceMotion else {

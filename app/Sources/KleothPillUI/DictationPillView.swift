@@ -1072,8 +1072,8 @@ private struct StopButton: View {
 // MARK: - Content reveal
 
 /// Fades the capsule's content with the motion (`PillReveal`, KleothCore):
-/// hidden for the first stretch of a rise (the pill leaves the edge as a plain
-/// blob, then the bars bloom in), gone early on a sink until it has settled,
+/// hidden from the first frame of a rise (a jump, then the pill leaves the edge
+/// as a plain blob and the bars bloom in), gone early on a sink until it has settled,
 /// untouched for in-place morphs and peeks. Every beat ends with the content
 /// shown. The surface is not under it: the capsule never disappears, only
 /// what is in it.
@@ -1111,6 +1111,7 @@ private struct ContentReveal: ViewModifier {
             case .cubic: CubicKeyframe(keyframe.value, duration: keyframe.duration)
             case .linear: LinearKeyframe(keyframe.value, duration: keyframe.duration)
             case .bouncySpring: SpringKeyframe(keyframe.value, duration: keyframe.duration, spring: .bouncy)
+            case .jump: MoveKeyframe(keyframe.value)
             }
         }
     }

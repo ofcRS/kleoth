@@ -635,7 +635,8 @@ extension PillMotion {
 /// One keyframe of the pill's content reveal (`DictationPillView`'s
 /// `ContentReveal`): the value it reaches, how long it takes, and how.
 public struct PillRevealKeyframe: Equatable, Sendable {
-    public enum Curve: Equatable, Sendable { case cubic, linear, bouncySpring }
+    /// `jump`: straight to the value, no interpolation (duration 0).
+    public enum Curve: Equatable, Sendable { case cubic, linear, bouncySpring, jump }
     public var value: Double
     public var duration: TimeInterval
     public var curve: Curve
@@ -651,6 +652,10 @@ public struct PillRevealKeyframe: Equatable, Sendable {
 /// beat: hidden for the first stretch of a rise (the pill leaves the edge as
 /// a plain blob, then the bars bloom in), gone early on a sink, untouched for
 /// in-place morphs and peeks.
+///
+/// A rise opens with a JUMP to hidden: the animator starts each beat from its
+/// current value — fully shown at rest — and a rise that only faded to 0
+/// flashed its content out first.
 ///
 /// EVERY beat ends with the content shown. A sink used to end at nothing and
 /// hold it until the next beat, so anything that landed meanwhile without a
@@ -669,7 +674,7 @@ public enum PillReveal {
 
     public static func opacity(for beat: PillBeat) -> [PillRevealKeyframe] {
         switch beat {
-        case .rise: return [PillRevealKeyframe(0, 0.08), PillRevealKeyframe(1, 0.16)]
+        case .rise: return [PillRevealKeyframe(0, 0, .jump), PillRevealKeyframe(0, 0.08), PillRevealKeyframe(1, 0.16)]
         case .sink:
             return [
                 PillRevealKeyframe(0, fadeOut),
@@ -682,7 +687,7 @@ public enum PillReveal {
 
     public static func scale(for beat: PillBeat) -> [PillRevealKeyframe] {
         switch beat {
-        case .rise: return [PillRevealKeyframe(0.6, 0.08), PillRevealKeyframe(1, 0.22, .bouncySpring)]
+        case .rise: return [PillRevealKeyframe(0.6, 0, .jump), PillRevealKeyframe(0.6, 0.08), PillRevealKeyframe(1, 0.22, .bouncySpring)]
         case .sink:
             return [
                 PillRevealKeyframe(0.7, fadeOut),
