@@ -6,6 +6,15 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pill could turn into an empty grey capsule after you stopped a meeting.** Once "Meeting
+  saved" folded back into the edge with the pointer still on the pill, the dock (Dictate · Meeting ·
+  Screen · More) came out with none of its buttons, and stayed blank for as long as the pointer
+  stayed on it. The same could happen whenever the pill changed again within a moment of folding
+  away. The dock now shows its buttons at once, and whatever the pill shows next is drawn as soon
+  as it lands.
+
 ## [0.5.8] — 2026-11-18
 
 ### Fixed
