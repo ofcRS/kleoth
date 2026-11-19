@@ -62,7 +62,13 @@ struct DictationPillView: View {
     private unowned let controller: DictationPillController
 
     @EnvironmentObject private var model: DictationPillModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// The system's Reduce Motion, unless a sandbox film forces motion on or
+    /// off (`DictationPillController.motionOverride`) — the controller reads
+    /// the same answer.
+    private var reduceMotion: Bool {
+        DictationPillController.motionOverride.map { !$0 } ?? systemReduceMotion
+    }
 
     /// A press on the capsule is down: marks the gesture's first update
     /// (`pressGesture`). Resets by itself when the gesture ends or is cancelled.

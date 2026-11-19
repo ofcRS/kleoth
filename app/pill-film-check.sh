@@ -4,8 +4,8 @@
 # Usage:  bash app/pill-film-check.sh [--quick] [out-dir]
 #   out-dir   where the frames, sheets and logs go, always kept. Without it a fresh temp folder is
 #             used, deleted when every film passes and kept (its path printed) when one fails.
-#   --quick   only the two films CI runs (~30 s): a meeting stopped from its bar with the pointer left
-#             on the pill, and a meeting starting inside a sink.
+#   --quick   only the four films CI runs (~45 s): a meeting stopped from its bar with the pointer
+#             left on the pill, a meeting starting inside a sink, and the two bare races below.
 #
 # Runs the real pill (`pillsandbox --film --check-content`) through the flows that have rendered an
 # empty capsule before, on every edge: a meeting stopped from its bar's Stop with the pointer left on
@@ -13,7 +13,10 @@
 # fields), the same through the stop suggestion, a dictation, a dictation over a meeting, a meeting
 # starting just as a dictation's pill folds away (its bar came up with no dot, timer or Stop), the
 # dock's own starts, the menu held over a confirmation as it collapses, faults and an offer, a chord
-# inside a sink, and a drag — 21 films, about 5 min. A film fails (`contentCheck` in
+# inside a sink, a drag, and the race itself with no app timer in it (a sink, then one 60 fps film
+# frame later the dock or a meeting's bar), and two films under Reduce Motion — 25 films, about
+# 5 min. Every film forces full motion (`--motion on`) unless it says otherwise: CI's runners have
+# Reduce Motion ON, where every transition jumps and no motion bug can show. A film fails (`contentCheck` in
 # app/Sources/pillsandbox/main.swift) when a settled frame of a phase with content has nothing drawn
 # inside the capsule, a transition never settles, a capture's bar is due and not on screen, or no
 # frame was judged at all. A film that crashes or runs past FILM_TIMEOUT seconds is reported as such.
@@ -43,7 +46,10 @@ COUNT=0
 film() {   # film <name> <args…>
   local name="$1"; shift
   COUNT=$((COUNT + 1))
-  "$SANDBOX" --film "$OUT/$name" --fps 15 --check-content "$@" ${PILL_TRACE:+-KleothPillTrace YES} >"$OUT/$name.log" 2>&1 &
+  # Full motion whatever the Mac's Reduce Motion says (CI's runners have it ON, where every
+  # transition jumps and none of the motion bugs can show); a film may pass `--motion off` after.
+  "$SANDBOX" --film "$OUT/$name" --fps 15 --check-content --motion on "$@" ${PILL_TRACE:+-KleothPillTrace YES} \
+    >"$OUT/$name.log" 2>&1 &
   local pid=$!
   ( sleep "$FILM_TIMEOUT"; kill -9 "$pid" 2>/dev/null && echo timeout >"$OUT/$name.timeout" ) 2>/dev/null &
   local watchdog=$!
@@ -82,10 +88,21 @@ capture_in_sink() {   # capture_in_sink <ms>
     --sequence "idle@1,listening@1,done@$(printf "1.%02d" $(($1 / 10))),backdrop:meeting@2.5"
 }
 
+# The race itself, with no app timer in it: a phase folds into the edge, and one film frame later
+# (60 fps) the dock peeks out of the sink, or a meeting's bar rises out of it.
+races() {
+  film "sink-then-dock" --fps 60 --edge bottom --backdrop idle \
+    --sequence "idle@1,meetingsaved@1,idle@0.01,peek@1.2"
+  film "sink-then-bar" --fps 60 --edge bottom --backdrop idle \
+    --sequence "idle@1,done@0.6,idle@0.01,backdrop:meeting@1.5"
+}
+
 if [ "$QUICK" -eq 1 ]; then
   stop_bar top 3
   capture_in_sink 60
+  races
 else
+  races
   for edge in top bottom left right; do
     stop_bar "$edge" 8
     # The same stop through the call-ended suggestion.
@@ -96,6 +113,11 @@ else
       --sequence "idle@1,armed@0.3,listening@1.5,transcribing@1,polishing@1,done@1.5,idle@1"
   done
   for ms in 30 60 90; do capture_in_sink "$ms"; done
+  # Reduce Motion: every change jumps, nothing is revealed — still never empty.
+  film "reduce-motion-stop-bar" --motion off --edge top --backdrop meeting --save-seconds 3 \
+    --sequence "meeting@1,hover:stop@0.4,click:stop@9,wait:1.2"
+  film "reduce-motion-dictation" --motion off --edge left \
+    --sequence "idle@1,peek@0.8,unpeek@0.8,armed@0.3,listening@1.5,transcribing@1,done@1.5,idle@1"
   # A dictation over a meeting, then its save (the design's phase-1 film).
   film "meeting-dictation" --edge bottom --backdrop meeting \
     --sequence "meeting@1,armed@0.3,listening@1.2,transcribing@0.8,done@1.4,meeting@1,saving@1.5,meetingsaved@1,idle@1"

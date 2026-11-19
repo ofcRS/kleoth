@@ -2006,10 +2006,17 @@ public final class DictationPillController: DictationPillPresenting {
     // MARK: Environment
 
     /// System-wide "Reduce motion". Read at call time — the user can flip it
-    /// while the app runs.
+    /// while the app runs. The view reads the same answer (`DictationPillView.reduceMotion`).
     static var reduceMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        motionOverride.map { !$0 } ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
+
+    /// The sandbox's films only (`pillsandbox --motion on|off`): true = full
+    /// motion, false = Reduce Motion, whatever the system says; nil (the app,
+    /// always) = the system setting. CI's runners have Reduce Motion ON, where
+    /// every transition jumps and the content reveal is skipped — a film there
+    /// shows none of the motion bugs unless it forces motion on.
+    public static var motionOverride: Bool?
 
     /// The pill is not a key window, so VoiceOver never focuses it: each phase
     /// has to be spoken explicitly.

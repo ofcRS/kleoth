@@ -35,6 +35,8 @@ import KleothPillUI
 ///         exit 1 when a settled frame of a phase with content is empty (`contentCheck`,
 ///         `content-check.txt`). A `hover:` spot left on the pill through a collapse to
 ///         `.idle` peeks the dock out of it, as a parked pointer does in the app.
+///         `--motion on|off|system`: force full motion or Reduce Motion (default: the
+///         system's setting, which is ON on CI's runners).
 ///         `--demo dictation|screen` also composes every frame onto an 680×425 pt
 ///         stage (a desktop, an editor or a slide window, captions, the fn+shift
 ///         keys, a cursor) in `<dir>/demo/` with an ffmpeg concat list, for the
@@ -112,6 +114,10 @@ struct Arguments {
     /// (`contentCheck`). The empty dock after a meeting's stop (2026-11-19)
     /// was a frame like that for 7 s.
     var checkContent = false
+    /// `--motion on|off|system`: full motion, Reduce Motion, or the system's
+    /// setting (the default) — `DictationPillController.motionOverride`. CI's
+    /// runners have Reduce Motion on, so the film check forces it on.
+    var motion: Bool?
 
     enum LevelPattern: String {
         case off, speech, steady
@@ -139,6 +145,13 @@ struct Arguments {
             case "--start-block": out.startBlock = value().flatMap(Double.init) ?? 0; i += 1
             case "--save-seconds": out.saveSeconds = value().flatMap(Double.init) ?? 1.2; i += 1
             case "--check-content": out.checkContent = true
+            case "--motion":
+                switch value() {
+                case "on": out.motion = true
+                case "off": out.motion = false
+                default: out.motion = nil
+                }
+                i += 1
             case "--marks": out.slidesMarks = value()?.split(separator: ",").compactMap { Double($0) } ?? []; i += 1
             case "--backdrop": out.backdrop = value().flatMap(backdrop(named:)) ?? .idle; i += 1
             case "--sequence": out.sequence = value()?.split(separator: ",").map(String.init) ?? out.sequence; i += 1
@@ -728,6 +741,9 @@ func film(_ args: Arguments, controller: DictationPillController, exitWhenDone: 
     controller.dock(edge: args.edge, fraction: args.fraction)
     controller.setDock(PillDockMetrics(scale: args.dockScale, style: args.dockStyle))
     controller.ignoresRealPointer = true
+    DictationPillController.motionOverride = args.motion
+    let systemReduces = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    print("motion: \(args.motion.map { $0 ? "forced on" : "forced off (Reduce Motion)" } ?? "system") — system Reduce Motion is \(systemReduces ? "ON" : "off")")
     // The stage is opened lazily, once the pill's panel exists (the first
     // phase creates it) — its frame is what the stage is centred on.
     var stagePanel: StagePanel?
