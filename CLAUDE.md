@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (818 tests); CI: .github/workflows/tests.yml (+ app smoke, marketing)
+swift build && swift test                        # core + CLI (819 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -41,7 +41,7 @@ swift build --package-path app --product micopen && caffeinate -s -i app/.build/
 swift run --package-path app pillsandbox                                # pill playground
 app/.build/debug/pillsandbox --film <dir> --edge right --sequence idle,armed,listening,done,idle   # filmstrip PNGs (step@secs; --demo dictation|screen composes README frames)
 app/.build/debug/pillsandbox --film <dir> [--start-delay s] [--start-block s] --sequence peek,press:center,move:240:80@1,release   # a real drag (lose-mouseup = a lost mouse-up); app-like start timing
-bash app/pill-film-check.sh [out-dir]            # ~5 min of films, every edge, `--check-content`: fails on any settled EMPTY pill (`--save-seconds` = a long save)
+bash app/pill-film-check.sh [--quick] [out-dir]  # 21 films, ~5 min, `--check-content`: fails on a settled EMPTY pill, a stuck transition, a capture with no bar; --quick = CI's 2 (~30 s)
 bash app/branding-src/demo/make-demos.sh                          # README demo GIFs from the real pill → docs/assets/demo-*.gif
 bash app/branding-src/demo/make-app-demos.sh [data-dir]            # meeting + viewer GIFs, screenshot-detail.png: a KleothDemo.app copy (-KleothDemo) films its own window
 bun app/branding-src/demo/make-demo-data.ts <dir> [--provider local]   # fictional meetings/recording, real on-device transcripts + summaries (default: Claude Code)
@@ -357,8 +357,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   with a move and a reshape started in the same turn (every rise and sink) the completion never fired.
 - `keyframeAnimator(trigger:)` re-triggered MID-FLIGHT hands its keyframes closure the in-flight value: pick the
   keyframes from the trigger read in `body`, never from a field of the animated value (a `kind` stored there was the
-  previous beat's: a peek 50 ms into a sink replayed the sink — the empty dock of 2026-11-19). Every beat's content
-  reveal ends shown (`PillReveal`). `bash app/pill-film-check.sh` (`pillsandbox --check-content`) fails on a settled empty pill.
+  previous beat's: a peek 50 ms into a sink replayed the sink — the empty dock of 2026-11-19; a meeting bar rising in a
+  sink came up empty too). Every beat's content reveal ends shown, a rise opens with a jump to hidden (`PillReveal`).
+  Unit tests cannot see which keyframes the VIEW plays: only the films can (`app/pill-film-check.sh`, `--quick` in CI).
+  The menu open over an active phase that collapses: `show(.idle)` brings the dock out (it was placed tucked, invisible).
 - A SwiftUI `Button` inside the capsule takes the press, so the parent's drag never starts from it: what must
   drag (the dock's fields) is not a Button — the capsule's one `DragGesture(minimumDistance: 0)` clicks below
   `PillGeometry.dragThreshold` and drags past it, measured ON SCREEN (`PillPress`): its `translation` is
