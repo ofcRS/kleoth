@@ -445,7 +445,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - v0.5.8 (2026-11-18): `meeting.m4a` was combined at the microphone's rate without resampling (a 16 kHz headset: three
   times too long, the other side slowed); the combine resamples, and a launch pass rebuilds old files (PR #34, review
   fixes in). Verified: tests, the repair on copies of real meetings. Not yet: the launch pass in the app, a listening test.
-- Unreleased (branch `fix/pill-empty-on-stop`): the empty grey capsule after a meeting's stop was the DOCK peeking out
+- Unreleased (PR #36, `fix/pill-empty-on-stop`): the empty grey capsule after a meeting's stop was the DOCK peeking out
   50 ms into the sink, its fields left at opacity 0 (gotcha above). Verified on films + tests only; not by eye.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
