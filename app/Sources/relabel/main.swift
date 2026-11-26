@@ -15,14 +15,19 @@ import KleothCore
 // `transcript.before-relabel.json` (a re-run starts from that backup, so it
 // gives the same result), and re-renders `transcript.md` and `summary.md`. The
 // summary's TEXT still reflects the old labels: re-summarize to redo it.
-// Skipped: a meeting without both lanes holding audio, an on-device transcript
-// (each lane transcribed on its own), one whose speakers are Scribe's voices
-// rather than the two lanes (a CLI transcription), and a file not downloaded
-// from a cloud folder (never downloaded). A cloud transcript archived under
+// Skipped: a meeting without both lanes holding audio (a CLI transcription
+// lives in a folder without lanes), an on-device transcript (each lane
+// transcribed on its own), one naming more than two of Scribe's voices, and a
+// file not downloaded from a cloud folder (never downloaded). NOT caught: a
+// transcript naming exactly two of Scribe's voices `speaker_0`/`speaker_1`
+// beside both lanes (made before lane attribution, about 2026-06-01): its
+// voices are re-attributed by lane. A cloud transcript archived under
 // `variants/` (another tier active) is not re-labelled.
 // `--dry-run` only reads. `--out <dir>` leaves the meetings alone and writes
 // each re-attributed `transcript.json` + `transcript.md` to `<dir>/<meeting>/`
-// for a look first; it refuses a folder that is, or is inside, a meeting.
+// for a look first; it refuses a folder that is, or is inside, a meeting
+// (one holding a transcript, meta.json or a lane), and replaces a symlinked
+// entry rather than writing through it.
 // `--verbose` adds a line per cluster (counts only).
 // Refuses to write into meetings while Kleoth runs.
 // Prints folder names and counts only, never words.
@@ -48,9 +53,11 @@ guard !paths.isEmpty, !arguments.contains("--help") else {
           --dry-run   only read and report
           --out <dir> write previews to <dir>/<meeting>/ and leave the meetings alone
           --verbose   a line per cluster (counts only)
-          Skips meetings without both lanes, on-device transcripts, CLI transcripts whose speakers
-          are Scribe's voices, and files not downloaded. A cloud transcript archived under
-          variants/ (another tier active) is not re-labelled. The summary text is not redone.
+          Skips meetings without both lanes, on-device transcripts, transcripts naming more than
+          two of Scribe's voices, and files not downloaded. Two Scribe voices named speaker_0/1
+          beside both lanes (transcribed before lane attribution) are NOT caught: re-attributed.
+          A cloud transcript archived under variants/ (another tier active) is not re-labelled.
+          The summary text is not redone.
         """)
     exit(paths.isEmpty ? 1 : 0)
 }
@@ -160,14 +167,10 @@ for path in paths {
             guard !dryRun else { continue }
             if let preview {
                 // A preview: the meeting folder is only read.
-                try fm.createDirectory(at: preview, withIntermediateDirectories: true)
-                try Data().write(to: preview.appendingPathComponent(TranscriptRelabel.previewMarkerName))
-                try MeetingStore.encodeRawTranscript(outcome.response)
-                    .write(to: preview.appendingPathComponent("transcript.json"), options: .atomic)
                 var transcript = TranscriptNormalizer.normalize(outcome.response, tier: metadata.transcriptTier)
                 if let map = store.loadSpeakerMap(in: dir) { transcript = SpeakerMapper.apply(map, to: transcript) }
-                try Data(MeetingStore.transcriptLines(transcript).utf8)
-                    .write(to: preview.appendingPathComponent("transcript.md"), options: .atomic)
+                try TranscriptRelabel.writePreview(
+                    outcome.response, transcriptLines: MeetingStore.transcriptLines(transcript), to: preview)
                 continue
             }
             let currentWords = current.words ?? [], newWords = outcome.response.words ?? []

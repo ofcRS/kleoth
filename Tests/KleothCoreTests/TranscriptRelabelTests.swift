@@ -121,6 +121,46 @@ import Testing
         #expect(TranscriptRelabel.previewProblem(preview: earlier, meeting: meeting) == nil)
     }
 
+    /// A meeting folder that holds only its audio (never transcribed, or its
+    /// transcript removed) is still a meeting: no preview goes in or under it.
+    @Test func aPreviewNeverLandsInAnAudioOnlyMeeting() throws {
+        let base = try scratch()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let meeting = base.appendingPathComponent("meeting-2026-01-01-100000", isDirectory: true)
+        try FileManager.default.createDirectory(at: meeting, withIntermediateDirectories: true)
+        for lane in ["mic.m4a", "system.m4a", "meeting.m4a"] {
+            let audioOnly = base.appendingPathComponent("audio-\(lane)", isDirectory: true)
+            try FileManager.default.createDirectory(at: audioOnly, withIntermediateDirectories: true)
+            try Data([0]).write(to: audioOnly.appendingPathComponent(lane))
+            #expect(TranscriptRelabel.previewProblem(preview: audioOnly, meeting: meeting) != nil)
+            #expect(TranscriptRelabel.previewProblem(preview: audioOnly.appendingPathComponent("p"), meeting: meeting) != nil)
+        }
+    }
+
+    /// A marker or transcript left in the preview folder as a symlink is
+    /// replaced, never written through: its target stays as it was.
+    @Test func aPreviewNeverWritesThroughASymlink() throws {
+        let base = try scratch()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let preview = base.appendingPathComponent("preview", isDirectory: true)
+        try FileManager.default.createDirectory(at: preview, withIntermediateDirectories: true)
+        let victim = base.appendingPathComponent("victim.txt")
+        try Data("keep".utf8).write(to: victim)
+        for name in [TranscriptRelabel.previewMarkerName, "transcript.json", "transcript.md"] {
+            try FileManager.default.createSymbolicLink(
+                at: preview.appendingPathComponent(name), withDestinationURL: victim)
+        }
+        let raw = ScribeResponse(words: [ScribeWord(text: "x", start: 0, end: 1, type: "word", speakerId: "speaker_0")])
+        try TranscriptRelabel.writePreview(raw, transcriptLines: "You: x", to: preview)
+
+        #expect(try String(contentsOf: victim, encoding: .utf8) == "keep")
+        for name in [TranscriptRelabel.previewMarkerName, "transcript.json", "transcript.md"] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: preview.appendingPathComponent(name).path)
+            #expect(attributes[.type] as? FileAttributeType == .typeRegular)
+        }
+        #expect(try String(contentsOf: preview.appendingPathComponent("transcript.md"), encoding: .utf8) == "You: x")
+    }
+
     // MARK: - The store
 
     private func savedMeeting(summary: MeetingSummary?) throws -> (store: MeetingStore, dir: URL, raw: ScribeResponse, lanes: Lanes) {

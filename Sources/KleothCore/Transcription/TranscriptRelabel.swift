@@ -9,9 +9,14 @@ import Foundation
 /// cluster as the prior (every word of one Scribe cluster had been given the
 /// same label), so words the lanes decide are fixed, and words they can't
 /// decide keep leaning the way their old label did. That holds only for a
-/// transcript whose labels ARE the two lane labels: one with Scribe's own
-/// voices (`speaker_0…N`, a CLI transcription) is refused, and so is a meeting
-/// without both lanes (the app transcribes those without lanes too).
+/// transcript whose labels ARE the two lane labels. Refused: a meeting without
+/// both lanes (the app transcribes those without lanes too; the CLI writes its
+/// transcripts into a new folder without lanes), and, with no Scribe cluster
+/// recorded, a speaker id other than `speaker_0`/`speaker_1` (three or more of
+/// Scribe's voices, or none). NOT told apart: a transcript that names exactly
+/// two of Scribe's voices `speaker_0`/`speaker_1` beside both lanes (one made
+/// before lane attribution, about 2026-06-01, or put there by hand) passes, and
+/// its voices are re-attributed by lane. No stored field says which it is.
 public enum TranscriptRelabel {
     public struct Outcome: Sendable {
         /// The transcript with the new labels; everything else as it was.
@@ -39,8 +44,10 @@ public enum TranscriptRelabel {
         case noWords
         /// A lane is missing, unreadable or header-only (an empty envelope).
         case laneUnreadable(String)
-        /// With no Scribe cluster recorded, a speaker id other than the two
-        /// lane labels: the transcript names Scribe's voices, not lanes.
+        /// With no Scribe cluster recorded, a speaker id other than
+        /// `speaker_0`/`speaker_1` (or none): the transcript names three or more
+        /// of Scribe's voices. Two voices named `speaker_0`/`speaker_1` look like
+        /// lane labels and are not caught.
         case notLaneLabels
 
         public var description: String {
@@ -49,7 +56,7 @@ public enum TranscriptRelabel {
             case .noWords: return "no timed words"
             case .laneUnreadable(let name): return "no readable \(name), so no lanes to compare"
             case .notLaneLabels:
-                return "its speakers are Scribe's voices (speaker_0…N), not the two lanes; re-attributing would merge them"
+                return "its speakers are more than two of Scribe's voices (speaker_0…N), not the two lanes; re-attributing would merge them"
             }
         }
     }
@@ -96,23 +103,39 @@ public enum TranscriptRelabel {
     /// Marks a folder as a re-labelling preview, so a later run may replace it.
     public static let previewMarkerName = ".relabel-preview"
 
+    /// Writes a preview, the marker first: every file is written beside its
+    /// name and renamed over it, so an entry that is a symlink is replaced,
+    /// never written through. Check ``previewProblem(preview:meeting:)`` first.
+    public static func writePreview(_ raw: ScribeResponse, transcriptLines: String, to preview: URL) throws {
+        try FileManager.default.createDirectory(at: preview, withIntermediateDirectories: true)
+        try Data().write(to: preview.appendingPathComponent(previewMarkerName), options: .atomic)
+        try MeetingStore.encodeRawTranscript(raw)
+            .write(to: preview.appendingPathComponent("transcript.json"), options: .atomic)
+        try Data(transcriptLines.utf8).write(to: preview.appendingPathComponent("transcript.md"), options: .atomic)
+    }
+
     /// Why `preview` must not receive a preview of `meeting`, or nil when it
     /// may: it is the meeting itself or lies inside a meeting folder (by any
-    /// spelling or symlink), or it holds a meeting's `meta.json`, or a
-    /// `transcript.json` that no earlier preview wrote.
+    /// spelling or symlink), or it holds a meeting's `meta.json` or audio
+    /// (`mic.m4a`, `system.m4a`, `meeting.m4a`), or a `transcript.json` that no
+    /// earlier preview wrote.
     public static func previewProblem(preview: URL, meeting: URL) -> String? {
         let fm = FileManager.default
         func resolved(_ url: URL) -> URL { url.standardizedFileURL.resolvingSymlinksInPath() }
+        let meetingFiles = ["meta.json", "transcript.json", "mic.m4a", "system.m4a", "meeting.m4a"]
         let target = resolved(preview), source = resolved(meeting)
         if target.path == source.path { return "the preview folder is the meeting folder itself" }
         if target.path.hasPrefix(source.path + "/") { return "the preview folder is inside the meeting folder" }
         var ancestor = target.deletingLastPathComponent()
         while ancestor.path != "/", !ancestor.path.isEmpty {
-            let holdsMeeting = ["meta.json", "transcript.json"].contains {
+            let holdsMeeting = meetingFiles.contains {
                 fm.fileExists(atPath: ancestor.appendingPathComponent($0).path)
             }
             if holdsMeeting { return "the preview folder is inside a meeting folder (\(ancestor.lastPathComponent))" }
             ancestor = ancestor.deletingLastPathComponent()
+        }
+        if let file = meetingFiles.dropFirst(2).first(where: { fm.fileExists(atPath: target.appendingPathComponent($0).path) }) {
+            return "the preview folder holds a meeting's \(file)"
         }
         if fm.fileExists(atPath: target.appendingPathComponent("meta.json").path) {
             return "the preview folder holds a meeting's meta.json"
