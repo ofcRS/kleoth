@@ -53,7 +53,13 @@ public struct ChannelAttributedScribeTranscriber: Transcriber {
         _ = try ChannelAudio.mixToMono(channel0: micURL, channel1: systemURL, outputURL: tempMono)
         defer { try? FileManager.default.removeItem(at: tempMono) }
 
-        // 2. Single-channel request with diarization on: Scribe clusters the
+        // 2. Per-channel energy envelopes (mic → speaker_0, system → speaker_1),
+        //    BEFORE the paid request: a lane that fails to read must not throw
+        //    away a transcript already paid for.
+        let e0 = try ChannelAudio.envelope(of: micURL, hopSeconds: hopSeconds)
+        let e1 = try ChannelAudio.envelope(of: systemURL, hopSeconds: hopSeconds)
+
+        // 3. Single-channel request with diarization on: Scribe clusters the
         //    words into distinct voices. numSpeakers is left unset — Scribe
         //    auto-detects; its clusters are the prior in step 4.
         var opt = options
@@ -61,10 +67,6 @@ public struct ChannelAttributedScribeTranscriber: Transcriber {
         opt.diarize = true
         opt.numSpeakers = nil
         let resp = try await scribe.transcribe(fileURL: tempMono, options: opt)
-
-        // 3. Per-channel energy envelopes (mic → speaker_0, system → speaker_1).
-        let e0 = try ChannelAudio.envelope(of: micURL, hopSeconds: hopSeconds)
-        let e1 = try ChannelAudio.envelope(of: systemURL, hopSeconds: hopSeconds)
 
         // 4. Each word to You/Them by the lane carrying a voice over it, Scribe's
         //    cluster as the prior (and kept in `diarizedSpeakerId`). An unreadable

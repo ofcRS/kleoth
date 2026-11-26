@@ -43,6 +43,84 @@ import Testing
             .failureValue == .noWords)
     }
 
+    /// Both lanes must hold audio: with one missing or header-only there is
+    /// nothing to compare (the app sends such a meeting to plain Scribe).
+    @Test func refusesAMeetingWithoutBothLanes() {
+        let (raw, lanes) = oldMeeting()
+        #expect(TranscriptRelabel.relabel(raw, micEnergy: [], systemEnergy: lanes.systemEnergy, hopSeconds: Lanes.hop)
+            .failureValue == .laneUnreadable("mic.m4a"))
+        #expect(TranscriptRelabel.relabel(raw, micEnergy: lanes.micEnergy, systemEnergy: [], hopSeconds: Lanes.hop)
+            .failureValue == .laneUnreadable("system.m4a"))
+    }
+
+    /// A transcript whose speaker ids are Scribe's own voices (`speaker_0…N`,
+    /// a CLI transcription), not the two lane labels: re-attributing it would
+    /// fold its voices onto two sides and lose the names in `speakers.json`.
+    @Test func refusesSpeakerIdsOtherThanTheTwoLaneLabels() {
+        let (raw, lanes) = oldMeeting()
+        var voices = raw
+        voices.words![3].speakerId = "speaker_2"
+        #expect(TranscriptRelabel.relabel(voices, micEnergy: lanes.micEnergy, systemEnergy: lanes.systemEnergy, hopSeconds: Lanes.hop)
+            .failureValue == .notLaneLabels)
+        var unlabelled = raw
+        unlabelled.words![0].speakerId = nil
+        #expect(TranscriptRelabel.relabel(unlabelled, micEnergy: lanes.micEnergy, systemEnergy: lanes.systemEnergy, hopSeconds: Lanes.hop)
+            .failureValue == .notLaneLabels)
+        // With Scribe's clusters recorded, the labels are lane labels by construction.
+        var recorded = voices
+        for i in recorded.words!.indices { recorded.words![i].diarizedSpeakerId = "speaker_\(i % 3)" }
+        #expect(TranscriptRelabel.relabel(recorded, micEnergy: lanes.micEnergy, systemEnergy: lanes.systemEnergy, hopSeconds: Lanes.hop)
+            .failureValue == nil)
+    }
+
+    // MARK: - Where previews may go
+
+    private func scratch() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kleoth-preview-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// `--out ~/Kleoth` made the preview path the meeting itself: refused, as
+    /// is any folder inside a meeting or holding one's files.
+    @Test func aPreviewNeverLandsOnAMeeting() throws {
+        let base = try scratch()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let meeting = base.appendingPathComponent("meeting-2026-01-01-100000", isDirectory: true)
+        try FileManager.default.createDirectory(at: meeting, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: meeting.appendingPathComponent("transcript.json"))
+        try Data("{}".utf8).write(to: meeting.appendingPathComponent("meta.json"))
+
+        // The meeting itself, by a plain, a dotted and a symlinked path.
+        #expect(TranscriptRelabel.previewProblem(preview: meeting, meeting: meeting) != nil)
+        let dotted = base.appendingPathComponent("x/../meeting-2026-01-01-100000", isDirectory: true)
+        #expect(TranscriptRelabel.previewProblem(preview: dotted, meeting: meeting) != nil)
+        let link = base.appendingPathComponent("link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: meeting)
+        #expect(TranscriptRelabel.previewProblem(preview: link, meeting: meeting) != nil)
+        // Inside the meeting.
+        #expect(TranscriptRelabel.previewProblem(preview: meeting.appendingPathComponent("p"), meeting: meeting) != nil)
+
+        // Another folder holding a meeting's files.
+        let other = base.appendingPathComponent("other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: other.appendingPathComponent("meta.json"))
+        #expect(TranscriptRelabel.previewProblem(preview: other, meeting: meeting) != nil)
+        let lone = base.appendingPathComponent("lone", isDirectory: true)
+        try FileManager.default.createDirectory(at: lone, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: lone.appendingPathComponent("transcript.json"))
+        #expect(TranscriptRelabel.previewProblem(preview: lone, meeting: meeting) != nil)
+
+        // A new folder, or an earlier preview (it carries the marker), is fine.
+        #expect(TranscriptRelabel.previewProblem(preview: base.appendingPathComponent("new"), meeting: meeting) == nil)
+        let earlier = base.appendingPathComponent("earlier", isDirectory: true)
+        try FileManager.default.createDirectory(at: earlier, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: earlier.appendingPathComponent("transcript.json"))
+        try Data().write(to: earlier.appendingPathComponent(TranscriptRelabel.previewMarkerName))
+        #expect(TranscriptRelabel.previewProblem(preview: earlier, meeting: meeting) == nil)
+    }
+
     // MARK: - The store
 
     private func savedMeeting(summary: MeetingSummary?) throws -> (store: MeetingStore, dir: URL, raw: ScribeResponse, lanes: Lanes) {
