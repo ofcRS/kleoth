@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (891 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
+swift build && swift test                        # core + CLI (892 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)

@@ -77,8 +77,9 @@ public enum ChannelAttribution {
     /// Both lanes voiced: a lane this many dB nearer its side's speaking level
     /// than the other lane is to its own dominates.
     static let dominanceDB: Float = 10
-    /// A side's speaking level comes from at least this many clear words (the
-    /// lane's own voiced median otherwise).
+    /// A side's speaking level comes from at least this many clear words.
+    /// With fewer of the user's, no word dominates; with fewer of the
+    /// remote's, the system lane's own voiced median stands in.
     static let minimumReferenceWords = 20
     /// A hop is the lane's own voice only this far above the leak predicted on it.
     static let leakMarginDB: Float = 6
@@ -179,9 +180,13 @@ public enum ChannelAttribution {
         func median(_ values: [Float]) -> Float? {
             values.count < minimumReferenceWords ? nil : values.sorted()[values.count / 2]
         }
-        let userLevel = median(found.filter { $0.side == .you }.map(\.micPeak)) ?? mic.speech
+        // The user's level must be measured: the mic's own voiced median can
+        // be room noise or bleed. The system lane carries little but the
+        // remote, so its voiced median stands in for the remote's level.
+        let userLevel = median(found.filter { $0.side == .you }.map(\.micPeak))
         let remoteLevel = median(found.filter { $0.side == .them }.map(\.systemPeak)) ?? system.speech
         for k in found.indices where found[k].side == .bothLanes {
+            guard let userLevel else { break }
             let lead = (found[k].micPeak - userLevel) - (found[k].systemPeak - remoteLevel)
             // Toward You only where the mic's sound can be the user's: a leak
             // taken off at this word, or a meeting whose mic never hears the

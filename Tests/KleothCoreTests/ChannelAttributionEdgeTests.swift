@@ -287,6 +287,25 @@ import Testing
         #expect(Self.labels(attribution, cluster: "U") == [Self.you])
     }
 
+    /// The user never speaks; the mic hears every remote turn out of line (no
+    /// leak model), louder in some turns than others. With no clear word of the
+    /// user's there is no speaking level to be near: the mic never dominates.
+    @Test func aMicThatOnlyHearsTheRemoteNeverDominates() {
+        var lanes = Lanes(seconds: 300, micFloor: -80, systemFloor: -80)
+        var words: [ScribeWord] = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            lanes.systemSpeech(from, to)
+            words += Self.words("R", from, to)
+            let level: Float = index % 3 == 0 ? -42 : -62
+            for j in Lanes.hops(from, to + 0.4, count: lanes.mic.count) {
+                lanes.mic[j] = max(lanes.mic[j], level - 2 * Lanes.syllable(j, voice: 9))
+            }
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.micHearsSystemSeconds == 0)
+        #expect(attribution.words.filter { $0.speakerId == Self.you }.isEmpty)
+    }
+
     /// Two people at one mic and no readable system lane: Scribe's split stands.
     @Test func twoVoicesAtTheMicWithNoSystemLaneKeepScribesSplit() {
         var lanes = Lanes(seconds: 240)

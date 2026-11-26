@@ -275,15 +275,19 @@ import Testing
 
     /// The remote's line is still open (faint, but above its floor) while the
     /// user talks far above theirs: the mic clearly dominates.
+    /// (The user also speaks with the line closed, in another Scribe cluster:
+    /// that is where the user's speaking level is measured.)
     @Test func aClearlyDominantMicIsYouOverAFaintSystemLane() {
-        var lanes = Lanes(seconds: 40)
+        var lanes = Lanes(seconds: 50)
         lanes.systemSpeech(0, 20)
         lanes.systemSpeech(20, 30, at: -40)
         lanes.micSpeech(20, 30, at: -20)
-        let words = Self.words("R", 0, 20) + Self.words("U", 20, 30)
+        lanes.micSpeech(35, 45, at: -20)
+        let words = Self.words("R", 0, 20) + Self.words("U", 20, 30) + Self.words("V", 35, 45)
 
         let result = Self.attribute(words, lanes)
         #expect(Self.labels(result, cluster: "U") == [Self.you])
+        #expect(Self.labels(result, cluster: "V") == [Self.you])
         #expect(Self.labels(result, cluster: "R") == [Self.them])
     }
 
