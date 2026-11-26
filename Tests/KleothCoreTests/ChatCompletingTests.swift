@@ -33,7 +33,7 @@ import Foundation
 
     @Test func summarizerAcceptsAnyChatCompleting() async throws {
         let mock = MockChatClient(results: [.success(ChatCompletion(
-            content: #"{"tldr":"t","overview":"o","action_items":[],"per_speaker_highlights":[]}"#,
+            content: #"{"tldr":"A quick hello.","overview":"","action_items":[],"per_speaker_highlights":[]}"#,
             usage: nil, finishReason: "stop"))])
         let summarizer = Summarizer(client: mock, model: "any")
         let transcript = Transcript(
@@ -41,7 +41,7 @@ import Foundation
             languageCode: "en", durationSecs: 1)
         let (summary, cost) = try await summarizer.summarize(
             transcript: transcript, metadata: MeetingMetadata(title: "T", date: "2026-09-16"))
-        #expect(summary.tldr == "t")
+        #expect(summary.tldr == "A quick hello.")
         #expect(cost == 0)
         #expect(mock.calls.count == 1)
         #expect(mock.calls[0].model == "any")

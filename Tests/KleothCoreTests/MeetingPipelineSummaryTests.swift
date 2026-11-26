@@ -10,9 +10,20 @@ import Foundation
 @Suite struct MeetingPipelineSummaryTests {
     // MARK: - Fixtures
 
-    /// An answer with every key the prompt asks for.
+    /// An answer with every key the prompt asks for, each with content.
     static let completeAnswer =
-        #"{"title":"T","tldr":"t","overview":"o","action_items":[],"per_speaker_highlights":[]}"#
+        #"{"title":"Audio check before the demo","tldr":"A short hello before the demo.","overview":"","action_items":[],"per_speaker_highlights":[]}"#
+
+    /// The same answer with a placeholder title (2026-11-26).
+    static let placeholderTitleAnswer =
+        #"{"title":"x","tldr":"A short hello before the demo.","overview":"","action_items":[],"per_speaker_highlights":[]}"#
+
+    /// `x` for every text part (a real case, 2026-11-26).
+    static let placeholderAnswer =
+        #"{"title":"x","tldr":"x","overview":"x","action_items":[],"per_speaker_highlights":[]}"#
+
+    /// The placeholder title `stop()` gives a meeting.
+    static let placeholderTitle = "Recording · Zoom · Nov 26, 10:00"
 
     /// What one pipeline run left behind.
     struct Outcome {
@@ -36,7 +47,7 @@ import Foundation
     /// Runs the pipeline on a canned transcript into a store under `baseDir`,
     /// with the metadata stamped the way callers stamp it before a run:
     /// model "m", provider "openrouter".
-    static func run(summarizer: Summarizer?, summarize: Bool = true, in baseDir: URL) async throws -> Outcome {
+    static func run(summarizer: Summarizer?, summarize: Bool = true, title: String = "Launch", in baseDir: URL) async throws -> Outcome {
         let transcriber = CannedTranscriber(response: ScribeResponse(
             words: [ScribeWord(text: "Hello", start: 0, end: 0.5, type: "word", speakerId: "speaker_0")],
             audioDurationSecs: 60
@@ -52,7 +63,7 @@ import Foundation
 
         let result = try await pipeline.run(
             audioFile: audioFile,
-            metadata: MeetingMetadata(title: "Launch", date: "2026-09-24", model: "m", summaryProvider: "openrouter"),
+            metadata: MeetingMetadata(title: title, date: "2026-09-24", model: "m", summaryProvider: "openrouter"),
             options: ScribeOptions(),
             summarize: summarize
         )
@@ -115,6 +126,72 @@ import Foundation
         #expect(run.hasFile("summary.json"))
         #expect(run.meta.model == "m")
         #expect(run.meta.summaryProvider == "openrouter")
+    }
+
+    // MARK: - The model's title (2026-11-26)
+
+    static func answering(_ answers: String...) -> Summarizer {
+        Summarizer(client: MockChatClient(results: answers.map {
+            .success(ChatCompletion(content: $0, finishReason: "stop"))
+        }))
+    }
+
+    /// The `x` case: placeholders twice, so no summary — and the meeting keeps
+    /// its own title.
+    @Test func placeholderSummaryIsNotSavedAndKeepsTheTitle() async throws {
+        let baseDir = Self.scratchDir()
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let run = try await Self.run(
+            summarizer: Self.answering(Self.placeholderAnswer, Self.placeholderAnswer),
+            title: Self.placeholderTitle, in: baseDir
+        )
+
+        #expect(run.summary == nil)
+        #expect(run.summaryError?.contains("placeholder") == true)
+        #expect(!run.hasFile("summary.json"))
+        #expect(run.meta.title == Self.placeholderTitle)
+    }
+
+    /// A real summary with a placeholder title: saved, but the title is no
+    /// title — the meeting keeps its own, and summary.json has none.
+    @Test func placeholderModelTitleIsNotAdopted() async throws {
+        let baseDir = Self.scratchDir()
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let run = try await Self.run(
+            summarizer: Self.answering(Self.placeholderTitleAnswer), title: Self.placeholderTitle, in: baseDir
+        )
+
+        #expect(run.summary != nil)
+        #expect(run.summary?.title == nil)
+        #expect(run.hasFile("summary.json"))
+        #expect(run.meta.title == Self.placeholderTitle)
+    }
+
+    /// Lock: a real model title still replaces a placeholder one…
+    @Test func realModelTitleReplacesAPlaceholder() async throws {
+        let baseDir = Self.scratchDir()
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let run = try await Self.run(
+            summarizer: Self.answering(Self.completeAnswer), title: Self.placeholderTitle, in: baseDir
+        )
+
+        #expect(run.meta.title == "Audio check before the demo")
+    }
+
+    /// …and never a calendar event's name or a title the user typed.
+    @Test func realMeetingTitleIsKept() async throws {
+        let baseDir = Self.scratchDir()
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let run = try await Self.run(
+            summarizer: Self.answering(Self.completeAnswer), title: "Weekly sync with Acme", in: baseDir
+        )
+
+        #expect(run.summary != nil)
+        #expect(run.meta.title == "Weekly sync with Acme")
     }
 }
 

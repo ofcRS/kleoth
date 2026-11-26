@@ -289,9 +289,7 @@ struct Summarize: AsyncParsableCommand {
         // A model-generated title only upgrades a placeholder name (calendar /
         // user titles are kept), so the re-rendered summary.md H1 + meta.json
         // gain a meaningful title for previously auto-named meetings.
-        if let generated = summary.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !generated.isEmpty,
-           MeetingMetadata.isPlaceholderTitle(metadata.title) {
+        if let generated = MeetingNaming.titleToAdopt(generated: summary.title, replacing: metadata.title) {
             metadata.title = generated
         }
 

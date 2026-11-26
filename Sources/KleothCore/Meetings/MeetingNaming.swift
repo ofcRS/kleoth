@@ -17,6 +17,21 @@ public enum MeetingNaming {
         return "Recording · \(stamp)"
     }
 
+    /// The summary's title to give a meeting now titled `current`, or nil to
+    /// keep `current` — the one rule the pipeline, `kleoth summarize` and the
+    /// app's Summarize share. Only a placeholder (`MeetingMetadata.isPlaceholderTitle`)
+    /// is ever replaced, so a calendar event's name or a title the user typed
+    /// stays; and only by a real title: trimmed, not placeholder text
+    /// (`SummaryContent.isPlaceholder`: `x`, `...`, `string`, `<title>`), not
+    /// a placeholder title of our own.
+    public static func titleToAdopt(generated: String?, replacing current: String) -> String? {
+        guard MeetingMetadata.isPlaceholderTitle(current),
+              let generated = generated?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !SummaryContent.isPlaceholder(generated),
+              !MeetingMetadata.isPlaceholderTitle(generated) else { return nil }
+        return generated
+    }
+
     /// The default speaker map of a two-channel meeting (§3.2.6, Q6): the mic
     /// (`speaker_0`) is the user — their name, else "You" — and the system
     /// channel (`speaker_1`) is everyone else: "Them", or the one other

@@ -24,6 +24,11 @@ public enum SummarizerError: Error, Sendable {
     /// prompt asks for. Keys as the prompt spells them: `tldr`, `overview`,
     /// `action_items`, `per_speaker_highlights`.
     case incomplete(missing: [String])
+    /// The retry's answer was complete but held placeholder text where content
+    /// belongs (`...`, `x`, `string`, `TBD`; or too little for the
+    /// transcript's length — `SummaryContent`). Keys as the prompt spells them;
+    /// `title` only beside another part.
+    case placeholder(parts: [String])
 }
 
 extension SummarizerError: LocalizedError {
@@ -41,6 +46,9 @@ extension SummarizerError: LocalizedError {
         case let .incomplete(missing):
             let parts = missing.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")
             return "The summary came back incomplete (no \(parts)). Try again, or use another model."
+        case let .placeholder(parts):
+            let names = parts.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")
+            return "The summary came back with placeholder text instead of content (\(names)). Try again, or use another model."
         }
     }
 }
@@ -99,6 +107,7 @@ public struct Summarizer: Sendable {
     "overview": a detailed, faithful overview of the whole meeting — what was discussed and in what order, the context and reasoning behind each topic, concrete specifics (names, numbers, dates, agreements and who made them), and how things were left. Write it as flowing prose in several paragraphs separated by blank lines — no bullet lists, no headings. Make it complete enough that someone who missed the meeting needs nothing else.
     "per_speaker_highlights": for each speaker, their most important statements, positions, and commitments.
     Only include an action item if a concrete task was stated or clearly implied; if the owner is unstated use "unassigned", and if the due date is unstated use null.
+    Never write a placeholder such as "x", "...", "N/A" or "string" for any value. If the transcript is too short for an overview, make the overview an empty string; if there is nothing to summarize, say so in the tldr.
     """
 
     /// Strict JSON schema for ``MeetingSummary`` (snake_case keys), sent as the
@@ -146,13 +155,28 @@ public struct Summarizer: Sendable {
 
     /// Appended to the user message of the retry after a cut-off answer: the
     /// same request, which now fits only if the model writes less.
-    static let compactRetryInstruction = "Your previous answer was cut off before the JSON was complete. Answer again, more compactly — a shorter overview and fewer highlights — in the same language and the same JSON shape."
+    /// Shorter, never empty: its first wording ("a shorter overview and fewer
+    /// highlights") set no floor, and an overview of `...` is as short as it gets.
+    static let compactRetryInstruction = "Your previous answer was cut off before the JSON was complete. Answer again, more compactly — a shorter overview and fewer highlights, but still real content from the transcript, never a placeholder such as \"...\" — in the same language and the same JSON shape."
+
+    /// Appended to the user message of the retry after an answer with
+    /// placeholder text: the same request, naming the parts. "May be empty" is
+    /// offered for the overview only where a blank one would pass (a short
+    /// meeting), so the retry never asks for what `assess` then rejects.
+    static func placeholderRetryInstruction(parts: [String], overviewMayBeBlank: Bool) -> String {
+        var text = "Your previous answer had placeholder text instead of content in: \(parts.joined(separator: ", ")). Answer again and write those parts out from the transcript, as fully as a meeting this long needs — never a placeholder such as \"x\", \"...\", \"N/A\", \"TBD\" or the word \"string\" — in the same language and the same JSON shape."
+        if overviewMayBeBlank && parts.contains("overview") {
+            text += " If the meeting is too short for an overview, make it an empty string."
+        }
+        return text
+    }
 
     /// Summarizes the transcript and returns the summary plus the USD cost
     /// of the completions.
     ///
-    /// An answer becomes a summary only when ``assess(_:)`` finds it complete:
-    /// not cut off, decodable, and carrying every part the prompt asks for. A
+    /// An answer becomes a summary only when ``assess(_:transcriptLetters:)`` finds
+    /// it complete: not cut off, decodable, carrying every part the prompt asks
+    /// for, and content rather than placeholder text in each of them. A
     /// first answer short of that gets one retry, shaped by what was wrong with
     /// it; after the retry anything short of a complete answer throws
     /// (``SummarizerError``), so a partial summary is never passed off as finished.
@@ -167,6 +191,9 @@ public struct Summarizer: Sendable {
         if approxTokens > Self.tokenLimit {
             throw SummarizerError.transcriptTooLong(approxTokens: approxTokens)
         }
+
+        // What a summary of this transcript must hold scales with its speech.
+        let transcriptLetters = SummaryContent.letters(in: transcript)
 
         let baseMessages = [
             ChatMessage(role: "system", content: Self.systemPrompt),
@@ -195,7 +222,7 @@ public struct Summarizer: Sendable {
         var retryMaxTokens = maxOutputTokens
         var retryReasoning: OpenRouterReasoning?
         var wasCutOff = false
-        switch Self.assess(first) {
+        switch Self.assess(first, transcriptLetters: transcriptLetters) {
         case let .complete(summary):
             return (summary, first.usage?.cost ?? 0)
 
@@ -232,6 +259,17 @@ public struct Summarizer: Sendable {
                 ),
             ]
 
+        case let .placeholder(parts):
+            // Placeholder text where content belongs: ask again fresh, naming
+            // the parts. Replaying the answer would anchor the model on its
+            // "..." — and the parts are rewritten whole either way.
+            retryMessages = [
+                baseMessages[0],
+                ChatMessage(role: "user", content: userContent + "\n\n" + Self.placeholderRetryInstruction(
+                    parts: parts, overviewMayBeBlank: transcriptLetters < SummaryContent.blankOverviewLimit
+                )),
+            ]
+
         case .malformed:
             // Not JSON (or a shape that won't decode): feed it back so the model
             // can fix the shape.
@@ -266,13 +304,15 @@ public struct Summarizer: Sendable {
         // Anything short of a complete answer now throws rather than pass for a
         // summary: the pipeline records it as `summaryError` and keeps the
         // transcript.
-        switch Self.assess(retry) {
+        switch Self.assess(retry, transcriptLetters: transcriptLetters) {
         case let .complete(summary):
             return (summary, costUSD)
         case .cutOff:
             throw SummarizerError.truncated
         case let .incomplete(missing):
             throw SummarizerError.incomplete(missing: missing)
+        case let .placeholder(parts):
+            throw SummarizerError.placeholder(parts: parts)
         case .empty:
             throw SummarizerError.invalidJSON(snippet: "")
         case .malformed:
@@ -299,6 +339,9 @@ public struct Summarizer: Sendable {
         case empty
         /// A complete JSON object without some of the parts the prompt asks for.
         case incomplete(missing: [String])
+        /// A complete, decodable answer with placeholder text in some parts
+        /// (`SummaryContent.placeholderParts`).
+        case placeholder(parts: [String])
         /// Not a JSON object (prose, an array), or one with every part whose
         /// values won't decode (a wrong type).
         case malformed
@@ -309,7 +352,11 @@ public struct Summarizer: Sendable {
     /// local servers report `stop` regardless — a JSON object that stops before
     /// it closes. Any other JSON object is judged by its parts before it is
     /// decoded, so a missing `tldr` is asked for by name like any other part.
-    static func assess(_ completion: ChatCompletion) -> Assessment {
+    /// A decoded answer is then judged by its content against the transcript's
+    /// length (`transcriptLetters`; 0 asks only that nothing be a placeholder):
+    /// placeholder text is `.placeholder`, and a placeholder title alone —
+    /// the title is optional — is dropped from the summary instead.
+    static func assess(_ completion: ChatCompletion, transcriptLetters: Int = 0) -> Assessment {
         let text = stripCodeFences(completion.content)
         if isTruncated(completion.finishReason) { return .cutOff(hadText: !text.isEmpty) }
         if text.isEmpty { return .empty }
@@ -319,7 +366,10 @@ public struct Summarizer: Sendable {
         }
         let missing = missingParts(in: object)
         guard missing.isEmpty else { return .incomplete(missing: missing) }
-        guard let summary = decodeSummary(from: text) else { return .malformed }
+        guard var summary = decodeSummary(from: text) else { return .malformed }
+        let placeholders = SummaryContent.placeholderParts(in: summary, transcriptLetters: transcriptLetters)
+        guard placeholders.isEmpty else { return .placeholder(parts: placeholders) }
+        if let title = summary.title, SummaryContent.isPlaceholder(title) { summary.title = nil }
         return .complete(summary)
     }
 
@@ -354,7 +404,8 @@ public struct Summarizer: Sendable {
     /// prompt has them. `tldr` must be a non-blank string; each other part is
     /// present when it exists with a non-null value under a spelling the decoder
     /// reads (snake_case or camelCase). Lists may be empty and `overview` may be
-    /// blank (a ten-second recording).
+    /// blank here; whether a blank overview passes for this transcript is
+    /// `SummaryContent`'s call (a short recording only).
     private static func missingParts(in object: [String: Any]) -> [String] {
         func present(_ keys: String...) -> Bool {
             keys.contains { key in object[key].map { !($0 is NSNull) } ?? false }
