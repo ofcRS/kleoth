@@ -550,9 +550,9 @@ public final class RecordingController: ObservableObject {
             let (summary, summaryUSD) = try await summarizer.summarize(transcript: transcript, metadata: meta)
 
             // Adopt the model-generated title for auto-named meetings only (keep
-            // calendar/user titles), mirroring MeetingPipeline.run and the CLI.
-            if let generated = summary.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !generated.isEmpty, MeetingMetadata.isPlaceholderTitle(meta.title) {
+            // calendar/user titles), and only a real one — the rule MeetingPipeline.run
+            // and the CLI share.
+            if let generated = MeetingNaming.titleToAdopt(generated: summary.title, replacing: meta.title) {
                 meta.title = generated
             }
 

@@ -90,11 +90,10 @@ public struct MeetingPipeline {
         }
 
         // Adopt the model's title only when the current one is an auto-generated
-        // placeholder — a calendar- or user-supplied title is always kept. Done
-        // before rendering, since the renderer uses `finalMetadata.title`.
-        if let title = summary?.title,
-           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           MeetingMetadata.isPlaceholderTitle(finalMetadata.title) {
+        // placeholder — a calendar- or user-supplied title is always kept — and
+        // only a real one, never placeholder text (`MeetingNaming.titleToAdopt`).
+        // Done before rendering, since the renderer uses `finalMetadata.title`.
+        if let title = MeetingNaming.titleToAdopt(generated: summary?.title, replacing: finalMetadata.title) {
             finalMetadata.title = title
         }
 

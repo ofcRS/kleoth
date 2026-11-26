@@ -6,6 +6,10 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A summary of placeholder text was saved as finished**: an overview of just "...", or "x" for the title, summary and overview — and the "x" then became the meeting's name. Kleoth now asks the model once more and, if the summary or overview is still placeholder text, keeps the transcript and shows the summary as failed; a short but real summary is always kept, empty list entries are left out, and a meeting keeps its own name unless the model offers a real one (an earlier "x" gets replaced).
+
 ## [0.5.9] — 2026-11-19
 
 ### Fixed
