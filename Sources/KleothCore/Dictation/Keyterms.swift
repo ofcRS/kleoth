@@ -20,9 +20,17 @@ public enum Keyterms {
     /// containing any of them is dropped rather than rewritten.
     static let forbiddenCharacters = CharacterSet(charactersIn: "<>{}[]\\")
 
+    /// Line breaks and control/format characters (Unicode Cc and Cf: tab, NUL,
+    /// zero-width and bidi-override characters). A hand-edited `dictionary.json`
+    /// can carry them; inside a term they would break the one-line prompt
+    /// layouts (polish, summary) and never match speech, so such a term is
+    /// dropped. Leading and trailing ones are trimmed first, like spaces.
+    static let lineBreaksAndControlCharacters = CharacterSet.newlines.union(.controlCharacters)
+
     /// Trims each term; drops empties, terms longer than ``maxCharacters``,
-    /// terms of more than ``maxWords`` words, and any term containing one of
-    /// `< > { } [ ] \`; de-dupes case-insensitively keeping the first-seen
+    /// terms of more than ``maxWords`` words, any term containing one of
+    /// `< > { } [ ] \`, and any term containing a line break or a control or
+    /// format character; de-dupes case-insensitively keeping the first-seen
     /// casing; and caps the result at ``maxTerms`` terms.
     public static func sanitize(_ raw: [String]) -> [String] {
         var result: [String] = []
@@ -33,6 +41,7 @@ public enum Keyterms {
             guard !trimmed.isEmpty else { continue }
             guard trimmed.count <= maxCharacters else { continue }
             guard trimmed.rangeOfCharacter(from: forbiddenCharacters) == nil else { continue }
+            guard trimmed.rangeOfCharacter(from: lineBreaksAndControlCharacters) == nil else { continue }
 
             let words = trimmed.split(whereSeparator: { $0.isWhitespace })
             guard words.count <= maxWords else { continue }

@@ -18,12 +18,10 @@ import Foundation
     private struct Sent {
         let request: URLRequest
         let body: String
-        let boundary: String
     }
 
     /// Runs one `transcribe` against a canned transport and returns what was sent.
     private func send(options: ScribeOptions) async throws -> Sent {
-        // One fixed file name, so two bodies can be compared byte for byte.
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("kleoth-meeting-vocab-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -37,9 +35,7 @@ import Foundation
 
         let request = try #require(transport.recordedRequests.first)
         let body = try #require(transport.uploadBodyText())
-        let contentType = try #require(request.value(forHTTPHeaderField: "Content-Type"))
-        let boundary = String(contentType.dropFirst("multipart/form-data; boundary=".count))
-        return Sent(request: request, body: body, boundary: boundary)
+        return Sent(request: request, body: body)
     }
 
     private func partValues(named name: String, in body: String) -> [String] {
@@ -67,21 +63,6 @@ import Foundation
         #expect(partValues(named: "diarize", in: sent.body) == ["true"])
         #expect(partValues(named: "tag_audio_events", in: sent.body) == ["true"])
         #expect(!sent.body.contains("name=\"no_verbatim\""), "Meetings stay verbatim.")
-    }
-
-    @Test func emptyVocabularyLeavesTheMeetingRequestUnchanged() async throws {
-        let before = try await send(options: ScribeOptions())
-        let after = try await send(options: .meeting(keyterms: []))
-
-        #expect(!after.body.contains("name=\"keyterms\""))
-        // The same parts byte for byte, once the random boundary is factored out.
-        // Compared as a sorted list: the keyed fields come from a dictionary,
-        // so their order differs from one request to the next even today.
-        func parts(_ sent: Sent) -> [String] {
-            sent.body.components(separatedBy: "--\(sent.boundary)").sorted()
-        }
-        #expect(parts(after) == parts(before))
-        #expect(after.body.count == before.body.count)
     }
 
     @Test func overLimitDictionarySendsTheFirstHundredValidTermsInOrder() async throws {
@@ -205,21 +186,38 @@ import Foundation
         #expect(!empty[1].content.contains("Preferred spellings"))
     }
 
+    /// The user message with spellings for the fixture, byte for byte: today's
+    /// message plus one header line, the list and its guard.
+    static let userContentWithSpellings = """
+    Meeting: Launch
+    Date: 2026-05-30
+    Participants: Alice, Bob
+    Transcript language: English. Write the entire summary in English.
+    Preferred spellings: ["Acmeflow","Zorblat","Зорблатов"]. Speech recognition may have misheard these names and terms. Where the transcript means one of them, write it with exactly this spelling; never add a listed term the transcript does not mention, and keep speaker names exactly as given.
+
+    Transcript:
+    Alice: Acme flow ships Monday.
+    Bob: Zor blat too.
+    """
+
     @Test func summaryPromptCarriesSpellingsWhenTheListIsNonEmpty() async throws {
         let plain = try await firstRequest(spellings: [])
         let withSpellings = try await firstRequest(spellings: ["Acmeflow", "Zorblat", "Зорблатов"])
 
         // The system prompt — the cached prefix — is untouched.
         #expect(withSpellings[0].content == plain[0].content)
+        #expect(withSpellings[1].content == Self.userContentWithSpellings)
+    }
 
-        let user = withSpellings[1].content
-        let line = try #require(user.split(separator: "\n").first { $0.hasPrefix("Preferred spellings:") })
-        #expect(line.contains("Acmeflow, Zorblat, Зорблатов"))
-        // In the header, before the transcript it corrects.
-        let lineRange = try #require(user.range(of: String(line)))
-        let transcriptRange = try #require(user.range(of: "\n\nTranscript:\n"))
-        #expect(lineRange.upperBound <= transcriptRange.lowerBound)
-        // Only that line is added.
-        #expect(user.replacingOccurrences(of: "\n" + line, with: "") == plain[1].content)
+    /// The list is a JSON array, not a comma-joined run: a term with a comma
+    /// (or a quote) stays one term, and nothing is dropped from it.
+    @Test func spellingsWithCommasOrQuotesStayWhole() async throws {
+        let terms = ["Acme, Inc.", "Zorblat \"Z\"", "CI/CD", "Зорблатов"]
+        let messages = try await firstRequest(spellings: terms)
+        let line = try #require(messages[1].content.split(separator: "\n").first { $0.hasPrefix("Preferred spellings: ") })
+        let list = try #require(line.dropFirst("Preferred spellings: ".count).split(separator: "]").first) + "]"
+        #expect(list.contains("\"CI/CD\""), "Slashes stay unescaped.")
+        let decoded = try JSONDecoder().decode([String].self, from: Data(list.utf8))
+        #expect(decoded == terms)
     }
 }

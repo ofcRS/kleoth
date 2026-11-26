@@ -8,7 +8,7 @@ All notable changes to Kleoth are documented here. The format is based on
 
 ### Changed
 
-- **Meetings use the personal dictionary too:** a cloud transcription sends it to ElevenLabs as keyterms (as dictation does, at the same surcharge) and the summary gets it as preferred spellings.
+- **Meetings use the personal dictionary too:** a cloud transcription sends it to ElevenLabs as keyterms (as dictation does, at the same surcharge) and the summary gets it as preferred spellings; the CLI's `--no-dictionary` sends neither.
 
 ### Fixed
 

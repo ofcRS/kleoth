@@ -29,10 +29,20 @@ stops), stop and say so: transcribe it first, in the app or with the
    `transcripts[]` and `speaker_id`. Read `<dir>/meta.json` for the title, date and participants,
    and `<dir>/speakers.json` (if present) for the display names.
 
+   Then read the **personal dictionary**, `~/.config/kleoth/dictionary.json` (a JSON array of
+   strings; missing or unreadable = none), the list the app sends as preferred spellings. Use the
+   first 100 valid terms, as Kleoth's `Keyterms.sanitize` picks them: trim each; skip a term that is
+   empty, longer than 50 characters or 5 words, or contains `< > { } [ ] \`, a line break or a
+   control character; skip a case-insensitive repeat (the first spelling wins).
+
 2. **Summarize**, following the same rules as Kleoth's `Summarizer`:
    - Write every value (title, tldr, overview, each task, each highlight) in the **same language
      as the transcript**. Don't translate it into English or anything else.
    - Keep speaker and owner names exactly as they appear in the transcript.
+   - **Preferred spellings** (the dictionary terms): speech recognition may have misheard these
+     names and terms. Where the transcript means one of them, write it with exactly that spelling;
+     never add a listed term the transcript does not mention, and keep speaker names exactly as
+     given.
    - Be precise and factual. **Do not invent information.** If something is ambiguous, say so.
    - Include an action item only if a concrete task was stated or clearly implied. If the owner is
      unstated use `"unassigned"`; if the due date is unstated use `null`.

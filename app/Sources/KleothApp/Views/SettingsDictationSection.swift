@@ -226,7 +226,7 @@ struct SettingsDictationSection: View {
         // The cap is enforced by the sanitizer (`Keyterms.sanitize`), never by
         // this string — so the number is read from the same constant. No
         // figures here: Settings → Usage is the app's only money surface.
-        return "\(terms) · biases recognition toward your names and jargon, in dictations and meetings. One per line. The first \(Keyterms.maxTerms) are sent with each dictation and each cloud transcription of a meeting, which makes them cost slightly more, and meeting summaries spell them your way."
+        return "\(terms) · biases recognition toward your names and jargon. One per line. The first \(Keyterms.maxTerms) go to ElevenLabs with each dictation and each Cloud transcription of a meeting, which costs slightly more, and to your AI provider so meeting summaries spell them your way."
     }
 
     /// Cancel-and-restart debounce: the file is written 0.5 s after the last

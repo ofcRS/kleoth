@@ -40,8 +40,8 @@ for hands-free, or tap ⌘ (or click the pill) when a hold runs long. It fits th
 speak a correction over a selection and the two come back as one piece in its place (one ⌘Z undoes
 it); at the cursor, your words continue the sentence. In an editor, an AI chat or a terminal, a long spoken ramble comes back as the text you
 would have typed — paragraphs, a list where you listed things; a quick chat message is pasted as
-heard. A personal dictionary biases recognition toward your names and jargon, and every dictation
-lands in a searchable history.
+heard. A personal dictionary biases recognition toward your names and jargon (a meeting's Cloud
+transcript and its summary use it too), and every dictation lands in a searchable history.
 
 Speech-to-text runs on [ElevenLabs Scribe](https://elevenlabs.io) with your own key; the clean-up
 runs on your AI provider. [More about dictation →](docs/dictation.md)

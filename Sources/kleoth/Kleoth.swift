@@ -81,14 +81,12 @@ private func metadataForAudio(_ fileURL: URL, model: String?, languageCode: Stri
     )
 }
 
-/// The personal dictionary (`~/.config/kleoth/dictionary.json`) as a meeting's
-/// Scribe keyterms, the list dictation sends. Says how many on stderr — never
-/// which — since a request with keyterms costs more.
-private func dictionaryKeyterms(_ terms: [String] = PersonalDictionaryStore().sentTerms()) -> [String] {
+/// Says on stderr how many personal-dictionary terms a Scribe request carries
+/// — never which — since a request with keyterms costs more.
+private func announceKeyterms(_ terms: [String]) {
     if !terms.isEmpty {
-        printError("Sending \(terms.count) personal-dictionary term\(terms.count == 1 ? "" : "s") as Scribe keyterms.")
+        printError("Sending \(terms.count) personal-dictionary term\(terms.count == 1 ? "" : "s") as Scribe keyterms (--no-dictionary sends none).")
     }
-    return terms
 }
 
 /// Returns true if `url` points at an existing directory.
@@ -135,6 +133,9 @@ struct Transcribe: AsyncParsableCommand {
     @Flag(name: .long, help: "Treat the input as multi-channel (one speaker per channel).")
     var multiChannel: Bool = false
 
+    @Flag(name: .long, help: "Send no personal-dictionary terms to ElevenLabs as keyterms (a request with keyterms costs slightly more).")
+    var noDictionary: Bool = false
+
     func run() async throws {
         let credentials = Credentials.resolve(projectDir: currentDirectoryURL())
         guard let elevenLabsKey = credentials.elevenLabsKey, !elevenLabsKey.isEmpty else {
@@ -152,11 +153,8 @@ struct Transcribe: AsyncParsableCommand {
         let pipeline = MeetingPipeline(transcriber: scribe, summarizer: nil, store: store)
 
         let metadata = metadataForAudio(fileURL, model: nil, languageCode: language)
-        // The personal dictionary rides along as keyterms, as in the app.
-        var options = ScribeOptions.meeting(keyterms: dictionaryKeyterms())
-        options.numSpeakers = numSpeakers
-        options.languageCode = language
-        options.useMultiChannel = multiChannel
+        let options = scribeOptions()
+        announceKeyterms(options.keyterms)
 
         let result = try await pipeline.run(
             audioFile: fileURL,
@@ -169,6 +167,17 @@ struct Transcribe: AsyncParsableCommand {
         print("")
         print(formatCost(result.cost))
         print("Meeting saved to: \(result.meetingDir.path)")
+    }
+
+    /// The request this command sends: the meeting defaults, its own flags, and
+    /// the personal dictionary as keyterms, as in the app (none with
+    /// `--no-dictionary`).
+    func scribeOptions(dictionary: PersonalDictionaryStore = PersonalDictionaryStore()) -> ScribeOptions {
+        var options = ScribeOptions.meeting(keyterms: noDictionary ? [] : dictionary.sentTerms())
+        options.numSpeakers = numSpeakers
+        options.languageCode = language
+        options.useMultiChannel = multiChannel
+        return options
     }
 }
 
@@ -196,6 +205,9 @@ struct Summarize: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Exclude the full transcript from summary.md.")
     var noTranscript: Bool = false
+
+    @Flag(name: .long, help: "Send no personal-dictionary terms: no keyterms to ElevenLabs (they cost slightly more), no preferred spellings to the AI provider.")
+    var noDictionary: Bool = false
 
     func run() async throws {
         // Checked before any provider is detected or called. The ceiling keeps
@@ -228,7 +240,7 @@ struct Summarize: AsyncParsableCommand {
         var summarizer = try factory.summarizer(for: .init(provider: selection.provider, model: resolvedModel, fellThroughFrom: nil))
         if let maxOutputTokens { summarizer.maxOutputTokens = maxOutputTokens }
         // The personal dictionary, so a misheard name is written right in the summary.
-        let terms = PersonalDictionaryStore().sentTerms()
+        let terms = vocabulary()
         summarizer.preferredSpellings = terms
         printError("Using \(selection.provider.displayName) · \(resolvedModel.isEmpty ? "default model" : resolvedModel)")
 
@@ -259,7 +271,8 @@ struct Summarize: AsyncParsableCommand {
 
         var metadata = metadataForAudio(inputURL, model: resolvedModel, languageCode: nil)
         metadata.summaryProvider = selection.provider.rawValue
-        let options = ScribeOptions.meeting(keyterms: dictionaryKeyterms(terms))
+        let options = ScribeOptions.meeting(keyterms: terms)
+        announceKeyterms(terms)
 
         let result = try await pipeline.run(
             audioFile: inputURL,
@@ -278,6 +291,41 @@ struct Summarize: AsyncParsableCommand {
             print("Meeting saved to: \(result.meetingDir.path) (no summary produced)")
         }
         print(formatCost(result.cost))
+    }
+
+    /// The personal dictionary this command sends: fresh audio's Scribe
+    /// keyterms and the summary's preferred spellings (none with `--no-dictionary`).
+    func vocabulary(dictionary: PersonalDictionaryStore = PersonalDictionaryStore()) -> [String] {
+        noDictionary ? [] : dictionary.sentTerms()
+    }
+
+    /// The cost a re-summarized meeting records: the new summary's cost, and
+    /// the transcription's as it was stored when the transcription ran — with
+    /// any keyterm surcharge — as the app's Summarize button keeps it.
+    static func resummarizedCost(
+        stored: CostBreakdown?,
+        transcriptTier: String?,
+        probedDurationSecs: Double?,
+        summaryUSD: Double
+    ) -> CostBreakdown {
+        if let stored {
+            return CostBreakdown(
+                transcriptionUSD: stored.transcriptionUSD,
+                summaryUSD: summaryUSD,
+                audioDurationSecs: stored.audioDurationSecs ?? probedDurationSecs
+            )
+        }
+        // No cost on record (a `meta.json` written before costs were): price
+        // the tier. Free local meetings cost $0; only SOTA (Scribe) is billed.
+        // Duration comes from the actual audio file when present (Scribe's
+        // multichannel response over-reports it), falling back to the
+        // transcript's reported duration.
+        let usdPerHour = TranscriptTier.usdPerHour(transcriptTier)
+        return CostBreakdown(
+            transcriptionUSD: usdPerHour * (probedDurationSecs ?? 0) / 3600,
+            summaryUSD: summaryUSD,
+            audioDurationSecs: probedDurationSecs
+        )
     }
 
     /// Loads a saved meeting's transcript, summarizes it, re-renders Markdown,
@@ -306,19 +354,12 @@ struct Summarize: AsyncParsableCommand {
             metadata.title = generated
         }
 
-        // Per-engine cost: free local meetings cost $0; only SOTA (Scribe) is
-        // billed. Duration comes from the actual audio file when present
-        // (Scribe's multichannel response over-reports it), falling back to the
-        // transcript's reported duration.
-        let usdPerHour = TranscriptTier.usdPerHour(metadata.transcriptTier)
-        let durationSecs = audioDurationSeconds(in: dir) ?? transcript.durationSecs
-        let transcriptionUSD = usdPerHour * (durationSecs ?? 0) / 3600
-        let cost = CostBreakdown(
-            transcriptionUSD: transcriptionUSD,
-            summaryUSD: summaryUSD,
-            audioDurationSecs: durationSecs
+        metadata.cost = Self.resummarizedCost(
+            stored: metadata.cost,
+            transcriptTier: metadata.transcriptTier,
+            probedDurationSecs: audioDurationSeconds(in: dir) ?? transcript.durationSecs,
+            summaryUSD: summaryUSD
         )
-        metadata.cost = cost
 
         let markdown = MarkdownRenderer.render(
             summary: summary,
@@ -345,7 +386,7 @@ struct Summarize: AsyncParsableCommand {
 
         let summaryPath = savedDir.appendingPathComponent("summary.md").path
         print("Summary written to: \(summaryPath)")
-        print(formatCost(cost))
+        print(formatCost(metadata.cost ?? CostBreakdown()))
     }
 
     private func store(forBase dir: URL) -> MeetingStore {

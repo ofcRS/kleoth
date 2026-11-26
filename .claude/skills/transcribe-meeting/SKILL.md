@@ -23,6 +23,7 @@ The CLI reads `ELEVEN_API_KEY` (or `ELEVENLABS_API_KEY`) from the environment, a
 
 - **Never read, print, or echo `.env` or any API key.** If the CLI reports a missing/invalid key, tell the user how to set one (env / `.env` / `~/.config/kleoth/config.json`) and the `speech_to_text` requirement — don't try to fish the key out yourself.
 - This is a billed call against the user's account. Cost scales with audio length (~$0.22/hour of audio). For a long recording, it's polite to confirm before running.
+- **The personal dictionary goes along.** The CLI sends the first 100 valid terms of `~/.config/kleoth/dictionary.json` (the list the app's dictation and meetings use) to ElevenLabs as **keyterms**, so names and jargon are recognized; a request that carries keyterms **costs slightly more** (ElevenLabs bills a keyterm surcharge). It says so on stderr ("Sending N personal-dictionary terms as Scribe keyterms"). Pass `--no-dictionary` to send none.
 
 ## Input: pick the file and the mode
 
@@ -42,6 +43,7 @@ swift run kleoth transcribe /path/to/meeting.m4a --num-speakers 2
 #   --num-speakers N   hint the speaker count (omit to auto-detect)
 #   --language en      hint a language (auto-detected when omitted)
 #   --out ./out        output directory (default: ~/Kleoth)
+#   --no-dictionary    send no personal-dictionary keyterms (they cost slightly more)
 ```
 
 **A mic+system meeting folder (multi-channel):**

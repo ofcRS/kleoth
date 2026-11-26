@@ -529,9 +529,12 @@ public struct Summarizer: Sendable {
         }
         // The personal dictionary: speech recognition mishears names and
         // product words, and the summary would repeat the error. Added only
-        // when there is one, so an empty dictionary changes no byte.
+        // when there is one, so an empty dictionary changes no byte. The
+        // guard mirrors dictation's ("Never insert a listed term that was not
+        // spoken"): a spelling replaces a mishearing, never adds a term, and
+        // never renames a speaker.
         if !preferredSpellings.isEmpty {
-            header += "\nPreferred spellings: \(preferredSpellings.joined(separator: ", ")). The transcript may have misheard these names and terms; wherever it means one of them, write it exactly this way."
+            header += "\nPreferred spellings: \(spellingList(preferredSpellings)). Speech recognition may have misheard these names and terms. Where the transcript means one of them, write it with exactly this spelling; never add a listed term the transcript does not mention, and keep speaker names exactly as given."
         }
 
         return """
@@ -540,6 +543,17 @@ public struct Summarizer: Sendable {
         Transcript:
         \(transcriptText)
         """
+    }
+
+    /// The spellings as one JSON array (`["Acmeflow","Acme, Inc."]`): a term
+    /// with a comma or a quote stays one term, which a comma-joined list could
+    /// not promise. Slashes stay unescaped ("CI/CD"); non-ASCII stays as is.
+    private static func spellingList(_ terms: [String]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Encoding an array of strings cannot fail; the fallback is for form.
+        guard let data = try? encoder.encode(terms) else { return terms.joined(separator: ", ") }
+        return String(decoding: data, as: UTF8.self)
     }
 
     // MARK: - Response parsing

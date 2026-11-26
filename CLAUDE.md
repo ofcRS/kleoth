@@ -67,7 +67,8 @@ Crash reports: `~/Library/Logs/DiagnosticReports/Kleoth-*.ips`. Reset TCC: `tccu
   `MeetingSource`, `MeetingDetector` = the pure offer machine, `MeetingContext`, `MeetingNaming`,
   `CalendarEventMatcher`), `Concurrency/` (`withTimeout`, `withDeadline`), `Updates/` (`UpdatePolicy`: when
   Sparkle may relaunch, who shows a scheduled find).
-- `kleoth` CLI: `transcribe`, `summarize`, `rename`, `render`, `illustrate`. `KleothCoreTests`.
+- `kleoth` CLI: `transcribe`, `summarize`, `rename`, `render`, `illustrate`. `KleothCoreTests`; `KleothCLITests`
+  (`@testable import kleoth`: what a command sends and records).
 
 **`app/` package** (macOS 14.4; deps: `..` as `.package(name: "kleoth-app", path: "..")`,
 KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, WhisperKit 0.18, Sparkle 2.10.1 binary XCFramework)
@@ -112,6 +113,7 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Dictations: `~/Kleoth/dictations/<yyyy-MM-dd>.json`; dictionary `~/.config/kleoth/dictionary.json` = ONE list
   (`PersonalDictionaryStore.sentTerms()`, first 100 valid): dictation + cloud-meeting Scribe keyterms, polish + summary
   "Preferred spellings" (none when empty: requests unchanged). On-device Whisper gets none (no prompt tokens).
+  `--no-dictionary` (`kleoth transcribe`/`summarize`, `localtranscribe`) sends neither; the demo data always passes it.
   A PENDING row (transcription failed/stopped) has empty texts, `insert_method: "none"`,
   `audio_file_name` → `dictations/audio/<id>.m4a`, `transcription_error`; a retry fills it in place.
   Rows carry `field_context` (`cursor|merged|appended|replaced|reference|selection_changed`),
