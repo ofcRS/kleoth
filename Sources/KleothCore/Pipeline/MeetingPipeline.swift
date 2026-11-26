@@ -73,7 +73,11 @@ public struct MeetingPipeline {
         // so the file is the reliable source. Fall back to the response when the
         // file can't be probed (e.g. imported/synthesized transcripts).
         let durationSecs = AudioProbe.durationSeconds(of: audioFile) ?? transcript.durationSecs
-        let transcriptionUSD = transcriber.usdPerHour * (durationSecs ?? 0) / 3600
+        // Scribe bills a surcharge on a request that carries keyterms (the
+        // personal dictionary), as dictation counts it. An on-device engine
+        // costs nothing either way.
+        let surcharge = options.keyterms.isEmpty ? 1 : DictationDefaults.keytermSurchargeMultiplier
+        let transcriptionUSD = transcriber.usdPerHour * (durationSecs ?? 0) / 3600 * surcharge
         let cost = CostBreakdown(
             transcriptionUSD: transcriptionUSD,
             summaryUSD: summaryUSD,

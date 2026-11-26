@@ -67,6 +67,13 @@ public struct Summarizer: Sendable {
         didSet { maxOutputTokens = Self.clampedOutputTokens(maxOutputTokens) }
     }
 
+    /// The personal dictionary, named in the user message as preferred
+    /// spellings so a name the transcript misheard is still written right in
+    /// the summary. Callers pass ``PersonalDictionaryStore/sentTerms()``; the
+    /// summarizer does not re-sanitize. Empty (the default) adds nothing: the
+    /// request is byte-identical to one without it.
+    public var preferredSpellings: [String] = []
+
     public init(client: any ChatCompleting, model: String = ModelCatalog.defaultModel,
                 maxOutputTokens: Int = Summarizer.defaultMaxOutputTokens) {
         self.client = client
@@ -194,7 +201,8 @@ public struct Summarizer: Sendable {
         transcript: Transcript,
         metadata: MeetingMetadata
     ) async throws -> (summary: MeetingSummary, costUSD: Double) {
-        let userContent = Self.buildUserContent(transcript: transcript, metadata: metadata)
+        let userContent = Self.buildUserContent(
+            transcript: transcript, metadata: metadata, preferredSpellings: preferredSpellings)
 
         // Token guard: rough heuristic of ~4 characters per token.
         let approxTokens = userContent.count / 4
@@ -498,7 +506,9 @@ public struct Summarizer: Sendable {
         return nil
     }
 
-    private static func buildUserContent(transcript: Transcript, metadata: MeetingMetadata) -> String {
+    private static func buildUserContent(
+        transcript: Transcript, metadata: MeetingMetadata, preferredSpellings: [String]
+    ) -> String {
         let participants = metadata.participants.joined(separator: ", ")
         let lines = transcript.utterances.map { utterance -> String in
             let speaker = utterance.speakerName ?? utterance.speakerId
@@ -516,6 +526,12 @@ public struct Summarizer: Sendable {
         // the transcript's own detected code; fall back to the meeting metadata.
         if let name = languageName(for: transcript.languageCode ?? metadata.languageCode) {
             header += "\nTranscript language: \(name). Write the entire summary in \(name)."
+        }
+        // The personal dictionary: speech recognition mishears names and
+        // product words, and the summary would repeat the error. Added only
+        // when there is one, so an empty dictionary changes no byte.
+        if !preferredSpellings.isEmpty {
+            header += "\nPreferred spellings: \(preferredSpellings.joined(separator: ", ")). The transcript may have misheard these names and terms; wherever it means one of them, write it exactly this way."
         }
 
         return """
