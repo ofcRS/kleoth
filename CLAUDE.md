@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (839 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
+swift build && swift test                        # core + CLI (849 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -140,13 +140,16 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - **Summary completeness (2026-09-24):** `Summarizer.assess` accepts an answer only if it is not cut off
   (finish `"length"`, or JSON that stops before it closes — Codex, Claude Code and some local servers
   say `"stop"` regardless), decodes, has a non-blank `tldr` and non-null `overview`, `action_items`,
-  `per_speaker_highlights` (empty lists OK), and no placeholder text (2026-11-26, `SummaryContent`: no
-  letter/digit, under 3, one repeated, a short `<…>` slot, a whole-value echo like `string`/`TBD`/a key;
-  TL;DR ≥ transcript letters ÷ 2,000 (3–12), non-blank overview ≥ ÷ 300 (3–120), blank overview only under
-  1,500). A placeholder title alone is dropped, never retried; a model title is adopted only via
-  `MeetingNaming.titleToAdopt` (real, over a placeholder title). ONE retry shaped by the failure (cut off →
-  fresh, 2× budget, compact; placeholder → fresh, same budget, naming the parts; `reasoning: low` only after
-  an EMPTY cut-off; an empty answer is never replayed), then it throws. Nothing partial is ever saved;
+  `per_speaker_highlights` (empty lists, blank overview OK), and (2026-11-26, `SummaryContent`; a failed
+  summary is worse than a mediocre one) no true placeholder in the TL;DR or overview: no letter/digit,
+  under 3, one repeated, a `<…>`/`{…}` slot, a whole-value echo (`string`, `N/A`, `TBD`, a key). Only those
+  two can retry. Terse (TL;DR < transcript letters ÷ 2,000, 3–12; overview < ÷ 300, 3–120) only TRIGGERS
+  the retry: the retry is judged for placeholders only, and a terse first answer is saved if the retry is
+  worse. Title and list entries are cleaned, never retried (placeholder title, empty/echo entries, a
+  speaker left bare dropped; an echo owner → `unassigned`); a model title is adopted only via
+  `MeetingNaming.titleToAdopt`. ONE retry shaped by the failure (cut off → fresh, 2× budget, compact;
+  placeholder/terse, or missing + placeholder → fresh, same budget, naming the parts; `reasoning: low` only
+  after an EMPTY cut-off; an empty answer is never replayed), then it throws. Nothing partial is ever saved;
   `meta.json` names `model`/`summary_provider` only if that run wrote one.
 - **Dictation retry (2026-09-23):** Scribe budget per attempt = `min(120, 25 + 0.5 × clip s)`, one
   retry 1 s after a transient failure (timeout, network, 408/429/5xx); dictation URLSession 130 s/150 s

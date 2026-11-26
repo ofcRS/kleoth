@@ -115,20 +115,29 @@ All of:
 - **Decodes** as `MeetingSummary`.
 - **Complete:** `tldr` is non-blank, and `overview`, `action_items` and `per_speaker_highlights` are
   present under a spelling the decoder reads (`action_items` or `actionItems`). Lists may be empty and
-  `overview` may be blank (a short recording, see below); `title` stays optional.
+  `overview` may be blank, at any length; `title` stays optional.
 - **Content, not placeholders** (2026-11-26, after a 48-minute meeting was saved with the overview `...`
-  and another with `x` for its title, TL;DR and overview — the `x` became its title). `SummaryContent`:
-  a value is placeholder text when it has no letter or digit, fewer than three, one repeated (`xxx`), is a
-  short `<…>` / `{…}` / `[…]` slot, or as a whole echoes the prompt (`string`/`строка`, `null`,
-  `none`, a key, `TBD`, `todo`). That rules out a TL;DR, a non-blank overview, an action item's task
-  and a highlight; an owner or speaker only by a type word (`string`), since "Ян" is a name. Scaled
-  by the transcript's letters and digits (about 700 a minute of talk): the TL;DR needs one per 2,000
-  (3–12), a non-blank overview one per 300 (3–120), and a blank overview passes only under 1,500 (about
-  two minutes). A placeholder title alone is dropped from the summary, never retried.
+  and another with `x` for its title, TL;DR and overview — the `x` became its title). The principle: a
+  failed summary is worse than a mediocre one, so only the TL;DR and the overview can cost a retry, and
+  only a *true placeholder* in them can fail the summary. `SummaryContent`:
+  - **True placeholder** (TL;DR, non-blank overview, title): no letter or digit, fewer than three, one
+    letter repeated (`xxx`), a short `<…>` / `{…}` slot, or as a whole value an echo of the prompt
+    (`string`/`строка`, `null`, `none`, `N/A`, a key, `TBD`, `todo`). Structural first, so it holds in
+    any script; the word list is the second check.
+  - **Terse** (first answer only): real, but under one letter per 2,000 transcript letters for the TL;DR
+    (3–12) or one per 300 for a non-blank overview (3–120) — about 650–700 letters a minute of talk. It
+    triggers the retry and nothing else.
+  - **Cleaned, never retried:** a placeholder title is dropped; a task or highlight with no letter or
+    digit, a schema/type echo (`string`, `N/A`, `none`) or a `<…>`/`{…}` slot is dropped, then any
+    speaker left with no highlights; an owner that names nobody (a type word, a slot, no letter) becomes
+    `unassigned`. "Да", "QA", "1:1", "[смех]" stay.
+
+  A terse answer is not partial: it closed its JSON, has every part, and its TL;DR and overview are real
+  text. So saving one — after a retry that was no better — keeps "nothing partial is ever saved".
 
 The first request is byte-identical to today's, plus (2026-11-26) one system-prompt line that rules
 placeholders out and gives the honest way out: an empty overview for a short transcript, "nothing to
-summarize" said in the TL;DR.
+summarize" said in the TL;DR — both of which pass.
 
 ### 3.2 The one retry
 
@@ -138,8 +147,9 @@ summarize" said in the TL;DR.
 | cut off with text | fresh request, 2 × budget, compact instruction |
 | empty, not cut off | fresh request, same budget |
 | JSON object with parts missing | the answer, then "Your previous answer is missing: overview, action_items. Return the complete JSON object with every key — no prose, no markdown fences." |
+| parts missing, and a true placeholder in a part it has | fresh request, same budget: "Your previous answer was missing: action_items, and had placeholder or very short text in: tldr. Answer again with the complete JSON object, every key present, and those parts written from what was said in the transcript — never a placeholder such as …" |
 | not JSON | the answer, then today's "not valid JSON" nudge |
-| placeholder text (§3.1) | fresh request, same budget, naming the parts: "Your previous answer had placeholder text instead of content in: overview. Answer again and write those parts out…"; "make it an empty string" is offered for the overview only where a blank one would pass |
+| a true placeholder, or terse (§3.1) | fresh request, same budget: "Your previous answer had placeholder or very short text in: overview. Answer again with those parts written from what was said in the transcript — never a placeholder such as …"; whenever the overview is named, also "If there is too little for an overview, make it an empty string." (always accepted) |
 
 *Fresh* = the original system and user messages; bad text is never replayed. The *compact
 instruction* is one sentence appended to the user message: "Your previous answer was cut off before
@@ -149,13 +159,16 @@ JSON shape." (The floor is from 2026-11-26: "shorter" alone set none.) `reasonin
 OpenRouter and local servers (the CLIs ignore it); an endpoint that can't take it gets the client's
 existing relaxed retry, which drops it together with the strict schema.
 
-After the retry anything short of a complete answer throws, and nothing is written:
+The retry's answer is judged for true placeholders only: the length floors just trigger the retry, so a
+real but terse retry is saved. If the first answer was terse, it is saved whenever the retry comes back
+worse (a placeholder, empty, cut off, not JSON, parts missing, or an error). Otherwise anything short of
+a complete answer throws, and nothing is written:
 
 | Still | Error | Message |
 |---|---|---|
 | cut off | `.truncated` | "The summary was cut off: the model ran out of output room before finishing (reasoning models spend part of it thinking). Try again, or use another model." |
 | parts missing | `.incomplete(missing:)` | "The summary came back incomplete (no overview, action items). Try again, or use another model." |
-| placeholder text | `.placeholder(parts:)` | "The summary came back with placeholder text instead of content (overview). Try again, or use another model." |
+| a true placeholder | `.placeholder(parts:)` | "The summary came back with placeholder text instead of content (overview). Try again, or use another model." |
 | empty | `.invalidJSON("")` | "The model returned an empty answer." |
 | not JSON | `.invalidJSON(snippet)` | unchanged |
 
@@ -235,9 +248,10 @@ public struct Summarizer: Sendable {
 
     // internal, tested directly
     enum Assessment { case complete(MeetingSummary), cutOff(hadText: Bool), empty,
-                      incomplete(missing: [String]), placeholder(parts: [String]), malformed }
-    static func assess(_ completion: ChatCompletion, transcriptLetters: Int = 0) -> Assessment
-    static func placeholderRetryInstruction(parts: [String], overviewMayBeBlank: Bool) -> String
+                      incomplete(missing: [String], placeholders: [String]), placeholder(parts: [String]),
+                      terse(MeetingSummary, parts: [String]), malformed }
+    static func assess(_ completion: ChatCompletion, transcriptLetters: Int = 0) -> Assessment   // 0: placeholders only
+    static func placeholderRetryInstruction(parts: [String], missing: [String] = []) -> String
     static func isUnterminatedJSONObject(_ text: String) -> Bool
     static let compactRetryInstruction: String
 }
@@ -252,9 +266,11 @@ and `summaryProvider`. Signature and return value unchanged.
 No new stored keys. `ChatCompleting`, `ChatCompletion` and every adapter are unchanged.
 
 2026-11-26: `Summarization/SummaryContent.swift` (internal: `isPlaceholder`, `letters(in:)`, the
-thresholds, `placeholderParts`) and `MeetingNaming.titleToAdopt(generated:replacing:) -> String?`, the one
-title rule `MeetingPipeline`, `kleoth summarize <dir>` and `RecordingController.summarize(_:)` call.
-Tests: `SummaryPlaceholderTests.swift`, four in `MeetingPipelineSummaryTests.swift`.
+floors, `judge`, `cleaned`) and `MeetingNaming.titleToAdopt(generated:replacing:) -> String?`, the one
+title rule `MeetingPipeline`, `kleoth summarize <dir>` and `RecordingController.summarize(_:)` call: a
+real model title replaces a placeholder title, or a saved title with no letter or digit or of one
+character repeated (an earlier `x`); never "QA" or "1:1". Tests: `SummaryPlaceholderTests.swift`, five
+in `MeetingPipelineSummaryTests.swift`.
 
 ### 4.2 CLI
 
