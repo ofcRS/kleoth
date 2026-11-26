@@ -150,9 +150,141 @@ import Testing
             system: LaneLevels(energy: lanes.systemEnergy, hopSeconds: Lanes.hop), hopSeconds: Lanes.hop)
         let firsts = words.indices.filter { words[$0].text == "reply" && words[$0 - 1].text != "reply" }
         for index in firsts {
-            let (score, side) = ChannelAttribution.evidence(for: words[index], lanes: hops, hopSeconds: Lanes.hop, padding: 1)
-            #expect(score == ChannelAttribution.clearScore && side == .you)
+            let found = ChannelAttribution.evidence(for: words[index], lanes: hops, hopSeconds: Lanes.hop, padding: 1)
+            #expect(found.score == ChannelAttribution.clearScore && found.side == .you)
         }
+    }
+
+    /// A headset that leaks some of the remote's turns, faintly, into the mic,
+    /// with the lanes offset so the system lane's copy comes 0.25 s after the
+    /// mic's. The system lane does not carry the user: what it shares with the
+    /// mic is far below how loud the user speaks, so those turns stay Them.
+    @Test func faintBleedWithTheSystemLaneLateIsNotTheUsersVoicePlayedBack() {
+        var lanes = Lanes(seconds: 400)
+        var words: [ScribeWord] = []
+        var leaked: [(Double, Double)] = []
+        for (index, (from, to)) in Self.bursts(0, 240).enumerated() {
+            lanes.systemSpeech(from, to)
+            words += Self.words("R", from, to)
+            if index % 3 == 0 { leaked.append((from, to)) }
+        }
+        for (from, to) in Self.bursts(250, 390) {
+            lanes.micSpeech(from, to, at: -15)
+            words += Self.words("U", from, to)
+        }
+        let source = lanes.system
+        for (from, to) in leaked {
+            for i in Lanes.hops(from, to, count: source.count) where i - 5 >= 0 {
+                lanes.mic[i - 5] = max(lanes.mic[i - 5], source[i] - 12)
+            }
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.systemHearsMicSeconds == 0)
+        #expect(Self.labels(attribution, cluster: "R") == [Self.them])
+        #expect(Self.labels(attribution, cluster: "U") == [Self.you])
+    }
+
+    /// Speakers in a reverberant room: the mic hears the remote smeared over a
+    /// second, so no leak lines up, and the room rings on past the end of each
+    /// remote turn. The remote's words have both lanes loud; the few that fall
+    /// in the ringing look mic-only. Both lanes loud at once is the remote, so
+    /// the cluster stays Them: a handful of clear mic words must not outvote
+    /// hundreds of both-voiced ones.
+    @Test func aClusterMostlyOnBothLanesLeansThem() {
+        var lanes = Lanes(seconds: 300, micFloor: -71, systemFloor: -99)
+        var words: [ScribeWord] = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            if index % 4 == 0 {
+                lanes.micSpeech(from, to, at: -26)
+                words += Self.words("U", from, to)
+            } else {
+                lanes.systemSpeech(from, to)
+                words += Self.words("R", from, to + 0.6)  // the last words fall in the ringing
+            }
+        }
+        // The mic keeps only the remote turns' on/off shape, with a texture of
+        // its own (a processed, reverberant pickup).
+        let source = lanes.system
+        for j in lanes.mic.indices {
+            let ringing = (max(0, j - 12)...min(source.count - 1, j)).contains { source[$0] > -60 }
+            if ringing { lanes.mic[j] = max(lanes.mic[j], -34 - 2 * Lanes.syllable(j, voice: 9)) }
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.micHearsSystemSeconds == 0)
+        #expect(Self.labels(attribution, cluster: "U") == [Self.you])
+        let remote = attribution.words.filter { $0.diarizedSpeakerId == "R" }
+        #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 20)
+    }
+
+    /// A noisy room on a quiet mic: noise well over the mic's floor most of the
+    /// time, the user speaking far louder than it. The user's cluster (an old
+    /// label, as a stored meeting has) also holds some of the remote's turns:
+    /// the system lane at the remote's usual level, the mic only noise. Each
+    /// side is measured against its own speaking level, from its clear words:
+    /// those turns are the remote's.
+    @Test func roomNoiseUnderTheRemoteIsNotTheUsersVoice() {
+        var lanes = Lanes(seconds: 300, micFloor: -83, systemFloor: -86)
+        for i in lanes.mic.indices where (i / 7) % 3 != 0 {
+            lanes.mic[i] = max(lanes.mic[i], -58 - Lanes.syllable(i, voice: 11))
+        }
+        var words: [ScribeWord] = []
+        var mislabelled: [ScribeWord] = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            if index % 6 == 0 {
+                lanes.micSpeech(from, to, at: -40)
+                words += Self.words("U", from, to)
+            } else {
+                lanes.systemSpeech(from, to)
+                let inUser = index == 13 || index == 37
+                let remote = Self.words(inUser ? "U" : "R", from, to)
+                if inUser { mislabelled += remote }
+                words += remote
+            }
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.micHearsSystemSeconds == 0)
+        let times = Set(mislabelled.map(\.start))
+        let remoteInUserCluster = attribution.words.filter { times.contains($0.start) }
+        #expect(remoteInUserCluster.filter { $0.speakerId == Self.you }.count <= remoteInUserCluster.count / 20)
+        let user = attribution.words.filter { $0.diarizedSpeakerId == "U" && !times.contains($0.start) }
+        #expect(user.allSatisfy { $0.speakerId == Self.you })
+    }
+
+    /// Laptop speakers louder on the mic than the user's own voice, with the
+    /// leak modelled only in the first half (in the second the room smears it
+    /// out of line). Where no leak is modelled, both lanes loud is not the user,
+    /// however loud the mic is next to the user's own speaking level.
+    @Test func bleedWhereNoLeakIsModelledIsNotTheUser() {
+        var lanes = Lanes(seconds: 300, micFloor: -71, systemFloor: -99)
+        var words: [ScribeWord] = []
+        var smeared: [(Double, Double)] = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            if index % 4 == 0 {
+                lanes.micSpeech(from, to, at: -40)
+                words += Self.words("U", from, to)
+            } else {
+                lanes.systemSpeech(from, to)
+                words += Self.words("R", from, to)
+                if from >= 150 { smeared.append((from, to)) }
+            }
+        }
+        let source = lanes.system
+        for j in lanes.mic.indices where j >= 1 {
+            let i = j - 1
+            if Double(i) * Lanes.hop < 150 {
+                lanes.mic[j] = max(lanes.mic[j], source[i] - 9)
+            }
+        }
+        for (from, to) in smeared {
+            for j in Lanes.hops(from, to + 0.4, count: lanes.mic.count) {
+                lanes.mic[j] = max(lanes.mic[j], -26 - 2 * Lanes.syllable(j, voice: 9))
+            }
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.micHearsSystemSeconds > 0)
+        let remote = attribution.words.filter { $0.diarizedSpeakerId == "R" }
+        #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 20)
+        #expect(Self.labels(attribution, cluster: "U") == [Self.you])
     }
 
     /// Two people at one mic and no readable system lane: Scribe's split stands.

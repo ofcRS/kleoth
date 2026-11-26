@@ -14,15 +14,17 @@ import Foundation
 ///   checked a hop either side, at the leak's lag where one is modelled (the
 ///   other lane at the same moment, not at the same file offset).
 /// - both voiced: leans Them (bleed the leak model missed, or double talk),
-///   unless one lane is clearly nearer its own loud level than the other is.
+///   moved only a little toward a lane clearly nearer its own speaking level
+///   than the other is: in double talk, Scribe's cluster decides.
 /// - neither: no evidence, except mic sound the leak model accounts for (the
 ///   remote heard through the speakers), which leans Them, and a quiet voice
 ///   on a noisy mic (a narrow voice band) with the system lane silent, which
 ///   leans You a little.
 ///
 /// Scribe's voice cluster is the prior: each cluster leans to the side its
-/// clear words fell on, and a cluster with no clear word gets no prior at all
-/// (ties go to Them), never the meeting's majority. A two-state pass over the
+/// own clear words fell on, each of its words with both lanes voiced counting
+/// half toward Them; a cluster with neither gets no prior at all (ties go to
+/// Them), never the meeting's majority. A two-state pass over the
 /// words (Viterbi) makes switching speaker cost more inside a cluster's
 /// sentence than across a pause or a cluster change, so one odd word doesn't
 /// flip; between two runs of clear, opposite words it costs little, so a short
@@ -66,12 +68,18 @@ public enum ChannelAttribution {
     static let faintScore = 1.0
     static let bothVoicedScore = -0.5
     static let priorLimit = 1.5
+    /// A word with both lanes voiced weighs this much of a clear Them word in its cluster's prior.
+    static let bothLanesWeight = 0.5
     /// A lane is a word's own when it covers this share of the word's hops.
     static let coverage = 0.25
     /// The other lane must stay silent this far either side of a clear word.
     static let paddingSeconds = 0.05
-    /// Nearer its own loud level by this many dB than the other lane: dominant.
+    /// Both lanes voiced: a lane this many dB nearer its side's speaking level
+    /// than the other lane is to its own dominates.
     static let dominanceDB: Float = 10
+    /// A side's speaking level comes from at least this many clear words (the
+    /// lane's own voiced median otherwise).
+    static let minimumReferenceWords = 20
     /// A hop is the lane's own voice only this far above the leak predicted on it.
     static let leakMarginDB: Float = 6
     /// The system lane carries nobody when its voice adds up to no more than
@@ -162,17 +170,37 @@ public enum ChannelAttribution {
         let (lanes, leak) = measure(mic: mic, system: system, hopSeconds: hopSeconds)
         let hops = lanes.count
         let padding = max(1, Int((paddingSeconds / hopSeconds).rounded()))
-        var evidence: [Double] = []
-        var clear: [Side?] = []
-        for index in speech {
-            let (score, side) = Self.evidence(for: words[index], lanes: lanes, hopSeconds: hopSeconds, padding: padding)
-            evidence.append(score)
-            clear.append(side)
+        var found = speech.map { Self.evidence(for: words[$0], lanes: lanes, hopSeconds: hopSeconds, padding: padding) }
+
+        // Both lanes voiced: each lane against its own side's speaking level,
+        // measured on the words the lanes put clearly on that side (a mic's
+        // room noise is far below the user speaking; the remote heard faintly
+        // is far below the remote's usual level).
+        func median(_ values: [Float]) -> Float? {
+            values.count < minimumReferenceWords ? nil : values.sorted()[values.count / 2]
         }
-        var youCount: [String: Int] = [:], themCount: [String: Int] = [:]
+        let userLevel = median(found.filter { $0.side == .you }.map(\.micPeak)) ?? mic.speech
+        let remoteLevel = median(found.filter { $0.side == .them }.map(\.systemPeak)) ?? system.speech
+        for k in found.indices where found[k].side == .bothLanes {
+            let lead = (found[k].micPeak - userLevel) - (found[k].systemPeak - remoteLevel)
+            // Toward You only where the mic's sound can be the user's: a leak
+            // taken off at this word, or a meeting whose mic never hears the
+            // speakers. Unmodelled bleed can be louder than the user speaks.
+            let mayBeTheUser = leak.direction == nil || found[k].leakModelled
+            if lead >= dominanceDB, mayBeTheUser {
+                found[k].score = dominantScore
+                found[k].side = nil
+            } else if lead <= -dominanceDB {
+                found[k].score = -dominantScore
+            }
+        }
+        var evidence = found.map(\.score)
+        let clear = found.map(\.side)
+        var youCount: [String: Int] = [:], themCount: [String: Int] = [:], bothCount: [String: Int] = [:]
         for (k, side) in clear.enumerated() {
             if side == .you { youCount[key[k], default: 0] += 1 }
             if side == .them { themCount[key[k], default: 0] += 1 }
+            if side == .bothLanes { bothCount[key[k], default: 0] += 1 }
         }
 
         // Two voices at one mic, and nobody on the system lane by the system
@@ -193,11 +221,13 @@ public enum ChannelAttribution {
             return finished(isYou, shared: shared, clearMic: youCount, clearSystem: themCount)
         }
 
-        // Each cluster's prior from its own clear words only.
+        // Each cluster's prior from its own words only: its clear words, and
+        // half a Them for each word with both lanes voiced (sound on both at
+        // once is usually the remote). Never the meeting's majority.
         var prior: [String: Double] = [:]
         for cluster in Set(key) {
             let you = Double(youCount[cluster] ?? 0) + 1
-            let them = Double(themCount[cluster] ?? 0) + 1
+            let them = Double(themCount[cluster] ?? 0) + bothLanesWeight * Double(bothCount[cluster] ?? 0) + 1
             prior[cluster] = min(priorLimit, max(-priorLimit, log(you / them)))
         }
         for (k, cluster) in key.enumerated() where shared.contains(cluster) {
@@ -234,33 +264,49 @@ public enum ChannelAttribution {
             leak: leak, shared: shared, clearMic: youCount, clearSystem: themCount)
     }
 
-    enum Side { case you, them }
+    /// A clear word's side, or a word with both lanes voiced and the mic not
+    /// clearly ahead (it counts as ``bothLanesWeight`` of a Them in its prior).
+    enum Side { case you, them, bothLanes }
 
     /// Per-hop lane measures the evidence reads (in dB; `-infinity` past a lane's end).
     struct Hops {
-        var micUp: [Float], micFaint: [Float], micOwn: [Float]
+        var micUp: [Float], micFaint: [Float], micLevel: [Float]
         /// The mic is over its voice level, but the leak accounts for it.
         var micMasked: [Bool]
-        var systemUp: [Float], systemOwn: [Float]
+        var systemUp: [Float], systemLevel: [Float]
         /// The leak's lag at the hop (`mic[i + lag]` is `system[i]`'s moment), 0 without one.
         var lag: [Int]
+        /// A leak is modelled at the hop.
+        var leakModelled: [Bool]
 
         init(count: Int) {
             micUp = [Float](repeating: -.infinity, count: count)
             micFaint = micUp
-            micOwn = micUp
+            micLevel = micUp
             micMasked = [Bool](repeating: false, count: count)
             systemUp = micUp
-            systemOwn = micUp
+            systemLevel = micUp
             lag = [Int](repeating: 0, count: count)
+            leakModelled = micMasked
         }
 
         var count: Int { micUp.count }
     }
 
+    /// One word's lane evidence: log-odds for You; for a clear word its side,
+    /// or `.bothLanes`; and each lane's peak level (dB) over its voiced hops.
+    struct WordEvidence {
+        var score: Double
+        var side: Side?
+        var micPeak = -Float.infinity
+        var systemPeak = -Float.infinity
+        /// A leak is modelled at the word's first hop.
+        var leakModelled = false
+    }
+
     /// Per hop, each lane's height above its own voice level once the leak
-    /// from the other lane is taken off (negative: not its voice), and below
-    /// its own loud level (for dominance); and the leak found.
+    /// from the other lane is taken off (negative: not its voice), and its
+    /// level; and the leak found.
     static func measure(mic: LaneLevels, system: LaneLevels, hopSeconds: Double) -> (Hops, LeakModel) {
         let leak = system.isEmpty ? LeakModel.none : LeakModel.estimate(mic: mic, system: system, hopSeconds: hopSeconds)
         var lanes = Hops(count: max(mic.count, system.count))
@@ -269,11 +315,12 @@ public enum ChannelAttribution {
             lanes.micUp[hop] = mic[hop] - max(mic.voiced, micLeak)
             lanes.micFaint[hop] = mic[hop] - max(mic.faint, micLeak)
             lanes.micMasked[hop] = mic[hop] >= mic.voiced && mic[hop] < micLeak
-            lanes.micOwn[hop] = mic[hop] - mic.loud
+            lanes.micLevel[hop] = mic[hop]
             lanes.lag[hop] = leak.lag(at: hop)
+            lanes.leakModelled[hop] = leak.isModelled(at: hop)
             guard !system.isEmpty else { continue }
             lanes.systemUp[hop] = system[hop] - max(system.voiced, leak.systemLeak(at: hop, mic: mic) + leakMarginDB)
-            lanes.systemOwn[hop] = system[hop] - system.loud
+            lanes.systemLevel[hop] = system[hop]
         }
         return (lanes, leak)
     }
@@ -290,18 +337,24 @@ public enum ChannelAttribution {
         return lower < upper ? lower..<upper : nil
     }
 
-    /// One word's lane evidence (log-odds for You) and, for a clear word, its side.
-    static func evidence(for word: ScribeWord, lanes: Hops, hopSeconds: Double, padding: Int) -> (Double, Side?) {
-        guard let hops = span(of: word, hopSeconds: hopSeconds, hops: lanes.count) else { return (0, nil) }
+    /// One word's lane evidence. A word with both lanes voiced gets the weak
+    /// `bothVoicedScore` here; `attribute` then measures it against each
+    /// side's speaking level.
+    static func evidence(for word: ScribeWord, lanes: Hops, hopSeconds: Double, padding: Int) -> WordEvidence {
+        guard let hops = span(of: word, hopSeconds: hopSeconds, hops: lanes.count) else { return WordEvidence(score: 0) }
         let need = max(1, Int((coverage * Double(hops.count)).rounded(.up)))
 
         var micHops = 0, faintHops = 0, maskedHops = 0, systemHops = 0
         var micPeak = -Float.infinity, systemPeak = -Float.infinity
         for hop in hops {
-            if lanes.micUp[hop] >= 0 { micHops += 1; micPeak = max(micPeak, lanes.micOwn[hop]) }
+            if lanes.micUp[hop] >= 0 { micHops += 1; micPeak = max(micPeak, lanes.micLevel[hop]) }
             if lanes.micFaint[hop] >= 0 { faintHops += 1 }
             if lanes.micMasked[hop] { maskedHops += 1 }
-            if lanes.systemUp[hop] >= 0 { systemHops += 1; systemPeak = max(systemPeak, lanes.systemOwn[hop]) }
+            if lanes.systemUp[hop] >= 0 { systemHops += 1; systemPeak = max(systemPeak, lanes.systemLevel[hop]) }
+        }
+        func found(_ score: Double, _ side: Side?) -> WordEvidence {
+            WordEvidence(score: score, side: side, micPeak: micPeak, systemPeak: systemPeak,
+                         leakModelled: lanes.leakModelled[hops.lowerBound])
         }
         // The other lane at the same moment: shifted by the leak's lag.
         let lag = lanes.lag[hops.lowerBound]
@@ -315,20 +368,16 @@ public enum ChannelAttribution {
 
         switch (micOn, systemOn) {
         case (true, false):
-            return systemNear ? (leaningScore, nil) : (clearScore, .you)
+            return systemNear ? found(leaningScore, nil) : found(clearScore, .you)
         case (false, true):
-            return micNear ? (-leaningScore, nil) : (-clearScore, .them)
+            return micNear ? found(-leaningScore, nil) : found(-clearScore, .them)
         case (true, true):
-            // Each lane against its own loud level, never the other's loudness.
-            let lead = micPeak - systemPeak
-            if lead >= dominanceDB { return (dominantScore, .you) }
-            if lead <= -dominanceDB { return (-dominantScore, .them) }
-            return (bothVoicedScore, nil)
+            return found(bothVoicedScore, .bothLanes)
         case (false, false):
             // Mic sound the leak accounts for is the other lane's, heard late
             // through the speakers: it leans Them.
-            if maskedHops >= need { return (-leaningScore, nil) }
-            return faintHops >= need && systemHops == 0 && !systemNear ? (faintScore, nil) : (0, nil)
+            if maskedHops >= need { return found(-leaningScore, nil) }
+            return faintHops >= need && systemHops == 0 && !systemNear ? found(faintScore, nil) : found(0, nil)
         }
     }
 

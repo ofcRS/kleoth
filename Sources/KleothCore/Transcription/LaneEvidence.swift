@@ -35,6 +35,9 @@ struct LaneLevels {
     /// The bottom of a narrow voice band (3 dB over the floor), where a quiet
     /// voice's softer syllables sit; `voiced` on a lane with a full band.
     let faint: Float
+    /// The lane's own speaking level: the median of its voiced hops. What a
+    /// lane is compared against, never the other lane's loudness.
+    let speech: Float
 
     init(energy: [Float], hopSeconds: Double) {
         let levels = energy.map { 20 * log10f(max($0, 1e-7)) }
@@ -50,14 +53,18 @@ struct LaneLevels {
             loud = Self.silence
             voiced = .infinity
             faint = .infinity
+            speech = Self.silence
             return
         }
         db = levels
         floor = max(percentile(0.10), -100)
         loud = sorted[max(0, sorted.count - topSecond)]
         let range = loud - floor
-        voiced = max(floor + min(12, max(6, range / 2)), percentile(0.95) - 25)
+        let voiced = max(floor + min(12, max(6, range / 2)), percentile(0.95) - 25)
+        self.voiced = voiced
         faint = range < Self.fullVoiceRangeDB ? min(voiced, floor + 3) : voiced
+        let firstVoiced = sorted.firstIndex { $0 >= voiced } ?? (sorted.count - 1)
+        speech = sorted[(firstVoiced + sorted.count - 1) / 2]
     }
 
     /// No lane: missing, unreadable, header-only, or never more than a few dB
@@ -248,7 +255,7 @@ struct LeakModel {
         //    shows up on the other (all of the remote reaches a mic by the
         //    speakers; only the user's share of the mic shows on the system lane).
         var systemVoiced = 0, micUpThen = 0, micVoiced = 0, systemUpThen = 0
-        var systemToMic: [Float] = [], micToSystem: [Float] = []
+        var systemToMic: [Float] = [], micToSystem: [Float] = [], carriedMic: [Float] = []
         for (index, w0) in starts.enumerated() {
             guard let best = lags[index], best.correlation >= minimumCorrelation else { continue }
             for i in w0..<min(count, w0 + length) {
@@ -259,13 +266,19 @@ struct LeakModel {
                 }
                 if m >= mic.voiced {
                     micVoiced += 1
-                    if s >= system.floor + 8 { systemUpThen += 1; micToSystem.append(s - m) }
+                    if s >= system.floor + 8 { systemUpThen += 1; micToSystem.append(s - m); carriedMic.append(m) }
                 }
             }
         }
         let minimumLeak = max(1, Int((minimumLeakSeconds / hopSeconds).rounded()))
         let carriedToMic = systemVoiced >= minimumLeak ? Double(micUpThen) / Double(systemVoiced) : 0
-        let carriedToSystem = micVoiced >= minimumLeak ? Double(systemUpThen) / Double(micVoiced) : 0
+        // The system lane carries the user's voice only if what it carries is
+        // the user speaking as loud as they usually do: a remote voice faint on
+        // the mic, with the system lane's copy a little late (the lanes are
+        // offset), is bleed, not the mic played back.
+        let carriesTheUsersVoice = !carriedMic.isEmpty && percentile(carriedMic, 0.5) >= mic.speech - 6
+        let carriedToSystem = micVoiced >= minimumLeak && carriesTheUsersVoice
+            ? Double(systemUpThen) / Double(micVoiced) : 0
         let direction: Direction
         switch (carriedToMic >= minimumCarried, carriedToSystem >= minimumCarried) {
         case (false, false):
