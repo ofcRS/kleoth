@@ -39,6 +39,11 @@ public struct ScribeResponse: Codable, Sendable {
 ///
 /// `type` is one of `word`, `spacing`, or `audio_event`.
 /// `speakerId` is present when diarization is enabled, e.g. `"speaker_0"`.
+///
+/// `diarizedSpeakerId` is Kleoth's, never Scribe's: the voice cluster Scribe
+/// gave the word, kept when ``ChannelAttribution`` rewrites `speakerId` to
+/// You/Them, so a stored meeting can be re-attributed later. Stored as
+/// `diarized_speaker_id`; nil in a meeting transcribed before it existed.
 public struct ScribeWord: Codable, Sendable {
     public var text: String
     public var start: Double?
@@ -46,6 +51,7 @@ public struct ScribeWord: Codable, Sendable {
     public var type: String?
     public var speakerId: String?
     public var logprob: Double?
+    public var diarizedSpeakerId: String?
 
     public init(
         text: String,
@@ -53,7 +59,8 @@ public struct ScribeWord: Codable, Sendable {
         end: Double? = nil,
         type: String? = nil,
         speakerId: String? = nil,
-        logprob: Double? = nil
+        logprob: Double? = nil,
+        diarizedSpeakerId: String? = nil
     ) {
         self.text = text
         self.start = start
@@ -61,6 +68,7 @@ public struct ScribeWord: Codable, Sendable {
         self.type = type
         self.speakerId = speakerId
         self.logprob = logprob
+        self.diarizedSpeakerId = diarizedSpeakerId
     }
 }
 

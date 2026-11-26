@@ -4,15 +4,14 @@ import KleothCore
 /// The mono-Scribe transcriber: mixes the two captured channels
 /// (`mic.m4a` = You, `system.m4a` = Them) down to one mono track, sends that to
 /// ElevenLabs Scribe with diarization on (single channel → 1× cost, correct
-/// duration), then maps each diarization *cluster* to `speaker_0` (You) or
-/// `speaker_1` (Them) by which channel that cluster's speech lands on.
+/// duration), then decides each WORD's speaker, `speaker_0` (You) or
+/// `speaker_1` (Them), by which lane carries a voice over that word
+/// (``ChannelAttribution/attribute(words:micEnergy:systemEnergy:hopSeconds:youId:themId:)``).
 ///
-/// Scribe groups words into voices well, but its labels are arbitrary and it
-/// can't know which voice is the mic user. So we keep Scribe's clustering (whole
-/// turns stay together) and use per-cluster channel energy only to decide which
-/// cluster is You — two robust decisions instead of one flaky guess per word. If
-/// diarization comes back flat (0–1 clusters), we fall back to the per-word
-/// energy split so speakers never collapse onto one side.
+/// Scribe's voice clusters are kept as the prior for words the lanes can't
+/// decide, and recorded in each word's `diarizedSpeakerId`. Until 0.5.9 one
+/// decision was made per cluster and the most mic-leaning cluster was always
+/// You, so a silent mic still gave a remote voice the user's name.
 ///
 /// Conforms to ``Transcriber`` so `MeetingPipeline` (normalize → summarize →
 /// render → store) is unchanged. Because `Transcriber` refines `Sendable`, the
@@ -43,7 +42,7 @@ public struct ChannelAttributedScribeTranscriber: Transcriber {
     public var usdPerHour: Double { scribe.usdPerHour }
 
     /// Mixes mic+system to mono, transcribes that single channel with Scribe, and
-    /// re-attributes each word to You/Them by per-channel energy.
+    /// attributes each word to You/Them by the lanes' energy over it.
     ///
     /// `fileURL` is ignored — like `LocalTranscriber`, this engine owns its
     /// per-channel inputs (`micURL`, `systemURL`) captured at construction.
@@ -56,8 +55,7 @@ public struct ChannelAttributedScribeTranscriber: Transcriber {
 
         // 2. Single-channel request with diarization on: Scribe clusters the
         //    words into distinct voices. numSpeakers is left unset — Scribe
-        //    auto-detects, and we fold however many clusters it finds onto the
-        //    two physical channels in step 4.
+        //    auto-detects; its clusters are the prior in step 4.
         var opt = options
         opt.useMultiChannel = false
         opt.diarize = true
@@ -68,16 +66,12 @@ public struct ChannelAttributedScribeTranscriber: Transcriber {
         let e0 = try ChannelAudio.envelope(of: micURL, hopSeconds: hopSeconds)
         let e1 = try ChannelAudio.envelope(of: systemURL, hopSeconds: hopSeconds)
 
-        // 4. Map Scribe's voice clusters to You/Them by per-cluster channel
-        //    energy (so whole turns stay together). If diarization came back flat
-        //    (<2 clusters), fall back to the per-word energy split.
-        let scribeWords = resp.words ?? []
-        let clusterCount = Set(scribeWords.compactMap(\.speakerId)).count
-        let words: [ScribeWord] = clusterCount >= 2
-            ? ChannelAttribution.mapDiarizedSpeakers(
-                words: scribeWords, channel0Energy: e0, channel1Energy: e1, hopSeconds: hopSeconds)
-            : ChannelAttribution.assignSpeakers(
-                words: scribeWords, channel0Energy: e0, channel1Energy: e1, hopSeconds: hopSeconds)
+        // 4. Each word to You/Them by the lane carrying a voice over it, Scribe's
+        //    cluster as the prior (and kept in `diarizedSpeakerId`). An unreadable
+        //    lane has an empty envelope: every word then goes to the other one.
+        let words = ChannelAttribution.attribute(
+            words: resp.words ?? [], micEnergy: e0, systemEnergy: e1, hopSeconds: hopSeconds
+        ).words
 
         // 5. Single-channel response shape carrying the attributed words. Duration
         //    is the (correct, single-channel) value Scribe returned for the mono
