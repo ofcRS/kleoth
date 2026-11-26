@@ -73,5 +73,23 @@ let package = Package(
                 ]),
             ]
         ),
+        // The `kleoth` CLI's own decisions (what a command sends, what it
+        // records), through `@testable import kleoth`.
+        .testTarget(
+            name: "KleothCLITests",
+            dependencies: ["kleoth", "KleothCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-F", testingFrameworksDir]),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-F", testingFrameworksDir,
+                    "-L", testingInteropLibDir,
+                    "-Xlinker", "-rpath", "-Xlinker", testingFrameworksDir,
+                    "-Xlinker", "-rpath", "-Xlinker", testingInteropLibDir,
+                ]),
+            ]
+        ),
     ]
 )

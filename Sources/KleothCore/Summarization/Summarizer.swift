@@ -67,6 +67,13 @@ public struct Summarizer: Sendable {
         didSet { maxOutputTokens = Self.clampedOutputTokens(maxOutputTokens) }
     }
 
+    /// The personal dictionary, named in the user message as preferred
+    /// spellings so a name the transcript misheard is still written right in
+    /// the summary. Callers pass ``PersonalDictionaryStore/sentTerms()``; the
+    /// summarizer does not re-sanitize. Empty (the default) adds nothing: the
+    /// request is byte-identical to one without it.
+    public var preferredSpellings: [String] = []
+
     public init(client: any ChatCompleting, model: String = ModelCatalog.defaultModel,
                 maxOutputTokens: Int = Summarizer.defaultMaxOutputTokens) {
         self.client = client
@@ -194,7 +201,8 @@ public struct Summarizer: Sendable {
         transcript: Transcript,
         metadata: MeetingMetadata
     ) async throws -> (summary: MeetingSummary, costUSD: Double) {
-        let userContent = Self.buildUserContent(transcript: transcript, metadata: metadata)
+        let userContent = Self.buildUserContent(
+            transcript: transcript, metadata: metadata, preferredSpellings: preferredSpellings)
 
         // Token guard: rough heuristic of ~4 characters per token.
         let approxTokens = userContent.count / 4
@@ -498,7 +506,9 @@ public struct Summarizer: Sendable {
         return nil
     }
 
-    private static func buildUserContent(transcript: Transcript, metadata: MeetingMetadata) -> String {
+    private static func buildUserContent(
+        transcript: Transcript, metadata: MeetingMetadata, preferredSpellings: [String]
+    ) -> String {
         let participants = metadata.participants.joined(separator: ", ")
         let lines = transcript.utterances.map { utterance -> String in
             let speaker = utterance.speakerName ?? utterance.speakerId
@@ -517,6 +527,15 @@ public struct Summarizer: Sendable {
         if let name = languageName(for: transcript.languageCode ?? metadata.languageCode) {
             header += "\nTranscript language: \(name). Write the entire summary in \(name)."
         }
+        // The personal dictionary: speech recognition mishears names and
+        // product words, and the summary would repeat the error. Added only
+        // when there is one, so an empty dictionary changes no byte. The
+        // guard mirrors dictation's ("Never insert a listed term that was not
+        // spoken"): a spelling replaces a mishearing, never adds a term, and
+        // never renames a speaker.
+        if !preferredSpellings.isEmpty {
+            header += "\nPreferred spellings: \(spellingList(preferredSpellings)). Speech recognition may have misheard these names and terms. Where the transcript means one of them, write it with exactly this spelling; never add a listed term the transcript does not mention, and keep speaker names exactly as given."
+        }
 
         return """
         \(header)
@@ -524,6 +543,17 @@ public struct Summarizer: Sendable {
         Transcript:
         \(transcriptText)
         """
+    }
+
+    /// The spellings as one JSON array (`["Acmeflow","Acme, Inc."]`): a term
+    /// with a comma or a quote stays one term, which a comma-joined list could
+    /// not promise. Slashes stay unescaped ("CI/CD"); non-ASCII stays as is.
+    private static func spellingList(_ terms: [String]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Encoding an array of strings cannot fail; the fallback is for form.
+        guard let data = try? encoder.encode(terms) else { return terms.joined(separator: ", ") }
+        return String(decoding: data, as: UTF8.self)
     }
 
     // MARK: - Response parsing

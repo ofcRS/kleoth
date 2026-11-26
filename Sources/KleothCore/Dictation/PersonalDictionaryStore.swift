@@ -2,7 +2,9 @@ import Foundation
 
 /// The personal dictionary — `~/.config/kleoth/dictionary.json`, a plain JSON
 /// array of strings — that biases speech recognition toward the user's names,
-/// products and jargon.
+/// products and jargon. One list for dictation and meetings: both send it to
+/// Scribe as keyterms, and dictation polish and meeting summaries get it as
+/// preferred spellings.
 ///
 /// Storage normalization (this type) is deliberately looser than the wire-level
 /// sanitizer: up to `DictationDefaults.maxStoredDictionaryTerms` entries are
@@ -37,6 +39,15 @@ public struct PersonalDictionaryStore: Sendable {
         guard let any = try? JSONSerialization.jsonObject(with: data),
               let elements = any as? [Any] else { return [] }
         return Self.normalize(elements.compactMap { $0 as? String })
+    }
+
+    /// The terms a request carries — a dictation's and a meeting's Scribe
+    /// keyterms, a summary's preferred spellings: ``load()`` through
+    /// ``Keyterms/sanitize(_:)``. Over the cap, the first `Keyterms.maxTerms`
+    /// valid terms in file order (the Settings editor's top to bottom) win;
+    /// an invalid term is dropped and doesn't count.
+    public func sentTerms() -> [String] {
+        Keyterms.sanitize(load())
     }
 
     /// Normalizes and writes the terms, creating `~/.config/kleoth/` if needed.

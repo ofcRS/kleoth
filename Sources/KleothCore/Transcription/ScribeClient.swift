@@ -82,6 +82,18 @@ public extension ScribeOptions {
             keyterms: keyterms
         )
     }
+
+    /// The options a meeting's cloud transcription starts from: the meeting
+    /// defaults (`scribe_v2`, diarized, audio events tagged, verbatim) plus the
+    /// personal dictionary as keyterms — the same list dictation sends. Callers
+    /// set the rest (channels, speakers, language, progress) on the result.
+    /// With no terms the request is the one `ScribeOptions()` sends.
+    ///
+    /// - Parameter keyterms: Personal-dictionary terms, already passed through
+    ///   ``Keyterms/sanitize(_:)`` (``PersonalDictionaryStore/sentTerms()``).
+    static func meeting(keyterms: [String]) -> ScribeOptions {
+        ScribeOptions(keyterms: keyterms)
+    }
 }
 
 /// Client for the ElevenLabs Scribe batch speech-to-text endpoint.

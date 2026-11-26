@@ -6,21 +6,25 @@ import KleothCapture
 /// so the app then shows it as processed. Defaults to the on-device WhisperKit
 /// engine; pass `scribe` to use ElevenLabs Scribe (cloud, paid, diarized).
 /// `--segments` times the on-device transcript by Whisper's segments instead
-/// of the app's word-aligned speech runs, to diff the two.
+/// of the app's word-aligned speech runs, to diff the two. Like the app, it
+/// sends the personal dictionary as Scribe keyterms and as the summary's
+/// preferred spellings; `--no-dictionary` sends neither (the demo data's
+/// fictional meetings must never see the real list).
 ///
-///     localtranscribe <meeting-dir> [scribe] [--segments] [--provider <id>]
+///     localtranscribe <meeting-dir> [scribe] [--segments] [--provider <id>] [--no-dictionary]
 @main
 struct LocalTranscribeMain {
     static func main() async {
         let args = CommandLine.arguments
         guard args.count >= 2 else {
-            FileHandle.standardError.write(Data("usage: localtranscribe <meeting-dir> [scribe] [--segments] [--provider <id>]\n".utf8))
+            FileHandle.standardError.write(Data("usage: localtranscribe <meeting-dir> [scribe] [--segments] [--provider <id>] [--no-dictionary]\n".utf8))
             exit(2)
         }
         let dir = URL(fileURLWithPath: args[1], isDirectory: true)
         let rest = Array(args.dropFirst(2))
         let useScribe = rest.contains { $0 == "scribe" || $0 == "--scribe" }
         let timing: LocalTranscriber.Timing = rest.contains("--segments") ? .segments : .speechRuns
+        let vocabulary = rest.contains("--no-dictionary") ? [] : PersonalDictionaryStore().sentTerms()
         var providerArg: String?
         if let idx = rest.firstIndex(of: "--provider"), idx + 1 < rest.count {
             providerArg = rest[idx + 1]
@@ -52,6 +56,10 @@ struct LocalTranscribeMain {
                     exit(1)
                 }
                 let scribe = ScribeClient(apiKey: key, transport: URLSessionTransport())
+                options = .meeting(keyterms: vocabulary)
+                if !vocabulary.isEmpty {
+                    print("Sending \(vocabulary.count) personal-dictionary keyterms (Scribe bills a surcharge).")
+                }
                 if fm.fileExists(atPath: mic.path), fm.fileExists(atPath: system.path) {
                     // Validated path (mirrors the app's "Fully transcribe"): mix the
                     // two channels to mono (1× cost, correct duration) and attribute
@@ -118,6 +126,7 @@ struct LocalTranscribeMain {
             case let .success(made):
                 do {
                     summarizer = try made.factory.summarizer(for: made.selection)
+                    summarizer?.preferredSpellings = vocabulary
                     summaryModel = made.selection.model
                     summaryProvider = made.selection.provider.rawValue
                 } catch {
