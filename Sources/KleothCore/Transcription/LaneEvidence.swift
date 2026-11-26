@@ -11,33 +11,57 @@ import Foundation
 struct LaneLevels {
     /// The level of a hop past the lane's end, or of digital silence.
     static let silence: Float = -140
+    /// A lane whose loudest second stays this close to its floor carries no
+    /// voice at all (a dead or muted mic): it counts as no lane. Low enough
+    /// that a quiet user 8 dB over a noisy mic's floor still counts.
+    static let minimumVoiceRangeDB: Float = 6
+    /// The voice band is this wide or wider on a normal lane; a narrower one
+    /// (a quiet voice on a noisy mic) gets a lower voice threshold and a faint band.
+    static let fullVoiceRangeDB: Float = 24
 
-    /// Per-hop RMS level in dB (≥ ``silence``).
+    /// Per-hop RMS level in dB (≥ ``silence``); empty for a missing or dead lane.
     let db: [Float]
     /// The lane's noise floor: its 10th percentile, never below -100 dB (a lane
     /// that is digital silence most of the time still has a usable floor).
     let floor: Float
-    /// A hop at or above this carries a voice: 12 dB over the floor, or 25 dB
-    /// under the lane's loud level (its 95th percentile) when that is higher, so
-    /// a remote line with an open, noisy mic does not count as talking all the
-    /// time. Infinite for an empty lane.
+    /// The lane's own loud level: what its loudest second reaches. A user who
+    /// speaks for a few seconds of a long meeting still sets it.
+    let loud: Float
+    /// A hop at or above this carries a voice: halfway from the floor to the
+    /// loud level, kept within 6–12 dB over the floor; or 25 dB under the
+    /// lane's 95th percentile when that is higher, so a remote line with an
+    /// open, noisy mic does not count as talking all the time.
     let voiced: Float
+    /// The bottom of a narrow voice band (3 dB over the floor), where a quiet
+    /// voice's softer syllables sit; `voiced` on a lane with a full band.
+    let faint: Float
 
-    init(energy: [Float]) {
-        db = energy.map { 20 * log10f(max($0, 1e-7)) }
-        guard !db.isEmpty else {
-            floor = Self.silence
-            voiced = .infinity
-            return
-        }
-        let sorted = db.sorted()
+    init(energy: [Float], hopSeconds: Double) {
+        let levels = energy.map { 20 * log10f(max($0, 1e-7)) }
+        let sorted = levels.sorted()
         func percentile(_ p: Double) -> Float {
             sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))]
         }
+        let topSecond = max(1, Int((1 / max(hopSeconds, 1e-3)).rounded()))
+        guard !sorted.isEmpty,
+              sorted[max(0, sorted.count - topSecond)] - max(percentile(0.10), -100) >= Self.minimumVoiceRangeDB else {
+            db = []
+            floor = Self.silence
+            loud = Self.silence
+            voiced = .infinity
+            faint = .infinity
+            return
+        }
+        db = levels
         floor = max(percentile(0.10), -100)
-        voiced = max(floor + 12, percentile(0.95) - 25)
+        loud = sorted[max(0, sorted.count - topSecond)]
+        let range = loud - floor
+        voiced = max(floor + min(12, max(6, range / 2)), percentile(0.95) - 25)
+        faint = range < Self.fullVoiceRangeDB ? min(voiced, floor + 3) : voiced
     }
 
+    /// No lane: missing, unreadable, header-only, or never more than a few dB
+    /// over its own floor.
     var isEmpty: Bool { db.isEmpty }
     var count: Int { db.count }
 
@@ -93,6 +117,19 @@ struct LeakModel {
 
     /// Seconds of the meeting with a leak in force.
     let seconds: Double
+
+    /// How many hops the mic lane runs behind the system lane at `hop`
+    /// (`mic[i + lag]` is `system[i]`'s moment), where a leak is modelled; 0
+    /// elsewhere. A check of "the other lane at the same moment" reads it shifted.
+    func lag(at hop: Int) -> Int {
+        guard hop >= 0, hop < leakAtHop.count, let leak = leakAtHop[hop] else { return 0 }
+        return leak.lag
+    }
+
+    /// Whether a leak is modelled at `hop`.
+    func isModelled(at hop: Int) -> Bool {
+        hop >= 0 && hop < leakAtHop.count && leakAtHop[hop] != nil
+    }
 
     /// The level the leak puts on the mic at `hop` (``LaneLevels/silence`` when
     /// the mic hears nothing of the system lane there).
@@ -167,7 +204,11 @@ struct LeakModel {
             starts.append(start)
             start += step
         } while start + length / 2 < count
+        // Among near-equal peaks (turns that repeat at a steady pace line up at
+        // several shifts), the lag nearest the previous window's: lanes drift
+        // slowly.
         var lags: [(lag: Int, correlation: Float)?] = []
+        var reference = 0
         for w0 in starts {
             let w1 = min(count, w0 + length)
             let n = w1 - w0
@@ -179,7 +220,7 @@ struct LeakModel {
             }
             let varX = sumXX - sumX * sumX / Double(n)
             guard varX > 1e-6 else { lags.append(nil); continue }
-            var best: (lag: Int, correlation: Float)?
+            var correlations = [Float](repeating: -.infinity, count: 2 * maxLag + 1)
             xs.withUnsafeBufferPointer { x in
                 xm.withUnsafeBufferPointer { m in
                     for lag in -maxLag...maxLag {
@@ -191,12 +232,16 @@ struct LeakModel {
                         var dot: Float = 0
                         vDSP_dotpr(x.baseAddress! + w0, 1, m.baseAddress! + y0, 1, &dot, vDSP_Length(n))
                         let covariance = Double(dot) - sumX * sumY / Double(n)
-                        let r = Float(covariance / (varX * varY).squareRoot())
-                        if best == nil || r > best!.correlation { best = (lag, r) }
+                        correlations[lag + maxLag] = Float(covariance / (varX * varY).squareRoot())
                     }
                 }
             }
-            lags.append(best)
+            guard let peak = correlations.max(), peak > -.infinity else { lags.append(nil); continue }
+            let lag = (-maxLag...maxLag)
+                .filter { correlations[$0 + maxLag] >= peak - 0.05 }
+                .min { abs($0 - reference) < abs($1 - reference) }!
+            lags.append((lag, correlations[lag + maxLag]))
+            if correlations[lag + maxLag] >= minimumCorrelation { reference = lag }
         }
 
         // 2. The direction, once for the meeting: which lane's voice reliably
