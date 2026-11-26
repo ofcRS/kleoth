@@ -365,6 +365,46 @@ import Testing
         #expect(Self.labels(attribution, cluster: "U") == [Self.you])
     }
 
+    /// On a mic that hears some of the remote, the user's sentence in the
+    /// remote's Scribe cluster: some of its words clearly on the mic, a
+    /// quarter with a faint tick on the system lane. The clear words beside
+    /// them vouch for the mic: the whole sentence is You.
+    @Test func aUserSentenceWithClearWordsCarriesItsBothVoicedWords() {
+        var lanes = Lanes(seconds: 300, micFloor: -68, systemFloor: -100)
+        var words: [ScribeWord] = []
+        var sentences: Set<Double> = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            if index % 4 == 0 {
+                lanes.micSpeech(from, to, at: -24)
+                words += Self.words("U", from, to)
+            } else if index % 4 == 2, to - from > 2.5 {
+                // The user's sentence, in R's cluster: every fourth word has
+                // a faint system tick over it.
+                lanes.micSpeech(from, to, at: -24)
+                let sentence = Self.words("R", from, to)
+                for (k, word) in sentence.enumerated() where k % 4 == 1 {
+                    for i in Lanes.hops(word.start!, word.end!, count: lanes.system.count) { lanes.system[i] = -40 }
+                }
+                sentences.formUnion(sentence.compactMap(\.start))
+                words += sentence
+            } else {
+                lanes.systemSpeech(from, to)
+                // The mic hears some of the remote, out of line.
+                if index % 4 == 1 {
+                    for j in Lanes.hops(from, to, count: lanes.mic.count) {
+                        lanes.mic[j] = max(lanes.mic[j], -30 - 2 * Lanes.syllable(j, voice: 9))
+                    }
+                }
+                words += Self.words("R", from, to)
+            }
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.micHearsSystemSeconds == 0)
+        let user = attribution.words.filter { sentences.contains($0.start!) }
+        #expect(!user.isEmpty)
+        #expect(user.filter { $0.speakerId != Self.you }.count <= user.count / 20)
+    }
+
     /// Two people at one mic and no readable system lane: Scribe's split stands.
     @Test func twoVoicesAtTheMicWithNoSystemLaneKeepScribesSplit() {
         var lanes = Lanes(seconds: 240)
