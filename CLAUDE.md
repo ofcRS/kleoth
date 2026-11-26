@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (894 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
+swift build && swift test                        # core + CLI (896 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -139,6 +139,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   `LeakModel`; Scribe's cluster = the prior from its own clear words only, kept in `diarized_speaker_id`;
   two mic voices stay split only when the system lane itself has no voice). Until 0.5.9 it was one
   decision per cluster, and the most mic-leaning cluster was always You (a silent mic still got words).
+  Known limit: on speakers, the user's words spoken over the remote go to Them, even with solo turns.
+  Known and left alone: `quietMicShare` 0.05 is decided by co-voicing; `minimumReferenceWords` 20; the
+  6 dB dead-lane rule; a short, strictly alternating meeting can fool the leak model.
   Auto-transcribe after recording is opt-in (`auto_transcribe`). Duration always comes from the audio file.
 - **WhisperKit language:** `detectLanguage` defaults to false, so `language: nil` silently means "en".
   `LocalTranscriber.resolveLanguage` runs one global detect pass; pinnable via `transcription_language`.

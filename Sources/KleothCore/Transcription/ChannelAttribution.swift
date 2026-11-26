@@ -14,8 +14,12 @@ import Foundation
 ///   checked a hop either side, at the leak's lag where one is modelled (the
 ///   other lane at the same moment, not at the same file offset).
 /// - both voiced: leans Them (bleed the leak model missed, or double talk),
-///   moved only a little toward a lane clearly nearer its own speaking level
-///   than the other is: in double talk, Scribe's cluster decides.
+///   toward You only where the mic is clearly nearer the user's speaking level
+///   than the system lane is to the remote's, and never far above the user's
+///   level. Known limit: on speakers, the user's words spoken over the remote
+///   go to Them, even when the user has turns of their own (the mic carries
+///   both, and the leak model takes off what the remote put on it; with
+///   headphones Scribe's cluster usually keeps them).
 /// - neither: no evidence, except mic sound the leak model accounts for (the
 ///   remote heard through the speakers), which leans Them, and a quiet voice
 ///   on a noisy mic (a narrow voice band) with the system lane silent, which
@@ -77,6 +81,9 @@ public enum ChannelAttribution {
     /// Both lanes voiced: a lane this many dB nearer its side's speaking level
     /// than the other lane is to its own dominates.
     static let dominanceDB: Float = 10
+    /// The mic may dominate toward You only up to this far above the user's
+    /// speaking level.
+    static let userHeadroomDB: Float = 6
     /// A side's speaking level comes from at least this many clear words.
     /// With fewer of the user's, the mic's own voiced median stands in only on
     /// a mic that doesn't hear the remote (otherwise no word dominates); with
@@ -205,9 +212,11 @@ public enum ChannelAttribution {
             guard let userLevel else { break }
             let lead = (found[k].micPeak - userLevel) - (found[k].systemPeak - remoteLevel)
             // Toward You only where the mic's sound can be the user's: a leak
-            // taken off at this word, or a mic that doesn't hear the remote.
-            // Unmodelled bleed can be louder than the user speaks.
-            let mayBeTheUser = found[k].leakModelled || (leak.direction == nil && !micHearsTheRemote)
+            // taken off at this word, or a mic that doesn't hear the remote;
+            // and never from a mic far louder than the user speaks (bleed
+            // the leak model left over can be).
+            let mayBeTheUser = (found[k].leakModelled || (leak.direction == nil && !micHearsTheRemote))
+                && found[k].micPeak - userLevel <= userHeadroomDB
             if lead >= dominanceDB, mayBeTheUser {
                 found[k].score = dominantScore
                 found[k].side = nil

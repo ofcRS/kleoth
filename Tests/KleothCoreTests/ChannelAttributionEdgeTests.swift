@@ -258,10 +258,12 @@ import Testing
         var lanes = Lanes(seconds: 300, micFloor: -71, systemFloor: -99)
         var words: [ScribeWord] = []
         var smeared: [(Double, Double)] = []
+        var userTurns: [(Double, Double)] = []
         for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
             if index % 4 == 0 {
                 lanes.micSpeech(from, to, at: -40)
                 words += Self.words("U", from, to)
+                userTurns.append((from, to))
             } else {
                 lanes.systemSpeech(from, to)
                 words += Self.words("R", from, to)
@@ -282,8 +284,14 @@ import Testing
         }
         let attribution = Self.run(words, lanes)
         #expect(attribution.micHearsSystemSeconds > 0)
-        let remote = attribution.words.filter { $0.diarizedSpeakerId == "R" }
-        #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 20)
+        // The remote's words at the edges of the user's turns, where the two
+        // lanes meet, and every other remote word: Them.
+        let edges = attribution.words.filter { word in
+            word.diarizedSpeakerId == "R" && userTurns.contains { abs(word.start! - $0.1) < 1.2 || abs($0.0 - word.end!) < 1.2 }
+        }
+        #expect(!edges.isEmpty)
+        #expect(edges.allSatisfy { $0.speakerId == Self.them })
+        #expect(Self.labels(attribution, cluster: "R") == [Self.them])
         #expect(Self.labels(attribution, cluster: "U") == [Self.you])
     }
 
@@ -336,32 +344,36 @@ import Testing
         #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 50)
     }
 
-    /// A mic that hears the remote out of line (no leak model) about as loud
-    /// as the user speaks. Where the remote drops to a murmur, the mic is
-    /// "nearer the user's level" than the system lane is to the remote's, but
-    /// on a mic that hears the remote, that proves nothing: still Them.
-    @Test func onAMicThatHearsTheRemoteLoudIsNotTheUser() {
-        var lanes = Lanes(seconds: 300, micFloor: -68, systemFloor: -100)
+    /// Speakers in a reverberant room: the mic hears the remote smeared, 14 dB
+    /// over the user's own level, and the remote replies 0.15 s after each of
+    /// the user's turns. Where the leak is modelled, that bleed is far above
+    /// the user's speaking level, which is no sign of the user: the first words
+    /// of every remote turn stay Them.
+    @Test func bleedFarAboveTheUsersLevelNeverDominatesTowardYou() {
+        var lanes = Lanes(seconds: 300, micFloor: -71, systemFloor: -99)
         var words: [ScribeWord] = []
-        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
-            if index % 4 == 0 {
-                lanes.micSpeech(from, to, at: -28)
-                words += Self.words("U", from, to)
-                continue
+        var openings: Set<Double> = []
+        var t = 0.0, turn = 0
+        while t < 280 {
+            let user = (t, t + 2.0), remote = (t + 2.15, t + 6.15)
+            lanes.micSpeech(user.0, user.1, at: -40)
+            words += Self.words("U", user.0, user.1)
+            lanes.systemSpeech(remote.0, remote.1)
+            let reply = Self.words("R", remote.0, remote.1)
+            openings.formUnion(reply.prefix(4).compactMap(\.start))
+            words += reply
+            for j in Lanes.hops(remote.0, remote.1 + 0.4, count: lanes.mic.count) {
+                lanes.mic[j] = max(lanes.mic[j], -26 - 2 * Lanes.syllable(j, voice: 9))
             }
-            lanes.systemSpeech(from, to)
-            for i in Lanes.hops(from, to, count: lanes.system.count) where (i / 60) % 2 == 1 {
-                lanes.system[i] = -40 - Lanes.syllable(i, voice: 2) / 3
-            }
-            for j in Lanes.hops(from, to + 0.3, count: lanes.mic.count) {
-                lanes.mic[j] = max(lanes.mic[j], -29 - 2 * Lanes.syllable(j, voice: 9))
-            }
-            words += Self.words("R", from, to)
+            t = remote.1 + 1.5 + Double(turn % 3) * 0.4
+            turn += 1
         }
         let attribution = Self.run(words, lanes)
-        #expect(attribution.micHearsSystemSeconds == 0)
-        let remote = attribution.words.filter { $0.diarizedSpeakerId == "R" }
-        #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 50)
+        #expect(attribution.micHearsSystemSeconds > 0)
+        let opening = attribution.words.filter { openings.contains($0.start!) }
+        #expect(opening.count == 4 * turn)
+        #expect(opening.allSatisfy { $0.speakerId == Self.them })
+        #expect(Self.labels(attribution, cluster: "R") == [Self.them])
         #expect(Self.labels(attribution, cluster: "U") == [Self.you])
     }
 
