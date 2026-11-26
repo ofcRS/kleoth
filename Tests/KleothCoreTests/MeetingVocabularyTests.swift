@@ -137,7 +137,7 @@ import Foundation
     // MARK: - Summary prompt
 
     static let completeAnswer =
-        #"{"title":"T","tldr":"t","overview":"o","action_items":[],"per_speaker_highlights":[]}"#
+        #"{"title":"Billing page plan","tldr":"The billing page moves to the new service on Friday.","overview":"The team agreed to move the billing page and review it on Friday.","action_items":[],"per_speaker_highlights":[]}"#
 
     static func transcript() -> Transcript {
         Transcript(
