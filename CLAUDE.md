@@ -470,5 +470,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   fixes in). Verified: tests, the repair on copies of real meetings. Not yet: the launch pass in the app, a listening test.
 - v0.5.9 (2026-11-19, PR #36): the empty grey capsule after a meeting's stop was the DOCK peeking out
   50 ms into the sink, its fields left at opacity 0 (gotcha above). Verified on films + tests only; not by eye.
+- v0.5.10 (2026-11-26, PRs #38–#40): cloud transcripts label You/Them per word from the lanes (was per Scribe cluster:
+  remote speech under the user’s name); meetings send the personal dictionary to Scribe and to the summary; placeholder
+  summaries ("...", "x") rejected. Verified: tests, read-only re-attribution of the stored library, live Scribe probes
+  of keyterms + diarization. Not yet: a real meeting through the new attribution, a listening check; `relabel` was
+  not run on `~/Kleoth` (the user’s call), and the dictionary is still empty on both Macs.
 - Open threads: `.scratch/video-recording-thread/` (shipped; depth checks only). `docs/CODE-REVIEW.md`
   stays local/uncommitted by request.
