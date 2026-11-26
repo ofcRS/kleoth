@@ -136,7 +136,8 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
   on demand ("Fully transcribe"). Mic and system are separate channels → You/Them for free; Scribe
   gets a mono mix + diarization, and `ChannelAttribution` decides each WORD by which lane carries a
   voice under it (each lane against its own floor; speaker bleed and drift via a per-120 s lag/gain
-  `LeakModel`; Scribe's cluster = the prior, kept in `diarized_speaker_id`). Until 0.5.9 it was one
+  `LeakModel`; Scribe's cluster = the prior from its own clear words only, kept in `diarized_speaker_id`;
+  two mic voices stay split only when the system lane itself has no voice). Until 0.5.9 it was one
   decision per cluster, and the most mic-leaning cluster was always You (a silent mic still got words).
   Auto-transcribe after recording is opt-in (`auto_transcribe`). Duration always comes from the audio file.
 - **WhisperKit language:** `detectLanguage` defaults to false, so `language: nil` silently means "en".

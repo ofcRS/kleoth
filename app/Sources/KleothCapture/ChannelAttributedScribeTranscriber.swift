@@ -70,7 +70,8 @@ public struct ChannelAttributedScribeTranscriber: Transcriber {
 
         // 4. Each word to You/Them by the lane carrying a voice over it, Scribe's
         //    cluster as the prior (and kept in `diarizedSpeakerId`). An unreadable
-        //    lane has an empty envelope: every word then goes to the other one.
+        //    or dead mic gives every word to Them; with no system lane every word
+        //    is You, unless Scribe heard two voices at the mic (its split stands).
         let words = ChannelAttribution.attribute(
             words: resp.words ?? [], micEnergy: e0, systemEnergy: e1, hopSeconds: hopSeconds
         ).words
