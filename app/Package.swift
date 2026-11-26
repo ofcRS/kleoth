@@ -149,6 +149,20 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Headless re-attribution of a meeting's cloud transcript to You/Them, word
+        // by word from its own lanes (no Scribe call); keeps the replaced file as
+        // transcript.before-relabel.json. Never run by the app.
+        // `relabel [--dry-run] <meeting-dir | folder of meetings>...`
+        .executableTarget(
+            name: "relabel",
+            dependencies: [
+                "KleothCapture",
+                .product(name: "KleothCore", package: "kleoth-app"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         // Headless dictation pipeline probe: record N seconds from the mic →
         // prepare → Scribe → polish, print the result. No hotkey, no paste, no
         // Accessibility needed. `dictate [seconds] [--transcriber scribe] [--model <slug>]`

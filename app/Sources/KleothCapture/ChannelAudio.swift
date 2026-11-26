@@ -7,12 +7,13 @@ import KleothCore
 ///
 /// The two captured channels (`mic.m4a` = You, `system.m4a` = Them) are mixed to
 /// a single mono track for a 1× (correct-duration) Scribe request, while their
-/// per-channel energy envelopes drive `ChannelAttribution.assignSpeakers` to
-/// label each transcribed word You/Them — Scribe's own diarization is not used.
+/// per-channel energy envelopes drive `ChannelAttribution.attribute` to label
+/// each transcribed word You/Them (Scribe's diarization is only its prior).
 ///
 /// All work is pure file IO over float32 PCM, so these helpers are safe to call
 /// off the main actor. Unlike ``Recorder/combine(channel0:channel1:outputURL:)``,
-/// which streams, they decode each whole file into memory.
+/// which streams, `mixToMono` decodes each whole file into memory; `envelope`
+/// reads in chunks.
 public enum ChannelAudio {
     /// Errors thrown while mixing or probing channel audio.
     public enum AudioError: Error, Sendable {
@@ -122,31 +123,67 @@ public enum ChannelAudio {
     }
 
     /// Returns a per-hop RMS energy envelope of an audio file (one `Float` per
-    /// window of `round(hopSeconds * sampleRate)` samples), decoded to mono.
+    /// window of `round(hopSeconds * sampleRate)` samples; the last hop may be
+    /// shorter), of its first channel, as ``mixToMono(channel0:channel1:outputURL:bitRate:)``
+    /// hears a stereo lane.
     ///
-    /// These envelopes feed `ChannelAttribution.assignSpeakers`, which compares
-    /// channel 0 (mic) vs channel 1 (system) energy over each word's time span.
-    /// An empty or unreadable file yields an empty envelope.
+    /// These envelopes feed `ChannelAttribution.attribute`, which decides each
+    /// word's speaker by the mic and system lanes' energy over its time span.
+    /// A missing, empty or unreadable (header-only) file yields an empty
+    /// envelope. Read in chunks: a two-hour stereo lane never sits in memory whole.
     public static func envelope(of url: URL, hopSeconds: Double) throws -> [Float] {
-        guard let mono = try decodeToMono(url), let data = mono.floatChannelData else {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let file = try? AVAudioFile(forReading: url), file.length > 0 else {
             return []
         }
-        let total = Int(mono.frameLength)
-        let sampleRate = mono.format.sampleRate
-        let hop = max(1, Int((hopSeconds * sampleRate).rounded()))
-        guard total > 0, hop > 0 else { return [] }
-
-        let samples = data[0]
-        var envelope: [Float] = []
-        envelope.reserveCapacity(total / hop + 1)
-        var start = 0
-        while start < total {
-            let count = min(hop, total - start)
-            var meanSquare: Float = 0
-            vDSP_measqv(samples.advanced(by: start), 1, &meanSquare, vDSP_Length(count))
-            envelope.append(meanSquare > 0 ? sqrt(meanSquare) : 0)
-            start += hop
+        let format = file.processingFormat
+        let hop = max(1, Int((hopSeconds * format.sampleRate).rounded()))
+        let chunkFrames = AVAudioFrameCount(hop * max(1, 65_536 / hop))
+        guard format.commonFormat == .pcmFormatFloat32,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else {
+            throw AudioError.formatUnavailable
         }
+        var envelope: [Float] = []
+        envelope.reserveCapacity(Int(file.length) / hop + 1)
+        // A hop can straddle two reads (a short read): its sum of squares so far.
+        var partialSum: Float = 0
+        var partialCount = 0
+        func appendRMS(sumOfSquares: Float, count: Int) {
+            let meanSquare = sumOfSquares / Float(count)
+            envelope.append(meanSquare > 0 ? sqrt(meanSquare) : 0)
+        }
+        while file.framePosition < file.length {
+            try file.read(into: buffer, frameCount: chunkFrames)
+            let frames = Int(buffer.frameLength)
+            guard frames > 0, let data = buffer.floatChannelData else { break }
+            let samples = data[0]
+            var start = 0
+            if partialCount > 0 {
+                let take = min(hop - partialCount, frames)
+                var sum: Float = 0
+                vDSP_svesq(samples, 1, &sum, vDSP_Length(take))
+                partialSum += sum
+                partialCount += take
+                start = take
+                if partialCount == hop {
+                    appendRMS(sumOfSquares: partialSum, count: hop)
+                    partialSum = 0
+                    partialCount = 0
+                }
+            }
+            while start + hop <= frames {
+                var meanSquare: Float = 0
+                vDSP_measqv(samples.advanced(by: start), 1, &meanSquare, vDSP_Length(hop))
+                envelope.append(meanSquare > 0 ? sqrt(meanSquare) : 0)
+                start += hop
+            }
+            if start < frames {
+                vDSP_svesq(samples.advanced(by: start), 1, &partialSum, vDSP_Length(frames - start))
+                partialCount = frames - start
+            }
+        }
+        // The last hop may be shorter than the others.
+        if partialCount > 0 { appendRMS(sumOfSquares: partialSum, count: partialCount) }
         return envelope
     }
 
