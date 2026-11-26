@@ -170,11 +170,8 @@ final class DictationController: ObservableObject {
             pill: PillCoordinator.shared.dictationFace,
             inserter: TextInserter.shared,
             logStore: DictationLogStore(outputDir: settings.outputDir),
-            // A demo launch (the smoke test opens Settings → Dictation) reads and
-            // writes its own folder's copy, never `~/.config/kleoth/dictionary.json`.
-            dictionary: DemoMode.isOn
-                ? PersonalDictionaryStore(url: DemoMode.outputDir.appendingPathComponent("dictionary.json"))
-                : PersonalDictionaryStore(),
+            // The one list meetings use too; a demo launch's own copy (`AppConfig`).
+            dictionary: AppConfig.dictionaryStore,
             transcriber: nil,
             logStoreFollowsSettings: true
         )

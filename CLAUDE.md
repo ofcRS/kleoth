@@ -109,7 +109,9 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - Meeting covers: `cover.jpg` + `cover.json` (`CoverRecord`: `drawn`/`skipped`/`removed`; `skipped`/`removed`
   block automatic redraws) in the meeting folder; a dropped-in `cover.png` shows too; no key in `meta.json`.
   Keys `cover_engine` (Off is written `"off"`, never empty), `cover_automatic`, `cover_style`, `cover_models`.
-- Dictations: `~/Kleoth/dictations/<yyyy-MM-dd>.json`; dictionary `~/.config/kleoth/dictionary.json`.
+- Dictations: `~/Kleoth/dictations/<yyyy-MM-dd>.json`; dictionary `~/.config/kleoth/dictionary.json` = ONE list
+  (`PersonalDictionaryStore.sentTerms()`, first 100 valid): dictation + cloud-meeting Scribe keyterms, polish + summary
+  "Preferred spellings" (none when empty: requests unchanged). On-device Whisper gets none (no prompt tokens).
   A PENDING row (transcription failed/stopped) has empty texts, `insert_method: "none"`,
   `audio_file_name` → `dictations/audio/<id>.m4a`, `transcription_error`; a retry fills it in place.
   Rows carry `field_context` (`cursor|merged|appended|replaced|reference|selection_changed`),

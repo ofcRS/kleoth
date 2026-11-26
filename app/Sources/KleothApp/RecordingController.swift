@@ -1632,7 +1632,8 @@ public final class RecordingController: ObservableObject {
 
         // The attributed transcriber handles channels internally and the plain
         // fallback uses single-channel diarization, so multi-channel is never set.
-        var options = ScribeOptions()
+        // The personal dictionary rides along as keyterms, as on a dictation.
+        var options = ScribeOptions.meeting(keyterms: AppConfig.dictionaryStore.sentTerms())
         options.useMultiChannel = false
         // Surface the multipart upload's progress as a determinate bar; once the
         // bytes are sent (frac == 1), clear it so the UI switches to an

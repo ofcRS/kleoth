@@ -81,6 +81,16 @@ private func metadataForAudio(_ fileURL: URL, model: String?, languageCode: Stri
     )
 }
 
+/// The personal dictionary (`~/.config/kleoth/dictionary.json`) as a meeting's
+/// Scribe keyterms, the list dictation sends. Says how many on stderr — never
+/// which — since a request with keyterms costs more.
+private func dictionaryKeyterms(_ terms: [String] = PersonalDictionaryStore().sentTerms()) -> [String] {
+    if !terms.isEmpty {
+        printError("Sending \(terms.count) personal-dictionary term\(terms.count == 1 ? "" : "s") as Scribe keyterms.")
+    }
+    return terms
+}
+
 /// Returns true if `url` points at an existing directory.
 private func isDirectory(_ url: URL) -> Bool {
     var isDir: ObjCBool = false
@@ -142,11 +152,11 @@ struct Transcribe: AsyncParsableCommand {
         let pipeline = MeetingPipeline(transcriber: scribe, summarizer: nil, store: store)
 
         let metadata = metadataForAudio(fileURL, model: nil, languageCode: language)
-        let options = ScribeOptions(
-            numSpeakers: numSpeakers,
-            languageCode: language,
-            useMultiChannel: multiChannel
-        )
+        // The personal dictionary rides along as keyterms, as in the app.
+        var options = ScribeOptions.meeting(keyterms: dictionaryKeyterms())
+        options.numSpeakers = numSpeakers
+        options.languageCode = language
+        options.useMultiChannel = multiChannel
 
         let result = try await pipeline.run(
             audioFile: fileURL,
@@ -217,6 +227,9 @@ struct Summarize: AsyncParsableCommand {
         let store = MeetingStore(baseDir: baseDir)
         var summarizer = try factory.summarizer(for: .init(provider: selection.provider, model: resolvedModel, fellThroughFrom: nil))
         if let maxOutputTokens { summarizer.maxOutputTokens = maxOutputTokens }
+        // The personal dictionary, so a misheard name is written right in the summary.
+        let terms = PersonalDictionaryStore().sentTerms()
+        summarizer.preferredSpellings = terms
         printError("Using \(selection.provider.displayName) · \(resolvedModel.isEmpty ? "default model" : resolvedModel)")
 
         let inputURL = URL(fileURLWithPath: input)
@@ -246,7 +259,7 @@ struct Summarize: AsyncParsableCommand {
 
         var metadata = metadataForAudio(inputURL, model: resolvedModel, languageCode: nil)
         metadata.summaryProvider = selection.provider.rawValue
-        let options = ScribeOptions()
+        let options = ScribeOptions.meeting(keyterms: dictionaryKeyterms(terms))
 
         let result = try await pipeline.run(
             audioFile: inputURL,

@@ -154,7 +154,8 @@ for (const file of meetingFiles) {
   const speakers = { names: { speaker_0: "You", speaker_1: themName } };
   writeFileSync(join(dir, "speakers.json"), JSON.stringify(speakers, null, 2) + "\n");
 
-  const run = await $`${join(BIN, "localtranscribe")} ${dir} --provider ${provider}`.nothrow().text();
+  // --no-dictionary: the real personal dictionary must never shape a fictional summary.
+  const run = await $`${join(BIN, "localtranscribe")} ${dir} --provider ${provider} --no-dictionary`.nothrow().text();
   const notable = run.split("\n").filter((l) => /Engine|Summary|Saved|FAILED/.test(l));
   console.log(notable.map((l) => "          " + l).join("\n"));
   for (const need of ["transcript.json", "summary.json", "meta.json"]) {

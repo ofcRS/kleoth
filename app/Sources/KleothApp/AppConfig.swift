@@ -150,6 +150,18 @@ enum AppConfig {
         return merged
     }
 
+    // MARK: - Personal dictionary
+
+    /// The one personal dictionary: dictation's keyterms and polish spellings,
+    /// a meeting's cloud keyterms and summary spellings. A demo launch (the
+    /// smoke test opens Settings → Dictation) reads and writes its own folder's
+    /// copy, never `~/.config/kleoth/dictionary.json`.
+    static var dictionaryStore: PersonalDictionaryStore {
+        DemoMode.isOn
+            ? PersonalDictionaryStore(url: DemoMode.outputDir.appendingPathComponent("dictionary.json"))
+            : PersonalDictionaryStore()
+    }
+
     // MARK: - AI providers
 
     /// One detector for the whole app. Its 10 min cache is what keeps a
@@ -185,7 +197,10 @@ enum AppConfig {
         let factory = factory(settings: settings, credentials: credentials)
         let snapshot = await detector.snapshot(settings: settings.effectiveProviderSettings, openRouterKey: credentials.openRouterKey)
         let selection = try factory.select(task: .summary, snapshot: snapshot).get()
-        return (try factory.summarizer(for: selection), selection)
+        var summarizer = try factory.summarizer(for: selection)
+        // Read per summary, so a term added in Settings applies to the next one.
+        summarizer.preferredSpellings = dictionaryStore.sentTerms()
+        return (summarizer, selection)
     }
 
     /// The dictation polisher for the current settings, or the `ProviderError`
