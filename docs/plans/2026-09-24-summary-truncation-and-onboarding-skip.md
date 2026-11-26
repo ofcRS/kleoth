@@ -115,9 +115,20 @@ All of:
 - **Decodes** as `MeetingSummary`.
 - **Complete:** `tldr` is non-blank, and `overview`, `action_items` and `per_speaker_highlights` are
   present under a spelling the decoder reads (`action_items` or `actionItems`). Lists may be empty and
-  `overview` may be blank (a ten-second recording); `title` stays optional.
+  `overview` may be blank (a short recording, see below); `title` stays optional.
+- **Content, not placeholders** (2026-11-26, after a 48-minute meeting was saved with the overview `...`
+  and another with `x` for its title, TL;DR and overview — the `x` became its title). `SummaryContent`:
+  a value is placeholder text when it has no letter or digit, fewer than three, one repeated (`xxx`), is a
+  short `<…>` / `{…}` / `[…]` slot, or as a whole echoes the prompt (`string`/`строка`, `null`,
+  `none`, a key, `TBD`, `todo`). That rules out a TL;DR, a non-blank overview, an action item's task
+  and a highlight; an owner or speaker only by a type word (`string`), since "Ян" is a name. Scaled
+  by the transcript's letters and digits (about 700 a minute of talk): the TL;DR needs one per 2,000
+  (3–12), a non-blank overview one per 300 (3–120), and a blank overview passes only under 1,500 (about
+  two minutes). A placeholder title alone is dropped from the summary, never retried.
 
-The first request is byte-identical to today's.
+The first request is byte-identical to today's, plus (2026-11-26) one system-prompt line that rules
+placeholders out and gives the honest way out: an empty overview for a short transcript, "nothing to
+summarize" said in the TL;DR.
 
 ### 3.2 The one retry
 
@@ -128,13 +139,15 @@ The first request is byte-identical to today's.
 | empty, not cut off | fresh request, same budget |
 | JSON object with parts missing | the answer, then "Your previous answer is missing: overview, action_items. Return the complete JSON object with every key — no prose, no markdown fences." |
 | not JSON | the answer, then today's "not valid JSON" nudge |
+| placeholder text (§3.1) | fresh request, same budget, naming the parts: "Your previous answer had placeholder text instead of content in: overview. Answer again and write those parts out…"; "make it an empty string" is offered for the overview only where a blank one would pass |
 
 *Fresh* = the original system and user messages; bad text is never replayed. The *compact
 instruction* is one sentence appended to the user message: "Your previous answer was cut off before
-the JSON was complete. Answer again, more compactly — a shorter overview and fewer highlights — in the
-same language and the same JSON shape." `reasoning: low` reaches OpenRouter and local servers (the
-CLIs ignore it); an endpoint that can't take it gets the client's existing relaxed retry, which drops
-it together with the strict schema.
+the JSON was complete. Answer again, more compactly — a shorter overview and fewer highlights, but still
+real content from the transcript, never a placeholder such as "..." — in the same language and the same
+JSON shape." (The floor is from 2026-11-26: "shorter" alone set none.) `reasoning: low` reaches
+OpenRouter and local servers (the CLIs ignore it); an endpoint that can't take it gets the client's
+existing relaxed retry, which drops it together with the strict schema.
 
 After the retry anything short of a complete answer throws, and nothing is written:
 
@@ -142,6 +155,7 @@ After the retry anything short of a complete answer throws, and nothing is writt
 |---|---|---|
 | cut off | `.truncated` | "The summary was cut off: the model ran out of output room before finishing (reasoning models spend part of it thinking). Try again, or use another model." |
 | parts missing | `.incomplete(missing:)` | "The summary came back incomplete (no overview, action items). Try again, or use another model." |
+| placeholder text | `.placeholder(parts:)` | "The summary came back with placeholder text instead of content (overview). Try again, or use another model." |
 | empty | `.invalidJSON("")` | "The model returned an empty answer." |
 | not JSON | `.invalidJSON(snippet)` | unchanged |
 
@@ -166,7 +180,8 @@ that model's limit) also throws `.truncated`.
   Summarize stay.
 - **Summarize** runs the summary alone on the current provider, outside the pipeline queue like
   today's summarize-latest (which now calls it for the newest meeting only). Success saves
-  `summary.json` / `summary.md`, adopts the model's title for a placeholder title and clears the card;
+  `summary.json` / `summary.md`, adopts the model's title for a placeholder title (only a real one:
+  `MeetingNaming.titleToAdopt`, shared with the pipeline and the CLI) and clears the card;
   failure pins the new reason.
 - **CLI:** `kleoth summarize <dir>` exits non-zero with the message and writes nothing;
   `kleoth summarize <audio>` still prints "Summary step failed (transcript was saved): <message>". New
@@ -207,6 +222,7 @@ public enum SummarizerError: Error, Sendable {
     case invalidJSON(snippet: String)           // unchanged; "" reads "The model returned an empty answer."
     case truncated                              // new
     case incomplete(missing: [String])          // new; keys as the prompt spells them
+    case placeholder(parts: [String])           // 2026-11-26; `title` only beside another part
 }
 
 public struct Summarizer: Sendable {
@@ -219,8 +235,9 @@ public struct Summarizer: Sendable {
 
     // internal, tested directly
     enum Assessment { case complete(MeetingSummary), cutOff(hadText: Bool), empty,
-                      incomplete(missing: [String]), malformed }
-    static func assess(_ completion: ChatCompletion) -> Assessment
+                      incomplete(missing: [String]), placeholder(parts: [String]), malformed }
+    static func assess(_ completion: ChatCompletion, transcriptLetters: Int = 0) -> Assessment
+    static func placeholderRetryInstruction(parts: [String], overviewMayBeBlank: Bool) -> String
     static func isUnterminatedJSONObject(_ text: String) -> Bool
     static let compactRetryInstruction: String
 }
@@ -233,6 +250,11 @@ comment ("`Summarizer` never does", `OpenRouterClient.swift:69-70`) is updated t
 and `summaryProvider`. Signature and return value unchanged.
 
 No new stored keys. `ChatCompleting`, `ChatCompletion` and every adapter are unchanged.
+
+2026-11-26: `Summarization/SummaryContent.swift` (internal: `isPlaceholder`, `letters(in:)`, the
+thresholds, `placeholderParts`) and `MeetingNaming.titleToAdopt(generated:replacing:) -> String?`, the one
+title rule `MeetingPipeline`, `kleoth summarize <dir>` and `RecordingController.summarize(_:)` call.
+Tests: `SummaryPlaceholderTests.swift`, four in `MeetingPipelineSummaryTests.swift`.
 
 ### 4.2 CLI
 
