@@ -13,6 +13,7 @@ All notable changes to Kleoth are documented here. The format is based on
 ### Fixed
 
 - **A summary of placeholder text was saved as finished**: an overview of just "...", or "x" for the title, summary and overview — and the "x" then became the meeting's name. Kleoth now asks the model once more and, if the summary or overview is still placeholder text, keeps the transcript and shows the summary as failed; a short but real summary is always kept, empty list entries are left out, and a meeting keeps its own name unless the model offers a real one (an earlier "x" gets replaced).
+- **Cloud transcripts no longer give the other side's words to you.** Each word is now You or Them by which recording (your microphone or the call's sound) carries a voice under it, so a microphone that picks up nothing gives you no words, and sound from your speakers picked up by the microphone stays theirs; `app/.build/debug/relabel` can redo an existing meeting from its audio, with no new transcription.
 
 ## [0.5.9] — 2026-11-19
 

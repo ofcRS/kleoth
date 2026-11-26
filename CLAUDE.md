@@ -13,7 +13,7 @@ Liquid Glass gated behind `if #available(macOS 26, *)`.
 
 ## Commands
 ```bash
-swift build && swift test                        # core + CLI (863 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
+swift build && swift test                        # core + CLI (887 tests); CI: .github/workflows/tests.yml (+ app smoke, pill film guard, marketing)
 swift build --package-path app                   # app package
 swift test --package-path app                    # KleothCaptureTests: file/format logic on synthetic buffers (no mic)
 bash app/setup-signing.sh                        # once: "Kleoth Self-Signed" cert (Accessibility/TCC trust binds to it)
@@ -32,6 +32,7 @@ swift run kleoth illustrate <dir>... [--engine codex|openrouter|local] [--style 
 # Headless probes (use --product, not --target — --target links no binary)
 swift build --package-path app --product localtranscribe && app/.build/debug/localtranscribe <meeting-dir> [scribe]
 app/.build/debug/recombine [--dry-run] <meeting-dir | folder of meetings>   # the launch repair of ≤ 0.5.7 wrong-rate meeting.m4a (--dry-run only reads; refuses while Kleoth runs)
+app/.build/debug/relabel [--dry-run | --out <dir>] [--verbose] <meeting-dir | folder>   # per-word You/Them for an old cloud transcript from its lanes, no Scribe; keeps transcript.before-relabel.json; never automatic
 swift build --package-path app --product dictate && app/.build/debug/dictate 4 [--no-polish] [--device <uid>] [--provider claude-code|codex|local|openrouter] [--text "<raw>" --runs N]
 app/.build/debug/dictate --file <audio> [--fail-first N] [--keep-on-failure]   # real clip through the Scribe retry policy; N injected transient failures; keep → a REAL pending History row
 app/.build/debug/dictate --text "<raw>" [--before s] [--after s] [--selection s | --reference s] [--single-line] [--no-polish]   # synthetic focused field → placement, gate, paste; `--focus-probe --help` = the AX probe (reads the app in front: only with the user)
@@ -90,7 +91,7 @@ KeyboardShortcuts 2.4.0 vendored in `app/Vendor/` with a one-line patch, Whisper
   Meetings | Dictations | Recordings scopes, `MeetingCoverTile`/`MeetingCoverBand`, SettingsView = flat `HStack` sidebar over
   `SettingsPage`, `SettingsCoversSection`, Onboarding, recordings viewer), App Intents, `kleoth://` URL scheme.
   No test target (`KleothCaptureTests` covers `KleothCapture` only).
-- Executables: `taptest`, `localtranscribe`, `recombine`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`, `updatecheck`.
+- Executables: `taptest`, `localtranscribe`, `recombine`, `relabel`, `dictate`, `screenrec`, `pillsandbox`, `micwatch`, `micopen`, `updatecheck`.
 
 Design docs (binding contracts, error matrices, manual checklists): `docs/plans/2026-09-03-dictation.md`,
 `docs/plans/2026-09-06-screen-recording.md`, `docs/plans/2026-09-07-recordings-viewer.md`,
@@ -133,7 +134,10 @@ Design docs (binding contracts, error matrices, manual checklists): `docs/plans/
 - **Transcription:** tier 0 = on-device WhisperKit `large-v3-v20240930_626MB`, auto language (chosen
   over Apple Speech because it lacks Russian, the user's main language); tier 1 = ElevenLabs Scribe
   on demand ("Fully transcribe"). Mic and system are separate channels → You/Them for free; Scribe
-  gets a mono mix + diarization mapped to channels by per-cluster energy (96% accurate on a live A/B).
+  gets a mono mix + diarization, and `ChannelAttribution` decides each WORD by which lane carries a
+  voice under it (each lane against its own floor; speaker bleed and drift via a per-120 s lag/gain
+  `LeakModel`; Scribe's cluster = the prior, kept in `diarized_speaker_id`). Until 0.5.9 it was one
+  decision per cluster, and the most mic-leaning cluster was always You (a silent mic still got words).
   Auto-transcribe after recording is opt-in (`auto_transcribe`). Duration always comes from the audio file.
 - **WhisperKit language:** `detectLanguage` defaults to false, so `language: nil` silently means "en".
   `LocalTranscriber.resolveLanguage` runs one global detect pass; pinnable via `transcription_language`.

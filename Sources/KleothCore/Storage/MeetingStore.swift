@@ -384,6 +384,72 @@ public struct MeetingStore {
         try data.write(to: metaURL, options: .atomic)
     }
 
+    // MARK: - Re-attributed transcripts
+
+    /// Where ``replaceRawTranscript(in:with:)`` keeps the transcript it replaced.
+    public static let relabelBackupName = "transcript.before-relabel.json"
+
+    /// The transcript a re-attribution starts from: the backup of the first
+    /// replaced one when it holds the same words as `transcript.json` (so a
+    /// second run gives the same result), else `transcript.json` itself.
+    /// Throws when a backup exists for other words (the meeting was transcribed
+    /// again since): it is the user's file, never overwritten. `current` is
+    /// `transcript.json` as it stands.
+    public func relabelSource(in dir: URL) throws -> (raw: ScribeResponse, current: ScribeResponse, fromBackup: Bool) {
+        let decoder = Self.makeDecoder()
+        let current = try decoder.decode(
+            ScribeResponse.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
+        let backupURL = dir.appendingPathComponent(Self.relabelBackupName)
+        guard FileManager.default.fileExists(atPath: backupURL.path) else { return (current, current, false) }
+        let backup = try decoder.decode(ScribeResponse.self, from: Data(contentsOf: backupURL))
+        guard TranscriptRelabel.sameWords(backup, current) else {
+            throw MeetingStoreError.staleRelabelBackup
+        }
+        return (backup, current, true)
+    }
+
+    /// `raw` as `transcript.json` stores it.
+    public static func encodeRawTranscript(_ raw: ScribeResponse) throws -> Data {
+        try makeEncoder().encode(raw)
+    }
+
+    /// `transcript` as `transcript.md` stores it.
+    public static func transcriptLines(_ transcript: Transcript) -> String {
+        renderTranscriptLines(transcript)
+    }
+
+    /// Replaces `transcript.json` with `raw` (the same words, new labels) and
+    /// re-renders `transcript.md` and, when the meeting has a summary,
+    /// `summary.md` (it embeds the transcript). The first file replaced is kept
+    /// as ``relabelBackupName`` and never overwritten; each write is atomic;
+    /// `meta.json`, `summary.json` and `speakers.json` are only read; the folder
+    /// keeps its modification date (History orders a meeting with no start
+    /// time by it). The summary's own text is NOT redone.
+    public func replaceRawTranscript(in dir: URL, with raw: ScribeResponse) throws {
+        let fm = FileManager.default
+        let folderModified = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        defer {
+            if let folderModified {
+                try? fm.setAttributes([.modificationDate: folderModified], ofItemAtPath: dir.path)
+            }
+        }
+        let transcriptURL = dir.appendingPathComponent("transcript.json")
+        let backupURL = dir.appendingPathComponent(Self.relabelBackupName)
+        if !fm.fileExists(atPath: backupURL.path) {
+            try Data(contentsOf: transcriptURL).write(to: backupURL, options: .atomic)
+        }
+        try Self.makeEncoder().encode(raw).write(to: transcriptURL, options: .atomic)
+
+        let transcript = try loadTranscript(in: dir)
+        try Data(Self.renderTranscriptLines(transcript).utf8)
+            .write(to: dir.appendingPathComponent("transcript.md"), options: .atomic)
+        if let summary = try loadSummary(in: dir) {
+            let markdown = MarkdownRenderer.render(
+                summary: summary, transcript: transcript, metadata: try loadMetadata(in: dir), includeTranscript: true)
+            try Data(markdown.utf8).write(to: dir.appendingPathComponent("summary.md"), options: .atomic)
+        }
+    }
+
     // MARK: - Stored audio durations
 
     /// The files whose stored `cost` carries the length the combine up to 0.5.7
@@ -536,6 +602,8 @@ public enum MeetingStoreError: Error, LocalizedError, Equatable {
     case variantNotFound(tier: String)
     /// The meeting has no `meta.json` to carry the swapped variant fields.
     case metadataMissing
+    /// `transcript.before-relabel.json` holds other words than `transcript.json`.
+    case staleRelabelBackup
 
     public var errorDescription: String? {
         switch self {
@@ -543,6 +611,8 @@ public enum MeetingStoreError: Error, LocalizedError, Equatable {
             return "No saved \(TranscriptTier.label(tier)) transcript exists for this meeting."
         case .metadataMissing:
             return "The meeting has no metadata file to update."
+        case .staleRelabelBackup:
+            return "\(MeetingStore.relabelBackupName) belongs to an earlier transcript of this meeting. Move it away to re-label this one."
         }
     }
 }
