@@ -78,9 +78,14 @@ public enum ChannelAttribution {
     /// than the other lane is to its own dominates.
     static let dominanceDB: Float = 10
     /// A side's speaking level comes from at least this many clear words.
-    /// With fewer of the user's, no word dominates; with fewer of the
-    /// remote's, the system lane's own voiced median stands in.
+    /// With fewer of the user's, the mic's own voiced median stands in only on
+    /// a mic that doesn't hear the remote (otherwise no word dominates); with
+    /// fewer of the remote's, the system lane's own voiced median stands in.
     static let minimumReferenceWords = 20
+    /// The mic hears the remote when it is voiced under this share of the
+    /// remote's speech (at their usual level). Only a mic that doesn't, or a
+    /// word with a leak taken off, may dominate toward You.
+    static let quietMicShare = 0.05
     /// A hop is the lane's own voice only this far above the leak predicted on it.
     static let leakMarginDB: Float = 6
     /// The system lane carries nobody when its voice adds up to no more than
@@ -180,18 +185,29 @@ public enum ChannelAttribution {
         func median(_ values: [Float]) -> Float? {
             values.count < minimumReferenceWords ? nil : values.sorted()[values.count / 2]
         }
-        // The user's level must be measured: the mic's own voiced median can
-        // be room noise or bleed. The system lane carries little but the
-        // remote, so its voiced median stands in for the remote's level.
-        let userLevel = median(found.filter { $0.side == .you }.map(\.micPeak))
+        // The system lane carries little but the remote, so its voiced median
+        // stands in for the remote's level.
         let remoteLevel = median(found.filter { $0.side == .them }.map(\.systemPeak)) ?? system.speech
+        // Does the mic hear the remote? How often it is voiced while the
+        // remote speaks at their usual level (a faint open line aside).
+        var remoteSpeaking = 0, micVoicedThen = 0
+        for hop in 0..<hops where lanes.systemUp[hop] >= 0 && lanes.systemLevel[hop] >= remoteLevel - dominanceDB {
+            remoteSpeaking += 1
+            if lanes.micUp[hop] >= 0 { micVoicedThen += 1 }
+        }
+        let micHearsTheRemote = Double(micVoicedThen) >= quietMicShare * Double(max(1, remoteSpeaking))
+        // The user's level: measured, or on a mic that doesn't hear the remote
+        // (a headset) the mic's own voiced median; elsewhere that median can be
+        // room noise or the remote heard out of line.
+        let userLevel = median(found.filter { $0.side == .you }.map(\.micPeak))
+            ?? (micHearsTheRemote ? nil : mic.speech)
         for k in found.indices where found[k].side == .bothLanes {
             guard let userLevel else { break }
             let lead = (found[k].micPeak - userLevel) - (found[k].systemPeak - remoteLevel)
             // Toward You only where the mic's sound can be the user's: a leak
-            // taken off at this word, or a meeting whose mic never hears the
-            // speakers. Unmodelled bleed can be louder than the user speaks.
-            let mayBeTheUser = leak.direction == nil || found[k].leakModelled
+            // taken off at this word, or a mic that doesn't hear the remote.
+            // Unmodelled bleed can be louder than the user speaks.
+            let mayBeTheUser = found[k].leakModelled || (leak.direction == nil && !micHearsTheRemote)
             if lead >= dominanceDB, mayBeTheUser {
                 found[k].score = dominantScore
                 found[k].side = nil

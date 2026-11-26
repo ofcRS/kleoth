@@ -306,6 +306,65 @@ import Testing
         #expect(attribution.words.filter { $0.speakerId == Self.you }.isEmpty)
     }
 
+    /// A headset (silent while the remote talks) and a user who says only a
+    /// few short things, each over a quiet stretch of the remote, in the
+    /// remote's Scribe cluster. Too few clear words to measure the user's
+    /// level, but a mic that never hears the remote speaks for the user.
+    @Test func aRareUserOverTheRemoteOnAHeadsetIsYou() {
+        var lanes = Lanes(seconds: 300)
+        var words: [ScribeWord] = []
+        var interjections: Set<Double> = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            lanes.systemSpeech(from, to)
+            guard index % 9 == 4, to - from > 2.5 else {
+                words += Self.words("R", from, to)
+                continue
+            }
+            // The remote drops to a murmur in the middle; the user cuts in.
+            let quiet = (from + 0.6, from + 1.6)
+            for i in Lanes.hops(quiet.0, quiet.1, count: lanes.system.count) { lanes.system[i] = -40 - Lanes.syllable(i, voice: 2) / 3 }
+            lanes.micSpeech(quiet.0, quiet.1, at: -24)
+            let user = Self.words("R", quiet.0, quiet.1)
+            interjections.formUnion(user.compactMap(\.start))
+            words += Self.words("R", from, quiet.0 - 0.05) + user + Self.words("R", quiet.1 + 0.05, to)
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(!interjections.isEmpty)
+        let user = attribution.words.filter { interjections.contains($0.start!) }
+        #expect(user.allSatisfy { $0.speakerId == Self.you })
+        let remote = attribution.words.filter { !interjections.contains($0.start!) }
+        #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 50)
+    }
+
+    /// A mic that hears the remote out of line (no leak model) about as loud
+    /// as the user speaks. Where the remote drops to a murmur, the mic is
+    /// "nearer the user's level" than the system lane is to the remote's, but
+    /// on a mic that hears the remote, that proves nothing: still Them.
+    @Test func onAMicThatHearsTheRemoteLoudIsNotTheUser() {
+        var lanes = Lanes(seconds: 300, micFloor: -68, systemFloor: -100)
+        var words: [ScribeWord] = []
+        for (index, (from, to)) in Self.bursts(0, 290).enumerated() {
+            if index % 4 == 0 {
+                lanes.micSpeech(from, to, at: -28)
+                words += Self.words("U", from, to)
+                continue
+            }
+            lanes.systemSpeech(from, to)
+            for i in Lanes.hops(from, to, count: lanes.system.count) where (i / 60) % 2 == 1 {
+                lanes.system[i] = -40 - Lanes.syllable(i, voice: 2) / 3
+            }
+            for j in Lanes.hops(from, to + 0.3, count: lanes.mic.count) {
+                lanes.mic[j] = max(lanes.mic[j], -29 - 2 * Lanes.syllable(j, voice: 9))
+            }
+            words += Self.words("R", from, to)
+        }
+        let attribution = Self.run(words, lanes)
+        #expect(attribution.micHearsSystemSeconds == 0)
+        let remote = attribution.words.filter { $0.diarizedSpeakerId == "R" }
+        #expect(remote.filter { $0.speakerId == Self.you }.count <= remote.count / 50)
+        #expect(Self.labels(attribution, cluster: "U") == [Self.you])
+    }
+
     /// Two people at one mic and no readable system lane: Scribe's split stands.
     @Test func twoVoicesAtTheMicWithNoSystemLaneKeepScribesSplit() {
         var lanes = Lanes(seconds: 240)
