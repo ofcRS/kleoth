@@ -86,9 +86,6 @@ public enum ChannelAttribution {
     /// remote's speech (at their usual level). Only a mic that doesn't, or a
     /// word with a leak taken off, may dominate toward You.
     static let quietMicShare = 0.05
-    /// A clear mic word this many words away, in the same stretch, vouches
-    /// for the mic on a both-voiced word (it may then dominate toward You).
-    static let vouchingWords = 3
     /// A hop is the lane's own voice only this far above the leak predicted on it.
     static let leakMarginDB: Float = 6
     /// The system lane carries nobody when its voice adds up to no more than
@@ -204,32 +201,13 @@ public enum ChannelAttribution {
         // room noise or the remote heard out of line.
         let userLevel = median(found.filter { $0.side == .you }.map(\.micPeak))
             ?? (micHearsTheRemote ? nil : mic.speech)
-        // A clear mic word within `vouchingWords` of word k, in one stretch
-        // (every gap under a second).
-        func clearMicWordNearby(_ k: Int) -> Bool {
-            for step in [-1, 1] {
-                var j = k
-                for _ in 0..<vouchingWords {
-                    let next = j + step
-                    guard found.indices.contains(next) else { break }
-                    let (earlier, later) = step < 0 ? (words[speech[next]], words[speech[j]]) : (words[speech[j]], words[speech[next]])
-                    let gap = (later.start.flatMap { start in earlier.end.map { start - $0 } }) ?? 0
-                    guard gap.isFinite, gap < 1.0 else { break }
-                    if found[next].side == .you { return true }
-                    j = next
-                }
-            }
-            return false
-        }
         for k in found.indices where found[k].side == .bothLanes {
             guard let userLevel else { break }
             let lead = (found[k].micPeak - userLevel) - (found[k].systemPeak - remoteLevel)
             // Toward You only where the mic's sound can be the user's: a leak
-            // taken off at this word, a mic that doesn't hear the remote, or a
-            // clear mic word beside it in the same stretch. Unmodelled bleed
-            // can be louder than the user speaks.
+            // taken off at this word, or a mic that doesn't hear the remote.
+            // Unmodelled bleed can be louder than the user speaks.
             let mayBeTheUser = found[k].leakModelled || (leak.direction == nil && !micHearsTheRemote)
-                || clearMicWordNearby(k)
             if lead >= dominanceDB, mayBeTheUser {
                 found[k].score = dominantScore
                 found[k].side = nil
