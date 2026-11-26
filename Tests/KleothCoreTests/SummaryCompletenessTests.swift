@@ -150,7 +150,7 @@ import Foundation
     /// A complete JSON object with parts missing is not a summary: the retry
     /// carries the answer and names the parts as the prompt spells them.
     @Test func missingPartsAreRepairedNotAccepted() async throws {
-        let first = #"{"tldr":"t"}"#
+        let first = #"{"tldr":"Launch on June 10."}"#
         let run = await Self.run([Self.answer(first), Self.answer(Self.completeAnswer)])
         #expect(run.ending == Self.completeEnding)
         try #require(run.calls.count == 2)
@@ -167,7 +167,7 @@ import Foundation
     /// `overview`. The parts that are there count; only the overview is asked for.
     @Test func keyDriftCountsAsMissingOverview() async throws {
         let run = await Self.run([
-            Self.answer(#"{"tldr":"t","summary":"s","action_items":[],"per_speaker_highlights":[]}"#),
+            Self.answer(#"{"tldr":"Launch on June 10.","summary":"s","action_items":[],"per_speaker_highlights":[]}"#),
             Self.answer(Self.completeAnswer),
         ])
         #expect(run.ending == Self.completeEnding)
@@ -179,7 +179,7 @@ import Foundation
     /// A blank TL;DR is no TL;DR.
     @Test func blankTLDRIsIncomplete() async throws {
         let run = await Self.run([
-            Self.answer(#"{"title":"T","tldr":"  ","overview":"o","action_items":[],"per_speaker_highlights":[]}"#),
+            Self.answer(#"{"title":"T","tldr":"  ","overview":"Alice proposed June 10.","action_items":[],"per_speaker_highlights":[]}"#),
             Self.answer(Self.completeAnswer),
         ])
         #expect(run.ending == Self.completeEnding)
@@ -193,7 +193,7 @@ import Foundation
     /// repair names `tldr`.
     @Test func keyDriftCountsAsMissingTLDR() async throws {
         let run = await Self.run([
-            Self.answer(#"{"summary":"s","overview":"o","action_items":[],"per_speaker_highlights":[]}"#),
+            Self.answer(#"{"summary":"s","overview":"Alice proposed June 10.","action_items":[],"per_speaker_highlights":[]}"#),
             Self.answer(Self.completeAnswer),
         ])
         #expect(run.ending == Self.completeEnding)
@@ -206,7 +206,7 @@ import Foundation
     /// (it decodes to no overview, or no action items, all the same).
     @Test func nullPartsCountAsMissing() async throws {
         let run = await Self.run([
-            Self.answer(#"{"tldr":"t","overview":null,"action_items":null,"per_speaker_highlights":[]}"#),
+            Self.answer(#"{"tldr":"Launch on June 10.","overview":null,"action_items":null,"per_speaker_highlights":[]}"#),
             Self.answer(Self.completeAnswer),
         ])
         #expect(run.ending == Self.completeEnding)
@@ -218,14 +218,14 @@ import Foundation
     // MARK: - After the retry
 
     @Test func persistentMissingPartsThrowIncomplete() async {
-        let partial = Self.answer(#"{"tldr":"t","action_items":[],"per_speaker_highlights":[]}"#)
+        let partial = Self.answer(#"{"tldr":"Launch on June 10.","action_items":[],"per_speaker_highlights":[]}"#)
         let run = await Self.run([partial, partial])
         #expect(run.ending == .incomplete(missing: ["overview"]))
         #expect(run.calls.count == 2)
     }
 
     @Test func persistentMissingTLDRThrowsIncomplete() async {
-        let drifted = Self.answer(#"{"summary":"s","overview":"o","action_items":[],"per_speaker_highlights":[]}"#)
+        let drifted = Self.answer(#"{"summary":"s","overview":"Alice proposed June 10.","action_items":[],"per_speaker_highlights":[]}"#)
         let run = await Self.run([drifted, drifted])
         #expect(run.ending == .incomplete(missing: ["tldr"]))
         #expect(run.calls.count == 2)
@@ -325,8 +325,9 @@ import Foundation
         case .complete: return "complete"
         case let .cutOff(hadText): return hadText ? "cutOff(text)" : "cutOff(no text)"
         case .empty: return "empty"
-        case let .incomplete(missing): return "incomplete(\(missing.joined(separator: ", ")))"
+        case let .incomplete(missing, _): return "incomplete(\(missing.joined(separator: ", ")))"
         case let .placeholder(parts): return "placeholder(\(parts.joined(separator: ", ")))"
+        case let .terse(_, parts): return "terse(\(parts.joined(separator: ", ")))"
         case .malformed: return "malformed"
         }
     }

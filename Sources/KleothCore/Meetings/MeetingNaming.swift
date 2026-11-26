@@ -19,17 +19,29 @@ public enum MeetingNaming {
 
     /// The summary's title to give a meeting now titled `current`, or nil to
     /// keep `current` — the one rule the pipeline, `kleoth summarize` and the
-    /// app's Summarize share. Only a placeholder (`MeetingMetadata.isPlaceholderTitle`)
-    /// is ever replaced, so a calendar event's name or a title the user typed
-    /// stays; and only by a real title: trimmed, not placeholder text
+    /// app's Summarize share. Only a placeholder is ever replaced
+    /// (`MeetingMetadata.isPlaceholderTitle`, or a title with no letter or digit
+    /// or of one character repeated: the `x` an earlier run saved), so a
+    /// calendar event's name or a title the user typed stays — "QA" and "1:1"
+    /// included; and only by a real title: trimmed, not placeholder text
     /// (`SummaryContent.isPlaceholder`: `x`, `...`, `string`, `<title>`), not
     /// a placeholder title of our own.
     public static func titleToAdopt(generated: String?, replacing current: String) -> String? {
-        guard MeetingMetadata.isPlaceholderTitle(current),
+        guard isReplaceableTitle(current),
               let generated = generated?.trimmingCharacters(in: .whitespacesAndNewlines),
               !SummaryContent.isPlaceholder(generated),
               !MeetingMetadata.isPlaceholderTitle(generated) else { return nil }
         return generated
+    }
+
+    /// A placeholder title, or one that names nothing: no letter or digit
+    /// ("...", "—"), or one character repeated ("x", "xxx"). "1:1" is not one
+    /// character repeated, so it stays.
+    private static func isReplaceableTitle(_ title: String) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MeetingMetadata.isPlaceholderTitle(trimmed)
+            || SummaryContent.letterCount(trimmed) == 0
+            || Set(trimmed.lowercased()).count == 1
     }
 
     /// The default speaker map of a two-channel meeting (§3.2.6, Q6): the mic

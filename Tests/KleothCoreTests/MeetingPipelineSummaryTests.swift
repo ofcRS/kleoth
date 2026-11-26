@@ -148,7 +148,7 @@ import Foundation
         )
 
         #expect(run.summary == nil)
-        #expect(run.summaryError?.contains("placeholder") == true)
+        #expect(run.summaryError == "The summary came back with placeholder text instead of content (title, tldr, overview). Try again, or use another model.")
         #expect(!run.hasFile("summary.json"))
         #expect(run.meta.title == Self.placeholderTitle)
     }
@@ -177,6 +177,17 @@ import Foundation
         let run = try await Self.run(
             summarizer: Self.answering(Self.completeAnswer), title: Self.placeholderTitle, in: baseDir
         )
+
+        #expect(run.meta.title == "Audio check before the demo")
+    }
+
+    /// The `x` an earlier run saved as the title is no title: summarizing
+    /// again replaces it.
+    @Test func savedPlaceholderTitleIsReplaced() async throws {
+        let baseDir = Self.scratchDir()
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let run = try await Self.run(summarizer: Self.answering(Self.completeAnswer), title: "x", in: baseDir)
 
         #expect(run.meta.title == "Audio check before the demo")
     }

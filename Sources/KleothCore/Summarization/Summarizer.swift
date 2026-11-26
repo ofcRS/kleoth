@@ -24,10 +24,10 @@ public enum SummarizerError: Error, Sendable {
     /// prompt asks for. Keys as the prompt spells them: `tldr`, `overview`,
     /// `action_items`, `per_speaker_highlights`.
     case incomplete(missing: [String])
-    /// The retry's answer was complete but held placeholder text where content
-    /// belongs (`...`, `x`, `string`, `TBD`; or too little for the
-    /// transcript's length — `SummaryContent`). Keys as the prompt spells them;
-    /// `title` only beside another part.
+    /// The retry's answer was complete but its TL;DR or overview was a true
+    /// placeholder (`...`, `x`, `string`, `TBD` — `SummaryContent.isPlaceholder`;
+    /// never just short), and the first answer had nothing real to fall back
+    /// on. Keys as the prompt spells them; `title` only beside another part.
     case placeholder(parts: [String])
 }
 
@@ -159,14 +159,20 @@ public struct Summarizer: Sendable {
     /// highlights") set no floor, and an overview of `...` is as short as it gets.
     static let compactRetryInstruction = "Your previous answer was cut off before the JSON was complete. Answer again, more compactly — a shorter overview and fewer highlights, but still real content from the transcript, never a placeholder such as \"...\" — in the same language and the same JSON shape."
 
-    /// Appended to the user message of the retry after an answer with
-    /// placeholder text: the same request, naming the parts. "May be empty" is
-    /// offered for the overview only where a blank one would pass (a short
-    /// meeting), so the retry never asks for what `assess` then rejects.
-    static func placeholderRetryInstruction(parts: [String], overviewMayBeBlank: Bool) -> String {
-        var text = "Your previous answer had placeholder text instead of content in: \(parts.joined(separator: ", ")). Answer again and write those parts out from the transcript, as fully as a meeting this long needs — never a placeholder such as \"x\", \"...\", \"N/A\", \"TBD\" or the word \"string\" — in the same language and the same JSON shape."
-        if overviewMayBeBlank && parts.contains("overview") {
-            text += " If the meeting is too short for an overview, make it an empty string."
+    /// Appended to the user message of the fresh retry after an answer whose
+    /// TL;DR or overview held placeholder or very short text (and, with
+    /// `missing`, lacked parts too): the same request, naming the parts. It asks
+    /// for them from what was said — never for more than that — and offers an
+    /// empty overview whenever the overview is named, which `assess` always
+    /// accepts beside a real TL;DR.
+    static func placeholderRetryInstruction(parts: [String], missing: [String] = []) -> String {
+        let named = parts.joined(separator: ", ")
+        var text = missing.isEmpty
+            ? "Your previous answer had placeholder or very short text in: \(named). Answer again with those parts written from what was said in the transcript — "
+            : "Your previous answer was missing: \(missing.joined(separator: ", ")), and had placeholder or very short text in: \(named). Answer again with the complete JSON object, every key present, and those parts written from what was said in the transcript — "
+        text += "never a placeholder such as \"x\", \"...\", \"N/A\", \"TBD\" or the word \"string\" — in the same language and the same JSON shape."
+        if parts.contains("overview") || missing.contains("overview") {
+            text += " If there is too little for an overview, make it an empty string."
         }
         return text
     }
@@ -176,10 +182,14 @@ public struct Summarizer: Sendable {
     ///
     /// An answer becomes a summary only when ``assess(_:transcriptLetters:)`` finds
     /// it complete: not cut off, decodable, carrying every part the prompt asks
-    /// for, and content rather than placeholder text in each of them. A
-    /// first answer short of that gets one retry, shaped by what was wrong with
-    /// it; after the retry anything short of a complete answer throws
-    /// (``SummarizerError``), so a partial summary is never passed off as finished.
+    /// for, with content rather than placeholder text in its TL;DR and overview
+    /// (list entries and the title are cleaned, never retried). A first answer
+    /// short of that gets one retry, shaped by what was wrong with it. The
+    /// retry's answer is judged for true placeholders only — the length floors
+    /// just trigger the retry — and anything short of a complete answer throws
+    /// (``SummarizerError``), except that a real but terse first answer is
+    /// returned instead. A terse answer has every part and real content: it is
+    /// not partial, so no partial summary is ever passed off as finished.
     public func summarize(
         transcript: Transcript,
         metadata: MeetingMetadata
@@ -192,7 +202,7 @@ public struct Summarizer: Sendable {
             throw SummarizerError.transcriptTooLong(approxTokens: approxTokens)
         }
 
-        // What a summary of this transcript must hold scales with its speech.
+        // How much the TL;DR and overview should hold scales with the speech.
         let transcriptLetters = SummaryContent.letters(in: transcript)
 
         let baseMessages = [
@@ -222,6 +232,12 @@ public struct Summarizer: Sendable {
         var retryMaxTokens = maxOutputTokens
         var retryReasoning: OpenRouterReasoning?
         var wasCutOff = false
+        // A real but terse first answer: returned if the retry is no better.
+        var fallback: MeetingSummary?
+        /// The original messages, the user's ending in `instruction`.
+        func fresh(_ instruction: String) -> [ChatMessage] {
+            [baseMessages[0], ChatMessage(role: "user", content: userContent + "\n\n" + instruction)]
+        }
         switch Self.assess(first, transcriptLetters: transcriptLetters) {
         case let .complete(summary):
             return (summary, first.usage?.cost ?? 0)
@@ -232,10 +248,7 @@ public struct Summarizer: Sendable {
             // give the model more input and the same room, so the retry would
             // be cut off again.
             wasCutOff = true
-            retryMessages = [
-                baseMessages[0],
-                ChatMessage(role: "user", content: userContent + "\n\n" + Self.compactRetryInstruction),
-            ]
+            retryMessages = fresh(Self.compactRetryInstruction)
             retryMaxTokens = maxOutputTokens * 2
             // Nothing at all came back: the budget went on reasoning, so ask for
             // less of it. Only then — an answer with text ran out while writing,
@@ -248,7 +261,12 @@ public struct Summarizer: Sendable {
             // non-final assistant turn with HTTP 400.
             break
 
-        case let .incomplete(missing):
+        case let .incomplete(missing, placeholders) where !placeholders.isEmpty:
+            // Parts missing, and placeholder text where it has parts: ask again
+            // fresh naming both. Replaying it would anchor the model on its "x".
+            retryMessages = fresh(Self.placeholderRetryInstruction(parts: placeholders, missing: missing))
+
+        case let .incomplete(missing, _):
             // A complete object without every part: feed it back and name what
             // is missing, so the model keeps what it wrote and adds the rest.
             retryMessages = baseMessages + [
@@ -260,15 +278,15 @@ public struct Summarizer: Sendable {
             ]
 
         case let .placeholder(parts):
-            // Placeholder text where content belongs: ask again fresh, naming
-            // the parts. Replaying the answer would anchor the model on its
-            // "..." — and the parts are rewritten whole either way.
-            retryMessages = [
-                baseMessages[0],
-                ChatMessage(role: "user", content: userContent + "\n\n" + Self.placeholderRetryInstruction(
-                    parts: parts, overviewMayBeBlank: transcriptLetters < SummaryContent.blankOverviewLimit
-                )),
-            ]
+            // Placeholder text in the TL;DR or overview: ask again fresh, naming
+            // the parts. Replaying the answer would anchor the model on its "...".
+            retryMessages = fresh(Self.placeholderRetryInstruction(parts: parts))
+
+        case let .terse(summary, parts):
+            // Real, but short for this transcript: worth one more ask, never a
+            // failure — kept if the retry comes back worse.
+            fallback = summary
+            retryMessages = fresh(Self.placeholderRetryInstruction(parts: parts))
 
         case .malformed:
             // Not JSON (or a shape that won't decode): feed it back so the model
@@ -297,19 +315,27 @@ public struct Summarizer: Sendable {
             // client's relaxed retry didn't help): the summary can't fit, which
             // is what the user needs to hear, not an HTTP error about max_tokens.
             throw SummarizerError.truncated
+        } catch where fallback != nil && !(error is CancellationError) {
+            // The retry failed outright; the terse first answer stands.
+            return (fallback!, first.usage?.cost ?? 0)
         }
 
         let costUSD = (first.usage?.cost ?? 0) + (retry.usage?.cost ?? 0)
 
-        // Anything short of a complete answer now throws rather than pass for a
-        // summary: the pipeline records it as `summaryError` and keeps the
-        // transcript.
-        switch Self.assess(retry, transcriptLetters: transcriptLetters) {
-        case let .complete(summary):
+        // Judged for true placeholders only (0 letters: every length floor is
+        // the stub limit), so a real but terse retry is saved. Anything short of
+        // a complete answer returns the terse first answer when there is one,
+        // and otherwise throws: the pipeline records `summaryError` and keeps
+        // the transcript.
+        let assessment = Self.assess(retry, transcriptLetters: 0)
+        if case let .complete(summary) = assessment { return (summary, costUSD) }
+        if let fallback { return (fallback, costUSD) }
+        switch assessment {
+        case let .complete(summary), let .terse(summary, _):
             return (summary, costUSD)
         case .cutOff:
             throw SummarizerError.truncated
-        case let .incomplete(missing):
+        case let .incomplete(missing, _):
             throw SummarizerError.incomplete(missing: missing)
         case let .placeholder(parts):
             throw SummarizerError.placeholder(parts: parts)
@@ -328,9 +354,12 @@ public struct Summarizer: Sendable {
 
     // MARK: - Assessing an answer
 
-    /// What ``assess(_:)`` makes of an answer; each kind gets its own retry.
+    /// What ``assess(_:transcriptLetters:)`` makes of an answer; each kind gets
+    /// its own retry.
     enum Assessment {
-        /// Not cut off, decodable, every part present.
+        /// Not cut off, decodable, every part present, a real TL;DR and
+        /// overview (or none); the title and list entries already cleaned
+        /// (`SummaryContent.cleaned`).
         case complete(MeetingSummary)
         /// Out of output room before the JSON closed. `hadText == false` —
         /// nothing at all came back — means the budget went on reasoning.
@@ -338,10 +367,15 @@ public struct Summarizer: Sendable {
         /// Nothing came back, and not because of the cap.
         case empty
         /// A complete JSON object without some of the parts the prompt asks for.
-        case incomplete(missing: [String])
-        /// A complete, decodable answer with placeholder text in some parts
-        /// (`SummaryContent.placeholderParts`).
+        /// `placeholders`: the parts it has, named when one of them is a true
+        /// placeholder (then it is asked again fresh, not repaired); else empty.
+        case incomplete(missing: [String], placeholders: [String])
+        /// A true placeholder in the TL;DR or overview (`parts` also names a
+        /// terse part or a placeholder title beside it). Never saved.
         case placeholder(parts: [String])
+        /// Real content, cleaned, but a TL;DR or overview short for the
+        /// transcript. Worth the retry; kept if the retry is worse.
+        case terse(MeetingSummary, parts: [String])
         /// Not a JSON object (prose, an array), or one with every part whose
         /// values won't decode (a wrong type).
         case malformed
@@ -352,10 +386,9 @@ public struct Summarizer: Sendable {
     /// local servers report `stop` regardless — a JSON object that stops before
     /// it closes. Any other JSON object is judged by its parts before it is
     /// decoded, so a missing `tldr` is asked for by name like any other part.
-    /// A decoded answer is then judged by its content against the transcript's
-    /// length (`transcriptLetters`; 0 asks only that nothing be a placeholder):
-    /// placeholder text is `.placeholder`, and a placeholder title alone —
-    /// the title is optional — is dropped from the summary instead.
+    /// A decoded answer is then judged by its TL;DR and overview against the
+    /// transcript's length (`transcriptLetters`; 0 judges true placeholders
+    /// only), and its title and list entries are cleaned, never judged.
     static func assess(_ completion: ChatCompletion, transcriptLetters: Int = 0) -> Assessment {
         let text = stripCodeFences(completion.content)
         if isTruncated(completion.finishReason) { return .cutOff(hadText: !text.isEmpty) }
@@ -365,12 +398,22 @@ public struct Summarizer: Sendable {
             return .malformed
         }
         let missing = missingParts(in: object)
-        guard missing.isEmpty else { return .incomplete(missing: missing) }
-        guard var summary = decodeSummary(from: text) else { return .malformed }
-        let placeholders = SummaryContent.placeholderParts(in: summary, transcriptLetters: transcriptLetters)
-        guard placeholders.isEmpty else { return .placeholder(parts: placeholders) }
-        if let title = summary.title, SummaryContent.isPlaceholder(title) { summary.title = nil }
-        return .complete(summary)
+        guard missing.isEmpty else {
+            let present = SummaryContent.judge(
+                title: object["title"] as? String,
+                tldr: missing.contains("tldr") ? nil : object["tldr"] as? String,
+                overview: missing.contains("overview") ? nil : object["overview"] as? String,
+                transcriptLetters: transcriptLetters
+            )
+            return .incomplete(missing: missing, placeholders: present.hasPlaceholder ? present.parts : [])
+        }
+        guard let decoded = decodeSummary(from: text) else { return .malformed }
+        let judgement = SummaryContent.judge(
+            title: decoded.title, tldr: decoded.tldr, overview: decoded.overview, transcriptLetters: transcriptLetters
+        )
+        if judgement.hasPlaceholder { return .placeholder(parts: judgement.parts) }
+        let summary = SummaryContent.cleaned(decoded)
+        return judgement.parts.isEmpty ? .complete(summary) : .terse(summary, parts: judgement.parts)
     }
 
     /// True when `text` (fences stripped) opens a JSON object and ends before
